@@ -1,0 +1,129 @@
+# Desktop Packaging
+
+This document covers CPU and CUDA packaging for the refactored in-process Mothbot UI.
+
+## 1) Install Dependencies
+
+Run all commands from `AI/Mothbot`.
+
+Create and activate a packaging virtual environment first:
+
+```bash
+python3 -m venv .venv-packaging
+source .venv-packaging/bin/activate
+```
+
+### CPU build profile (recommended default)
+
+```bash
+python3 -m pip install -e ".[cpu,packaging]"
+```
+
+### CUDA 11.8 build profile (optional)
+
+```bash
+python3 -m pip install -e ".[cuda118,packaging]" --extra-index-url https://download.pytorch.org/whl/cu118
+```
+
+Windows PowerShell:
+
+```powershell
+python -m venv .venv-packaging
+.\.venv-packaging\Scripts\Activate.ps1
+python -m pip install -e ".[cpu,packaging]"
+```
+
+## 2) Build Commands
+
+### macOS
+
+```bash
+bash apps/scripts/build_desktop_macos.sh
+```
+
+### Linux
+
+```bash
+bash apps/scripts/build_desktop_linux.sh
+```
+
+### Windows (PowerShell)
+
+```powershell
+.\apps\scripts\build_desktop_windows.ps1
+```
+
+You can also run PyInstaller directly:
+
+```bash
+python -m PyInstaller --clean --noconfirm apps/packaging/pyinstaller/mothbot_desktop.spec
+```
+
+## 3) Build Artifacts
+
+Default output directory:
+
+- macOS: `AI/Mothbot/apps/dist/Mothbot.app`
+- Linux/Windows: `AI/Mothbot/apps/dist/Mothbot/`
+
+Main executable:
+
+- macOS: `apps/dist/Mothbot.app` (double-clickable app bundle)
+- Linux: `apps/dist/Mothbot/Mothbot`
+- Windows: `apps/dist/Mothbot/Mothbot.exe`
+
+## 3.1) macOS distributable release files
+
+After `build_desktop_macos.sh`, generate end-user artifacts:
+
+```bash
+bash apps/scripts/package_release_macos.sh
+```
+
+This creates:
+
+- `apps/release/Mothbot-<version>-macos-<arch>.zip`
+- `apps/release/Mothbot-<version>-macos-<arch>.dmg`
+- `apps/release/SHA256SUMS.txt`
+
+## 4) ExifTool Requirement
+
+`pipeline/insert_exif.py` requires `exiftool`.
+
+Resolution order:
+
+1. `MOTHBOT_EXIFTOOL_PATH` environment variable (if set)
+2. Bundled paths inside frozen app (`_MEIPASS`, Windows bundle folder)
+3. `exiftool` available in PATH
+
+If Exif insertion fails, set:
+
+```bash
+export MOTHBOT_EXIFTOOL_PATH="/full/path/to/exiftool"
+```
+
+Windows PowerShell:
+
+```powershell
+$env:MOTHBOT_EXIFTOOL_PATH="C:\full\path\to\exiftool.exe"
+```
+
+## 5) Smoke Test Checklist
+
+After build, verify:
+
+1. App starts and Gradio UI loads.
+2. Folder scan populates nightly folders.
+3. `Detect` runs and writes `_botdetection.json`.
+4. `ID` runs and writes classification metadata to JSON.
+5. `Insert Metadata` applies CSV metadata fields.
+6. `Cluster` runs (DINO model lazy-load works).
+7. `Insert Exif` runs with exiftool available.
+8. `Create Dataset` writes `samples.json`.
+9. `Generate CSV` exports CSV from `samples.json`.
+
+## 6) Known Risk Areas
+
+- Bundle size is large with Torch/FiftyOne.
+- CUDA builds are platform-specific and should be released separately from CPU builds.
+- FiftyOne/Mongo runtime behavior can vary across OS packaging environments.

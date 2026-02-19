@@ -110,8 +110,8 @@ def app():
                             toggle_all_btn = gr.Button(
                                 "Select All", size="sm", visible=False
                             )
-                        continue_detect_btn = gr.Button(
-                            "Continue to Detect",
+                        continue_process_btn = gr.Button(
+                            "Continue to Process",
                             variant="primary",
                             interactive=False,
                             visible=False,
@@ -138,6 +138,10 @@ def app():
                                     label="YOLO Model Path",
                                 )
                                 yolo_browse_btn = gr.Button("Browse", size="sm")
+                        advanced_mode = gr.Checkbox(
+                            label="Advanced mode",
+                            value=False,
+                        )
 
                 deployment_browse_btn.click(
                     fn=browse_deployment_folder,
@@ -151,7 +155,7 @@ def app():
                         folder_choices,
                         mapping_state,
                         toggle_label_state,
-                        continue_detect_btn,
+                        continue_process_btn,
                         selected_paths,
                         toggle_all_btn,
                     ],
@@ -164,7 +168,7 @@ def app():
                         folder_choices,
                         mapping_state,
                         toggle_label_state,
-                        continue_detect_btn,
+                        continue_process_btn,
                         selected_paths,
                         toggle_all_btn,
                     ],
@@ -192,7 +196,7 @@ def app():
                 ).then(
                     fn=confirm_selection,
                     inputs=[folder_choices, mapping_state],
-                    outputs=[selected_paths, continue_detect_btn],
+                    outputs=[selected_paths, continue_process_btn],
                 )
                 toggle_label_state.change(
                     lambda lbl: gr.update(value=lbl),
@@ -202,16 +206,16 @@ def app():
                 folder_choices.change(
                     fn=confirm_selection,
                     inputs=[folder_choices, mapping_state],
-                    outputs=[selected_paths, continue_detect_btn],
+                    outputs=[selected_paths, continue_process_btn],
                 )
-                continue_detect_btn.click(
-                    fn=go_to_detect_tab,
-                    inputs=[],
-                    outputs=[main_tabs],
+            # ~~~~~~~~~~~~ PROCESS TAB ~~~~~~~~~~~~~~~~~~~~~~
+            with gr.Tab("Process", id="process"):
+                process_output_box = gr.Textbox(
+                    label="Process Output", lines=20, interactive=False
                 )
 
             # ~~~~~~~~~~~~ DETECTION TAB ~~~~~~~~~~~~~~~~~~~~~~
-            with gr.Tab("Detect", id="detect"):
+            with gr.Tab("Detect", id="detect", visible=False) as detect_tab:
                 with gr.Row():
                     imgsz = gr.Number(
                         label="Yolo processing img size (should be same as yolo model) (leave default)",
@@ -244,7 +248,7 @@ def app():
                 )
 
             # ~~~~~~~~~~~~ IDENTIFICATION TAB ~~~~~~~~~~~~~~~~~~~~~~
-            with gr.Tab("ID", id="id"):
+            with gr.Tab("ID", id="id", visible=False) as id_tab:
                 with gr.Row():
                     with gr.Column():
                         radio = gr.Radio(
@@ -291,7 +295,7 @@ def app():
                 )
 
             # ~~~~~~~~~~~~ Metadata Tab ~~~~~~~~~~~~~~~~~~~~~~
-            with gr.Tab("Insert Metadata", id="metadata"):
+            with gr.Tab("Insert Metadata", id="metadata", visible=False) as metadata_tab:
                 metadata_run_btn = gr.Button("Insert Metadata", variant="primary")
                 metadata_output_box = gr.Textbox(
                     label="Insert Metadata Output", lines=20
@@ -304,7 +308,7 @@ def app():
                 )
 
             # ~~~~~~~~~~~~ Cluster Tab ~~~~~~~~~~~~~~~~~~~~~~
-            with gr.Tab("Cluster Perceptually", id="cluster"):
+            with gr.Tab("Cluster Perceptually", id="cluster", visible=False) as cluster_tab:
                 cluster_run_btn = gr.Button("Cluster Perceptually", variant="primary")
                 cluster_output_box = gr.Textbox(label="Cluster Output", lines=20)
 
@@ -315,7 +319,7 @@ def app():
                 )
 
             # ~~~~~~~~~~~~ Exif Tab ~~~~~~~~~~~~~~~~~~~~~~
-            with gr.Tab("Insert Exif", id="exif"):
+            with gr.Tab("Insert Exif", id="exif", visible=False) as exif_tab:
                 exif_run_btn = gr.Button("Insert Exif (Optional)", variant="primary")
                 exif_output_box = gr.Textbox(label="Insert Exif Output", lines=20)
 
@@ -324,6 +328,38 @@ def app():
                     inputs=[selected_paths],
                     outputs=exif_output_box,
                 )
+            advanced_mode.change(
+                fn=toggle_advanced_mode,
+                inputs=[advanced_mode],
+                outputs=[
+                    detect_tab,
+                    id_tab,
+                    metadata_tab,
+                    cluster_tab,
+                    exif_tab,
+                    main_tabs,
+                ],
+            )
+            continue_process_btn.click(
+                fn=go_to_process_tab,
+                inputs=[],
+                outputs=[main_tabs],
+            ).then(
+                fn=run_full_process,
+                inputs=[
+                    selected_paths,
+                    yolo_model_path,
+                    imgsz,
+                    OVERWRITE_PREV_BOT_DETECTIONS,
+                    species_path,
+                    taxa_output,
+                    ID_HUMANDETECTIONS,
+                    ID_BOTDETECTIONS,
+                    OVERWRITE_PREV_BOT_IDENTIFICATIONS,
+                    metadata_csv_file,
+                ],
+                outputs=process_output_box,
+            )
 
     return demo
 
@@ -432,32 +468,29 @@ def confirm_selection(selected_labels, mapping):
     return resolved, gr.update(interactive=bool(resolved))
 
 
-def go_to_detect_tab():
-    return gr.Tabs(selected="detect")
+def go_to_process_tab():
+    return gr.Tabs(selected="process")
 
 
 def go_to_id_tab():
     return gr.Tabs(selected="id")
 
 
+def toggle_advanced_mode(enabled):
+    visible = bool(enabled)
+    selected_tab = "setup" if visible else "process"
+    return (
+        gr.update(visible=visible),
+        gr.update(visible=visible),
+        gr.update(visible=visible),
+        gr.update(visible=visible),
+        gr.update(visible=visible),
+        gr.Tabs(selected=selected_tab),
+    )
+
+
 def get_index(selected_word):
     return TAXA_COLS.index(selected_word)
-
-
-def run_detection(selected_folders, yolo_model, imsz, overwrite_bot):
-    yield from _run_batch_pipeline(
-        selected_folders=selected_folders,
-        runner=Mothbot_Detect.run,
-        start_message="---🕵🏾‍♀️ Running detection for {folder} ---\n",
-        success_message="✅ Detection completed for {folder}\n",
-        finish_message="----------- Finished running Batch --------------",
-        kwargs_builder=lambda folder: {
-            "input_path": folder,
-            "yolo_model": yolo_model,
-            "imgsz": int(imsz),
-            "overwrite_prev_bot_detections": bool(overwrite_bot),
-        },
-    )
 
 
 def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bot):
@@ -544,6 +577,85 @@ def run_exif(selected_folders):
         finish_message="------  Insert Exif processing finished ------",
         kwargs_builder=lambda folder: {"input_path": folder},
     )
+
+
+def run_full_process(
+    selected_folders,
+    yolo_model,
+    imsz,
+    overwrite_bot_detections,
+    species_list,
+    chosenrank,
+    id_hum,
+    id_bot,
+    overwrite_bot_ids,
+    metadata_csv,
+):
+    if not selected_folders:
+        yield "No nightly folders selected.\n"
+        return
+
+    steps = [
+        (
+            "Detect",
+            Mothbot_Detect.run,
+            lambda folder: {
+                "input_path": folder,
+                "yolo_model": yolo_model,
+                "imgsz": int(imsz),
+                "overwrite_prev_bot_detections": bool(overwrite_bot_detections),
+            },
+        ),
+        (
+            "ID",
+            Mothbot_ID.run,
+            lambda folder: {
+                "input_path": folder,
+                "taxa_csv": species_list,
+                "rank": int(chosenrank),
+                "ID_Hum": bool(id_hum),
+                "ID_Bot": bool(id_bot),
+                "overwrite_prev_bot_ID": bool(overwrite_bot_ids),
+            },
+        ),
+        (
+            "Insert Metadata",
+            Mothbot_InsertMetadata.run,
+            lambda folder: {
+                "input_path": folder,
+                "metadata_path": str(metadata_csv),
+            },
+        ),
+        (
+            "Cluster",
+            Mothbot_Cluster.run,
+            lambda folder: {"input_path": folder},
+        ),
+        (
+            "Exif",
+            Mothbot_InsertExif.run,
+            lambda folder: {"input_path": folder},
+        ),
+    ]
+
+    output_log = ""
+    for step_name, runner, kwargs_builder in steps:
+        output_log += f"\n===== {step_name} =====\n"
+        yield output_log
+        for folder in selected_folders:
+            output_log += f"--- Running {step_name} for {folder} ---\n"
+            yield output_log
+            try:
+                for chunk in run_in_thread(runner, **kwargs_builder(folder)):
+                    output_log += chunk
+                    yield output_log
+                output_log += f"✅ {step_name} completed for {folder}\n"
+            except Exception as exc:
+                output_log += f"\n❌ Exception while processing {folder} in {step_name}: {exc}\n"
+            yield output_log
+
+    output_log += "\n------ Full processing finished ------"
+    yield output_log
 
 
 # ──────────────────────────────────────────────────────────────

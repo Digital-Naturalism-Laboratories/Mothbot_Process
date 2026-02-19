@@ -12,7 +12,7 @@ import sys
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
-project_dir = Path.cwd()
+project_dir = Path(SPECPATH).resolve().parents[2]
 ai_dir = project_dir.parent
 
 hiddenimports = []
@@ -62,6 +62,7 @@ for package_name in ["gradio", "safehttpx", "groovy", "open_clip", "bioclip"]:
 
 # Optional local files/directories that may or may not exist in every checkout.
 for src in [
+    project_dir / "artifacts",
     project_dir / "assets" / "favicon.png",
     project_dir / "Mothbox_Main_Metadata_Field_Sheet_Example - Form responses 1.csv",
     project_dir / "SpeciesList_CountryIndonesia_TaxaInsecta_doi.org10.15468dl.8p8wua.csv",
@@ -74,7 +75,7 @@ for src in [
             datas.append((str(src), "."))
 
 a = Analysis(
-    ["apps/desktop_main.py"],
+    [str(project_dir / "apps" / "desktop_main.py")],
     pathex=[str(project_dir)],
     binaries=[],
     datas=datas,

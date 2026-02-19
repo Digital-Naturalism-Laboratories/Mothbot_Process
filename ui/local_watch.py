@@ -45,7 +45,13 @@ def _has_changed(previous: dict[str, float], current: dict[str, float]) -> bool:
 
 
 def _start_ui_process() -> subprocess.Popen:
-    return subprocess.Popen([sys.executable, "-m", "ui.local_main"], cwd=Path(__file__).resolve().parent.parent)
+    env = dict(os.environ)
+    env["MOTHBOT_INBROWSER"] = "0"
+    return subprocess.Popen(
+        [sys.executable, "-m", "ui.local_main"],
+        cwd=Path(__file__).resolve().parent.parent,
+        env=env,
+    )
 
 
 def _stop_process(proc: subprocess.Popen | None) -> None:

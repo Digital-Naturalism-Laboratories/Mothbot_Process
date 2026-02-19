@@ -42,8 +42,17 @@ GEN_THUMBNAILS = True
 
 def load_yolo_model(model_path):
     """Load YOLO model with a PyTorch 2.6 compatibility fallback."""
+    resolved_model_path = str(Path(model_path).expanduser().resolve())
+    if not Path(resolved_model_path).is_file():
+        raise FileNotFoundError(
+            "YOLO model file not found at "
+            f"{resolved_model_path}. "
+            "Pick a valid local .pt file in Setup > YOLO Model Path. "
+            "Mothbot does not auto-download model weights during detection."
+        )
+
     try:
-        return YOLO(model_path)
+        return YOLO(resolved_model_path)
     except Exception as err:
         message = str(err)
         if "Weights only load failed" not in message:
@@ -66,7 +75,7 @@ def load_yolo_model(model_path):
             # PyTorch can force weights_only=True via env var regardless of callsite.
             os.environ["TORCH_FORCE_WEIGHTS_ONLY_LOAD"] = "0"
             os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
-            return YOLO(model_path)
+            return YOLO(resolved_model_path)
         finally:
             torch.load = original_torch_load
             if original_force_weights_only is None:

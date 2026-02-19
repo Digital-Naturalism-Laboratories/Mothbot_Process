@@ -23,6 +23,7 @@ import sys
 import json
 import argparse
 import re
+import inspect
 import numpy as np
 from PIL import Image
 from PIL import ImageFile
@@ -30,7 +31,8 @@ from PIL import ImageFile
 import torch
 from tqdm import tqdm
 import torchvision.transforms as T
-import hdbscan
+import sklearn.utils as sk_utils
+from sklearn.utils import validation as sk_validation
 from datetime import datetime, timedelta
 from collections import defaultdict
 ImageFile.LOAD_TRUNCATED_IMAGES = (
@@ -42,6 +44,26 @@ import json
 import warnings
 warnings.filterwarnings("ignore", message="xFormers is not available*")
 warnings.filterwarnings("ignore", message="'force_all_finite' was renamed")
+
+# Compatibility shim for older third-party libraries (e.g. hdbscan) that still
+# pass `force_all_finite` to scikit-learn's validation.check_array().
+_check_array_sig = inspect.signature(sk_validation.check_array)
+if (
+    "force_all_finite" not in _check_array_sig.parameters
+    and "ensure_all_finite" in _check_array_sig.parameters
+):
+    _original_check_array = sk_validation.check_array
+
+    def _check_array_compat(*args, force_all_finite=None, **kwargs):
+        if force_all_finite is not None and "ensure_all_finite" not in kwargs:
+            kwargs["ensure_all_finite"] = force_all_finite
+        return _original_check_array(*args, **kwargs)
+
+    sk_validation.check_array = _check_array_compat
+    if hasattr(sk_utils, "check_array"):
+        sk_utils.check_array = _check_array_compat
+
+import hdbscan
 
 from core.common import (
     find_date_folders,
@@ -121,8 +143,17 @@ def _ensure_dino_loaded():
     global _dino_model, _dino_transform
     if _dino_model is not None:
         return
+    # In frozen/desktop builds we avoid torch.hub network behavior and use
+    # the deterministic fallback embedding path instead.
+    if getattr(sys, "frozen", False):
+        raise RuntimeError("DINOv2 hub loading disabled in packaged app")
     device = get_device()
-    _dino_model = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14").to(device)
+    _dino_model = torch.hub.load(
+        "facebookresearch/dinov2",
+        "dinov2_vits14",
+        trust_repo=True,
+        skip_validation=True,
+    ).to(device)
     _dino_model.eval()
     _dino_transform = T.Compose([
         T.Resize(256),
@@ -143,11 +174,36 @@ def get_embedding(img_path):
     return feat.cpu().numpy().squeeze()
 
 
+def get_fallback_embedding(img_path):
+    """Local deterministic embedding when DINOv2 hub cannot be used."""
+    img = Image.open(img_path).convert("RGB").resize((64, 64))
+    arr = np.asarray(img, dtype=np.float32) / 255.0
+    # Compact histogram embedding per-channel (32 bins x RGB = 96 dims).
+    hist = []
+    for channel in range(3):
+        channel_hist, _ = np.histogram(arr[:, :, channel], bins=32, range=(0.0, 1.0))
+        hist.append(channel_hist.astype(np.float32))
+    feat = np.concatenate(hist)
+    norm = np.linalg.norm(feat)
+    return feat if norm == 0 else feat / norm
+
+
 def extract_embeddings(image_files):
     embeddings, filenames = [], []
+    use_fallback = False
+    try:
+        _ensure_dino_loaded()
+    except Exception as e:
+        use_fallback = True
+        print(
+            "⚠️ DINOv2 embedding model unavailable (offline/packaged mode likely). "
+            "Falling back to local histogram embeddings."
+        )
+        print(f"   details: {e}")
+
     for image_file in tqdm(image_files, desc="Extracting embeddings"):
         try:
-            feat = get_embedding(image_file)
+            feat = get_fallback_embedding(image_file) if use_fallback else get_embedding(image_file)
             embeddings.append(feat)
             filenames.append(image_file)
         except Exception as e:

@@ -4,7 +4,7 @@ This document covers CPU and CUDA packaging for the refactored in-process Mothbo
 
 ## 1) Install Dependencies
 
-Run all commands from `AI/Mothbot`.
+Run all commands from the repository root (`mothbot-detect`).
 
 Create and activate a packaging virtual environment first:
 
@@ -33,27 +33,45 @@ python -m venv .venv-packaging
 python -m pip install -e ".[cpu,packaging]"
 ```
 
+You can also use the Make targets (same behavior, shorter commands):
+
+```bash
+make setup         # CPU dependencies
+make gpu-setup     # optional CUDA 11.8 dependencies
+```
+
 ## 2) Build Commands
 
 ### macOS
 
 ```bash
-bash apps/scripts/build_desktop_macos.sh
+make build-macos
 ```
 
 ### Linux
 
 ```bash
-bash apps/scripts/build_desktop_linux.sh
+make build-linux
 ```
 
 ### Windows (PowerShell)
 
 ```powershell
+make build-windows
+```
+
+Direct script equivalents:
+
+```bash
+bash apps/scripts/build_desktop_macos.sh
+bash apps/scripts/build_desktop_linux.sh
+```
+
+```powershell
 .\apps\scripts\build_desktop_windows.ps1
 ```
 
-You can also run PyInstaller directly:
+You can also run PyInstaller directly (advanced):
 
 ```bash
 python -m PyInstaller --clean --noconfirm apps/packaging/pyinstaller/mothbot_desktop.spec
@@ -63,8 +81,8 @@ python -m PyInstaller --clean --noconfirm apps/packaging/pyinstaller/mothbot_des
 
 Default output directory:
 
-- macOS: `AI/Mothbot/apps/dist/Mothbot.app`
-- Linux/Windows: `AI/Mothbot/apps/dist/Mothbot/`
+- macOS: `apps/dist/Mothbot.app`
+- Linux/Windows: `apps/dist/Mothbot/`
 
 Main executable:
 
@@ -74,10 +92,10 @@ Main executable:
 
 ## 3.1) macOS distributable release files
 
-After `build_desktop_macos.sh`, generate end-user artifacts:
+After `make build-macos`, generate end-user artifacts:
 
 ```bash
-bash apps/scripts/package_release_macos.sh
+make package-macos
 ```
 
 This creates:

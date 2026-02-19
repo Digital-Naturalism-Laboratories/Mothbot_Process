@@ -151,6 +151,7 @@ make clean
 - Bundle size is large with Torch/FiftyOne.
 - CUDA builds are platform-specific and should be released separately from CPU builds.
 - FiftyOne/Mongo runtime behavior can vary across OS packaging environments.
+- Cross-OS desktop packaging is not supported by our current toolchain; in practice, Windows artifacts must be built on a Windows runner (we could not produce a reliable Windows build from macOS).
 
 ## 7) Desktop startup logs
 

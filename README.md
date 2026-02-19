@@ -59,3 +59,15 @@ Packaged desktop entrypoint:
 ## Documentation
 
 - Desktop packaging and release: `docs/DESKTOP_PACKAGING.md`
+
+## Desktop Releases (Tag-Based CI)
+
+Desktop release artifacts are built in GitHub Actions when you push a version tag (for example `v0.8.0`).
+
+Release flow:
+
+1. Merge release changes to `main`.
+2. Create and push a version tag: `git tag -a vX.Y.Z -m "Release vX.Y.Z"` then `git push origin vX.Y.Z`.
+3. Wait for the GitHub workflow to publish the release artifacts.
+
+For full release and local packaging steps, see `docs/DESKTOP_PACKAGING.md`.

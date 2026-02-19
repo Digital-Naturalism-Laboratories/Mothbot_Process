@@ -122,8 +122,26 @@ After build, verify:
 8. `Create Dataset` writes `samples.json`.
 9. `Generate CSV` exports CSV from `samples.json`.
 
+Useful cleanup:
+
+```bash
+make clean
+```
+
 ## 6) Known Risk Areas
 
 - Bundle size is large with Torch/FiftyOne.
 - CUDA builds are platform-specific and should be released separately from CPU builds.
 - FiftyOne/Mongo runtime behavior can vary across OS packaging environments.
+
+## 7) Desktop startup logs
+
+The desktop entrypoint writes startup logs to disk, including uncaught exceptions that can happen before the UI opens.
+
+Default log locations:
+
+- macOS: `~/Library/Logs/Mothbot/desktop.log`
+- Linux: `~/.local/state/mothbot/desktop.log`
+- Windows: `%LOCALAPPDATA%\Mothbot\logs\desktop.log`
+
+If the app icon bounces and the app closes, open this file and check the most recent stack trace at the end.

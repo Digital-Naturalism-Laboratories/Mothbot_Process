@@ -163,3 +163,41 @@ Default log locations:
 - Windows: `%LOCALAPPDATA%\Mothbot\logs\desktop.log`
 
 If the app icon bounces and the app closes, open this file and check the most recent stack trace at the end.
+
+## 8) Release a new version (GitHub tags + Actions)
+
+Desktop release builds for all three platforms (macOS, Linux, Windows) are run only when a Git tag is pushed:
+
+- Workflow: `.github/workflows/windows-desktop-build.yml`
+- Trigger: `push` tags matching `v*` (for example `v0.8.0`)
+- Output: a GitHub Release with uploaded build artifacts and a unified `SHA256SUMS.txt`
+
+Recommended release checklist:
+
+1. Ensure `pyproject.toml` has the new version.
+2. Commit version-related changes and merge to `main`.
+3. Create and push an annotated tag that matches the version:
+
+```bash
+git checkout main
+git pull
+git tag -a vX.Y.Z -m "Release vX.Y.Z"
+git push origin vX.Y.Z
+```
+
+4. Wait for the GitHub Actions workflow to finish for all 3 runners.
+5. Open GitHub Releases and verify the new release contains:
+   - macOS artifacts (`.zip`, `.dmg`)
+   - Linux artifact (`.zip`)
+   - Windows artifact (`.zip`)
+   - `SHA256SUMS.txt`
+6. Optionally validate one checksum locally after download:
+
+```bash
+shasum -a 256 -c SHA256SUMS.txt
+```
+
+Notes:
+
+- Keep the tag version and `pyproject.toml` version aligned.
+- The workflow can also be started manually with `workflow_dispatch` if needed, but the normal release path is pushing a new version tag.

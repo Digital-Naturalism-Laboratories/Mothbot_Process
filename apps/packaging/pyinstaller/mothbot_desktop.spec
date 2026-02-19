@@ -12,7 +12,17 @@ import sys
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
-project_dir = Path(SPECPATH).resolve().parents[2]
+
+def _resolve_project_dir():
+    spec_dir = Path(SPECPATH).resolve()
+    for candidate in (spec_dir, *spec_dir.parents):
+        if (candidate / "pyproject.toml").exists():
+            return candidate
+    # Fallback to current layout if pyproject discovery fails.
+    return spec_dir.parents[2]
+
+
+project_dir = _resolve_project_dir()
 ai_dir = project_dir.parent
 
 hiddenimports = []

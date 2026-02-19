@@ -1,0 +1,61 @@
+name: Windows Desktop Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Show tool versions
+        shell: pwsh
+        run: |
+          python --version
+          pip --version
+          pwsh --version
+
+      - name: Build Windows desktop app
+        shell: pwsh
+        run: |
+          ./apps/scripts/build_desktop_windows.ps1
+
+      - name: Validate Windows executable exists
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "apps/dist/Mothbot/Mothbot.exe")) {
+            Write-Error "Missing expected executable: apps/dist/Mothbot/Mothbot.exe"
+          }
+
+      - name: Upload Windows dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mothbot-windows-dist
+          path: apps/dist/Mothbot
+          if-no-files-found: error
+
+      - name: Upload release metadata if present
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mothbot-release-metadata
+          path: apps/release
+          if-no-files-found: ignore

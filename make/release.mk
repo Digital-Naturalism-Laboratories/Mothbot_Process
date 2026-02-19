@@ -23,6 +23,16 @@ build-linux:
 	bash apps/scripts/build_desktop_linux.sh
 
 build-windows:
+	@if [ "$$OS" != "Windows_NT" ]; then \
+		echo "build-windows must be run on Windows (PowerShell)."; \
+		echo "Current host is non-Windows."; \
+		echo "Use a Windows machine/runner, or run make build-macos / make build-linux on this host."; \
+		exit 1; \
+	fi
+	@if ! command -v pwsh >/dev/null 2>&1; then \
+		echo "PowerShell (pwsh) is required. Install PowerShell 7+ and re-run."; \
+		exit 1; \
+	fi
 	pwsh -File apps/scripts/build_desktop_windows.ps1
 
 package-macos:

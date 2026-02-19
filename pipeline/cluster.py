@@ -16,7 +16,10 @@ Arguments:
 
 """
 import ssl
-ssl._create_default_https_context = ssl._create_unverified_context #needed for some macs to automatically download files associated with some of the libraries 
+
+ssl._create_default_https_context = (
+    ssl._create_unverified_context
+)  # needed for some macs to automatically download files associated with some of the libraries
 # import polars as pl
 import os
 import sys
@@ -27,7 +30,8 @@ import inspect
 import numpy as np
 from PIL import Image
 from PIL import ImageFile
-#perception clustering
+
+# perception clustering
 import torch
 from tqdm import tqdm
 import torchvision.transforms as T
@@ -35,13 +39,16 @@ import sklearn.utils as sk_utils
 from sklearn.utils import validation as sk_validation
 from datetime import datetime, timedelta
 from collections import defaultdict
+
 ImageFile.LOAD_TRUNCATED_IMAGES = (
     True  # makes ok for use images that are messed up slightly
 )
 import torch
 import json
-#import PIL.Image
+
+# import PIL.Image
 import warnings
+
 warnings.filterwarnings("ignore", message="xFormers is not available*")
 warnings.filterwarnings("ignore", message="'force_all_finite' was renamed")
 
@@ -78,11 +85,9 @@ from core.common import (
 
 # ~~~~Variables to Change~~~~~~~
 
-INPUT_PATH = (
-   r"C:\Users\andre\Desktop\donald\2022-01-11"  # raw string
-)
+INPUT_PATH = r"C:\Users\andre\Desktop\donald\2022-01-11"  # raw string
 
-#you probably always want these below as true
+# you probably always want these below as true
 ID_HUMANDETECTIONS = True
 ID_BOTDETECTIONS = True
 
@@ -91,6 +96,7 @@ image_embeddings_path = INPUT_PATH + "/image_embeddings.npy"
 embedding_labels_path = INPUT_PATH + "/embedding_labels.json"
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -121,8 +127,8 @@ def parse_args():
         help="ID detections made by robots?",
     )
 
-
     return parser.parse_args()
+
 
 # FUNCTIONS ~~~~~~~~~~~~~
 
@@ -138,6 +144,7 @@ def parse_args():
 # --------------------------
 _dino_model = None
 _dino_transform = None
+
 
 def _ensure_dino_loaded():
     global _dino_model, _dino_transform
@@ -155,12 +162,15 @@ def _ensure_dino_loaded():
         skip_validation=True,
     ).to(device)
     _dino_model.eval()
-    _dino_transform = T.Compose([
-        T.Resize(256),
-        T.CenterCrop(224),
-        T.ToTensor(),
-        T.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
-    ])
+    _dino_transform = T.Compose(
+        [
+            T.Resize(256),
+            T.CenterCrop(224),
+            T.ToTensor(),
+            T.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
+        ]
+    )
+
 
 # --------------------------
 # 2. Extract embeddings
@@ -203,12 +213,17 @@ def extract_embeddings(image_files):
 
     for image_file in tqdm(image_files, desc="Extracting embeddings"):
         try:
-            feat = get_fallback_embedding(image_file) if use_fallback else get_embedding(image_file)
+            feat = (
+                get_fallback_embedding(image_file)
+                if use_fallback
+                else get_embedding(image_file)
+            )
             embeddings.append(feat)
             filenames.append(image_file)
         except Exception as e:
             print(f"⚠️ Skipping {image_file}: {e}")
     return np.array(embeddings)
+
 
 def extract_embeddings_from_folder(image_folder):
     embeddings, filenames = [], []
@@ -224,15 +239,16 @@ def extract_embeddings_from_folder(image_folder):
             print(f"⚠️ Skipping {fname}: {e}")
     return np.array(embeddings), filenames
 
+
 # --------------------------
 # 3. Cluster with HDBSCAN
 # --------------------------
 def cluster_embeddings(embeddings):
     clusterer = hdbscan.HDBSCAN(
-        min_cluster_size=3,          # smaller clusters allowed
-        min_samples=1,               # fewer items marked as noise
+        min_cluster_size=3,  # smaller clusters allowed
+        min_samples=1,  # fewer items marked as noise
         cluster_selection_epsilon=0.05,  # expand clusters slightly
-        metric="euclidean"
+        metric="euclidean",
     )
     labels = clusterer.fit_predict(embeddings)
 
@@ -242,15 +258,18 @@ def cluster_embeddings(embeddings):
         unique_labels.remove(-1)
     n_clusters = len(unique_labels)
 
-    print(f"✅ The clusterer (HDBSCAN() created {n_clusters} clusters of similar insect photos (and {np.sum(labels == -1)} noise points - ie insect photos that were unique).")
+    print(
+        f"✅ The clusterer (HDBSCAN() created {n_clusters} clusters of similar insect photos (and {np.sum(labels == -1)} noise points - ie insect photos that were unique)."
+    )
 
     return labels
+
 
 # --------------------------
 # 4. Write cluster to JSON
 # --------------------------
 def write_cluster_to_json(filepaths, json_paths, idxes, labels):
-    for fname,json_path,i, label in zip(filepaths, json_paths,idxes, labels):
+    for fname, json_path, i, label in zip(filepaths, json_paths, idxes, labels):
         try:
             with open(json_path, "r") as f:
                 data = json.load(f)
@@ -260,12 +279,10 @@ def write_cluster_to_json(filepaths, json_paths, idxes, labels):
                 shape["timestamp_cluster"] = current_timestamp()
             with open(json_path, "w") as f:
                 json.dump(data, f, indent=4)
-            
+
         except Exception as e:
             print(f"⚠️ Could not update {fname}: {e}")
     print("✅ Cluster IDs written into 'Json' field.")
-
-
 
 
 # Subcluster through TIME
@@ -296,10 +313,11 @@ def temporal_subclusters(
         if cl != -1:  # skip noise
             cluster_to_indices[cl].append(idx)
 
-
     # Regex patterns for both schemes
-    pattern_A = re.compile(r"(\d{4}_\d{2}_\d{2}__\d{2}_\d{2}_\d{2})")   # YYYY_MM_DD__HH_MM_SS
-    pattern_B = re.compile(r"(\d{14})")                                 # YYYYMMDDHHMMSS
+    pattern_A = re.compile(
+        r"(\d{4}_\d{2}_\d{2}__\d{2}_\d{2}_\d{2})"
+    )  # YYYY_MM_DD__HH_MM_SS
+    pattern_B = re.compile(r"(\d{14})")  # YYYYMMDDHHMMSS
 
     for cluster_id, indices in cluster_to_indices.items():
         timestamps = []
@@ -356,15 +374,16 @@ def temporal_subclusters(
 
 # Maybe this?
 def Cluster_matched_img_json_pairs(
-    hu_matched_img_json_pairs,bot_matched_img_json_pairs,  device):
+    hu_matched_img_json_pairs, bot_matched_img_json_pairs, device
+):
 
-    #Process Human Detections
+    # Process Human Detections
     print("processing Human Detections.........")
     patch_paths_hu = []  # define this once before your loop
     json_paths_hu = []
     idx_paths_hu = []
 
-    if(ID_HUMANDETECTIONS):
+    if ID_HUMANDETECTIONS:
         # Next process each pair and generate temporary files for the ROI of each detection in each image
         # Iterate through image-JSON pairs
         index = 0
@@ -374,7 +393,7 @@ def Cluster_matched_img_json_pairs(
             # Load JSON file and extract rotated rectangle coordinates for each detection
             image_path, json_path = pair[:2]  # Always extract the first two elements
 
-            coordinates_of_detections_list, was_pre_ided_list,thepatch_list = (
+            coordinates_of_detections_list, was_pre_ided_list, thepatch_list = (
                 get_rotated_rect_raw_coordinates(json_path)
             )
             index = index + 1
@@ -388,20 +407,21 @@ def Cluster_matched_img_json_pairs(
             )
             if coordinates_of_detections_list:
                 for idx, coordinates in enumerate(coordinates_of_detections_list):
-                    #add path to list of patches for perceptual processing
-                    patchfullpath=os.path.dirname(image_path)+"/"+ thepatch_list[idx]
+                    # add path to list of patches for perceptual processing
+                    patchfullpath = (
+                        os.path.dirname(image_path) + "/" + thepatch_list[idx]
+                    )
 
                     patch_paths_hu.append(patchfullpath)
                     json_paths_hu.append(json_path)
                     idx_paths_hu.append(idx)
 
-
-    #Process BOT Detections
+    # Process BOT Detections
     print("processing BOT Detections.........")
     patch_paths_bots = []  # define this once before your loop
     json_paths_bots = []
     idx_paths_bots = []
-    if(ID_BOTDETECTIONS):
+    if ID_BOTDETECTIONS:
         # Next process each pair and generate temporary files for the ROI of each detection in each image
         # Iterate through image-JSON pairs
         index = 0
@@ -411,7 +431,7 @@ def Cluster_matched_img_json_pairs(
             # Load JSON file and extract rotated rectangle coordinates for each detection
             image_path, json_path = pair[:2]  # Always extract the first two elements
 
-            coordinates_of_detections_list, was_pre_ided_list,thepatch_list  = (
+            coordinates_of_detections_list, was_pre_ided_list, thepatch_list = (
                 get_rotated_rect_raw_coordinates(json_path)
             )
             index = index + 1
@@ -425,29 +445,35 @@ def Cluster_matched_img_json_pairs(
             )
             if coordinates_of_detections_list:
                 for idx, coordinates in enumerate(coordinates_of_detections_list):
-                    patchfullpath=os.path.dirname(image_path)+"/"+ thepatch_list[idx]
+                    patchfullpath = (
+                        os.path.dirname(image_path) + "/" + thepatch_list[idx]
+                    )
 
-                    #add path to list of patches for later perceptual processing
+                    # add path to list of patches for later perceptual processing
                     patch_paths_bots.append(patchfullpath)
                     json_paths_bots.append(json_path)
                     idx_paths_bots.append(idx)
 
     # ~~~~~~~~~~~~~ PERCEPTUAL PROCESSING ~~~~~~~~~~~~~~~~~~~~~~~~
-    #process perceptual similarities for bot and hu detections
+    # process perceptual similarities for bot and hu detections
 
-    #Hu detections first
-    if(len(patch_paths_hu)>0):
+    # Hu detections first
+    if len(patch_paths_hu) > 0:
         embeddings = extract_embeddings(patch_paths_hu)
         labels = cluster_embeddings(embeddings)
-        #save_clusters(input_folder, filenames, labels, output_folder)
-        labels=temporal_subclusters(patch_paths_hu, json_paths_hu, idx_paths_hu, labels)
+        # save_clusters(input_folder, filenames, labels, output_folder)
+        labels = temporal_subclusters(
+            patch_paths_hu, json_paths_hu, idx_paths_hu, labels
+        )
         write_cluster_to_json(patch_paths_hu, json_paths_hu, idx_paths_hu, labels)
-    
-    #bot detections first
-    if(len(patch_paths_bots)>0):
+
+    # bot detections first
+    if len(patch_paths_bots) > 0:
         embeddings = extract_embeddings(patch_paths_bots)
         labels = cluster_embeddings(embeddings)
-        labels=temporal_subclusters(patch_paths_bots, json_paths_bots, idx_paths_bots, labels)
+        labels = temporal_subclusters(
+            patch_paths_bots, json_paths_bots, idx_paths_bots, labels
+        )
         write_cluster_to_json(patch_paths_bots, json_paths_bots, idx_paths_bots, labels)
 
 
@@ -504,9 +530,9 @@ def run(input_path, ID_Hum=True, ID_Bot=True):
     )
     # Example Pair
     print("example human detection and json pair:")
-    if(len(hu_matched_img_json_pairs)>0):
+    if len(hu_matched_img_json_pairs) > 0:
         print(hu_matched_img_json_pairs[0])
-  
+
     print(
         "Found ",
         str(len(bot_matched_img_json_pairs))
@@ -514,9 +540,8 @@ def run(input_path, ID_Hum=True, ID_Bot=True):
     )
     # Example Pair
     print("example human detection and json pair:")
-    if(len(bot_matched_img_json_pairs)>0):
+    if len(bot_matched_img_json_pairs) > 0:
         print(bot_matched_img_json_pairs[0])
-
 
     # ~~~~~~~~~~~~~~~~ Processing Data ~~~~~~~~~~~~~~~~~~~~~~~~~~
 

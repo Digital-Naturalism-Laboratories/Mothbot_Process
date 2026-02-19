@@ -9,7 +9,7 @@ import re
 
 from core.common import find_date_folders, scan_for_images
 
-INPUT_PATH = r'F:\Panama\PEA_PeaPorch_AdeptTurca_2024-09-01\2024-09-01'
+INPUT_PATH = r"F:\Panama\PEA_PeaPorch_AdeptTurca_2024-09-01\2024-09-01"
 
 
 def crop_rect(
@@ -30,12 +30,13 @@ def crop_rect(
     # now rotated rectangle becomes vertical, and we crop it
     img_crop = cv2.getRectSubPix(img_rot, size, center)
 
-    return img_crop #, img_rot
+    return img_crop  # , img_rot
 
 
-
-#TODO - save patch_img width and height along with file path
-def generateThumbnailPatches_JSON(image_path, json_data, patch_folder, skip_existing=True):
+# TODO - save patch_img width and height along with file path
+def generateThumbnailPatches_JSON(
+    image_path, json_data, patch_folder, skip_existing=True
+):
     # Load the image using OpenCV
     model_name = json_data.get("version")
     if not model_name.startswith("Mothbot"):
@@ -50,11 +51,13 @@ def generateThumbnailPatches_JSON(image_path, json_data, patch_folder, skip_exis
         filename = os.path.basename(image_path)
         patchfilename = f"{filename.split('.')[0]}_{shape_index}_{model_name}.{filename.split('.')[1]}"
         patchfullpath = Path(patch_folder) / patchfilename
-        
+
         # Update the shape with the patch path
         shape["patch_path"] = f"patches/{patchfilename}"
 
-        if os.path.exists(patchfullpath) and skip_existing:  # Skip if the thumbnail already exists
+        if (
+            os.path.exists(patchfullpath) and skip_existing
+        ):  # Skip if the thumbnail already exists
             print("Thumbnail exists, skipping")
         else:
             # Check if the image is already loaded
@@ -86,26 +89,34 @@ def generateThumbnailPatches_JSON(image_path, json_data, patch_folder, skip_exis
     loaded_images.clear()
     return json_data
 
-def generateThumbnailPatches(img,thefilepath,rectangle,detnum, modelname):
 
-    filename=os.path.basename(thefilepath)
+def generateThumbnailPatches(img, thefilepath, rectangle, detnum, modelname):
+
+    filename = os.path.basename(thefilepath)
     directory_path = os.path.dirname(thefilepath)
-    patch_folder_path=Path(directory_path+"/patches")
+    patch_folder_path = Path(directory_path + "/patches")
     patch_folder_path.mkdir(parents=True, exist_ok=True)
 
-    patchfilename=filename.split('.')[0] + "_" + str(detnum) + "_" + modelname+"." +filename.split('.')[1]
-    patchfullpath = Path(patch_folder_path) / f'{patchfilename}' 
+    patchfilename = (
+        filename.split(".")[0]
+        + "_"
+        + str(detnum)
+        + "_"
+        + modelname
+        + "."
+        + filename.split(".")[1]
+    )
+    patchfullpath = Path(patch_folder_path) / f"{patchfilename}"
 
     # img_crop will the cropped rectangle
-    img_crop= crop_rect(img, rectangle)
-
+    img_crop = crop_rect(img, rectangle)
 
     cv2.imwrite(
         patchfullpath,
         img_crop,
     )
-    patchpath= f"patches/{patchfilename}"
-    return  patchpath
+    patchpath = f"patches/{patchfilename}"
+    return patchpath
 
 
 def process_images(img_files, date_folder):
@@ -114,11 +125,10 @@ def process_images(img_files, date_folder):
     # Get total number of JPEG files
     total_img_files = len(img_files)
 
-    patch_folder_path=Path(date_folder+"/patches")
+    patch_folder_path = Path(date_folder + "/patches")
     patch_folder_path.mkdir(parents=True, exist_ok=True)
 
-
-    for idx,filename in enumerate(img_files):
+    for idx, filename in enumerate(img_files):
 
         image_path = os.path.join(date_folder, filename)
         json_path = os.path.join(date_folder, filename[:-4] + ".json")
@@ -130,7 +140,6 @@ def process_images(img_files, date_folder):
         # Print progress
         print(f"({progress:.2f}%) Processing:  {filename} ")
 
-
         # **Check 0: Ensure the image file has more than 0 bytes**
         if not os.path.isfile(image_path) or os.path.getsize(image_path) == 0:
             print(f"Skipping {filename}: Image file is missing or empty.")
@@ -139,16 +148,20 @@ def process_images(img_files, date_folder):
         # **Check 1: Check if JSON file exists and if it's an automated Mothbot file**
         is_ground_truth_detection = False
         if os.path.isfile(json_path):
-            is_ground_truth_detection=True
+            is_ground_truth_detection = True
             print(json_path)
             print("Json exists for this image file")
 
             try:
-                with open(json_path, 'r') as json_file:
+                with open(json_path, "r") as json_file:
                     json_data = json.load(json_file)
-                    #print(json_data)
+                    # print(json_data)
                     print("creating thumbnails for img+json pair")
-                    generateThumbnailPatches_JSON(image_path, json_data, patch_folder_path,)
+                    generateThumbnailPatches_JSON(
+                        image_path,
+                        json_data,
+                        patch_folder_path,
+                    )
 
             except json.JSONDecodeError:
                 print(f"{filename}: Corrupted JSON file.")

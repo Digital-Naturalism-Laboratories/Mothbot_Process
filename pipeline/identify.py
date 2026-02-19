@@ -25,7 +25,10 @@ Arguments:
 
 """
 import ssl
-ssl._create_default_https_context = ssl._create_unverified_context #needed for some macs to automatically download files associated with some of the libraries 
+
+ssl._create_default_https_context = (
+    ssl._create_unverified_context
+)  # needed for some macs to automatically download files associated with some of the libraries
 import polars as pl
 import os
 import sys
@@ -39,13 +42,15 @@ from PIL import Image
 from PIL import ImageFile
 import torch
 from datetime import datetime
+
 ImageFile.LOAD_TRUNCATED_IMAGES = (
     True  # makes ok for use images that are messed up slightly
 )
 from bioclip import TreeOfLifeClassifier, Rank, CustomLabelsClassifier
 from bioclip.predict import create_classification_dict
 import importlib.metadata
-VERSION = "pybioclip_"+importlib.metadata.version("pybioclip")
+
+VERSION = "pybioclip_" + importlib.metadata.version("pybioclip")
 
 from core.common import (
     find_date_folders,
@@ -59,9 +64,7 @@ from core.common import (
 
 # ~~~~Variables to Change~~~~~~~
 
-INPUT_PATH = (
-   r"D:\MothboxData_Hubert\data\Panama\Hoya_119m_bothDeer_2025-01-26\2025-01-26"  # raw string
-)
+INPUT_PATH = r"D:\MothboxData_Hubert\data\Panama\Hoya_119m_bothDeer_2025-01-26\2025-01-26"  # raw string
 SPECIES_LIST = r"../SpeciesList_CountryPanamaCostaRica_TaxaInsecta_doi.org10.15468dl.6nxkw6.csv"  # downloaded from GBIF for example just insects in panama: https://www.gbif.org/occurrence/taxonomy?country=PA&taxon_key=212
 
 
@@ -73,12 +76,12 @@ SPECIES_LIST = r"../SpeciesList_CountryPanamaCostaRica_TaxaInsecta_doi.org10.154
     GENUS = 5
     SPECIES = 6"""
 
-TAXONOMIC_RANK_FILTER_num = 3 #!!! change this number to change the taxonomic rank we filter with. IE filter to order with "3" or filter to genus with "5"
+TAXONOMIC_RANK_FILTER_num = 3  #!!! change this number to change the taxonomic rank we filter with. IE filter to order with "3" or filter to genus with "5"
 
-# you can See if a json file has an existing ID by looking at identifier_bot: pybioclip  
-OVERWRITE_EXISTING_IDs = True #True
+# you can See if a json file has an existing ID by looking at identifier_bot: pybioclip
+OVERWRITE_EXISTING_IDs = True  # True
 
-#you probably always want these below as true
+# you probably always want these below as true
 ID_HUMANDETECTIONS = True
 ID_BOTDETECTIONS = True
 # ~~~~Other Global Variables~~~~~~~
@@ -92,9 +95,10 @@ taxa_path = SPECIES_LIST
 # Paths to save filtered list of embeddings/labels
 image_embeddings_path = INPUT_PATH + "/image_embeddings.npy"
 embedding_labels_path = INPUT_PATH + "/embedding_labels.json"
-#print(torch.cuda.is_available())
+# print(torch.cuda.is_available())
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-DOI= ""
+DOI = ""
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -107,13 +111,13 @@ def parse_args():
     parser.add_argument(
         "--TOLrank",
         default=TOL_TAXONOMIC_RANK,
-        #help="rank to which to classify; must be column in --taxa-csv (default: {TAXONOMIC_RANK})", #this always needs to just be left at species i think
+        # help="rank to which to classify; must be column in --taxa-csv (default: {TAXONOMIC_RANK})", #this always needs to just be left at species i think
     )
 
     parser.add_argument(
         "--rank",
         default=TAXONOMIC_RANK_FILTER_num,
-        help="rank to which to classify; must be column in --taxa-csv (default: {TAXONOMIC_RANK})", 
+        help="rank to which to classify; must be column in --taxa-csv (default: {TAXONOMIC_RANK})",
     )
     parser.add_argument(
         "--flag-det-errors",
@@ -159,9 +163,13 @@ def parse_args():
 
     return parser.parse_args()
 
+
 # FUNCTIONS ~~~~~~~~~~~~~
 
-def load_taxon_keys(taxa_path, taxa_cols=None, taxon_rank="order", flag_det_errors=True):
+
+def load_taxon_keys(
+    taxa_path, taxa_cols=None, taxon_rank="order", flag_det_errors=True
+):
     """
     Read taxa_path (path, bytes, or file-like) robustly handling encoding issues
     and return a set of unique, lowercased values for taxon_rank.
@@ -229,6 +237,7 @@ def load_taxon_keys(taxa_path, taxa_cols=None, taxon_rank="order", flag_det_erro
         except Exception:
             # final fallback: use pandas to parse then convert to polars
             import pandas as pd
+
             df_pd = pd.read_csv(io.StringIO(text), sep="\t")
             df = pl.from_pandas(df_pd)
 
@@ -246,12 +255,16 @@ def load_taxon_keys(taxa_path, taxa_cols=None, taxon_rank="order", flag_det_erro
             # keep chosen_col if it exists
             pass
         else:
-            raise KeyError(f"taxon_rank '{taxon_rank}' not found in file columns: {list(df.columns)}")
+            raise KeyError(
+                f"taxon_rank '{taxon_rank}' not found in file columns: {list(df.columns)}"
+            )
 
     # Extract unique non-null values and normalize to lowercase strings
     try:
         vals = df[chosen_col].drop_nulls().unique().to_list()
-        target_values = {str(v).lower() for v in vals if v is not None and str(v).strip() != ""}
+        target_values = {
+            str(v).lower() for v in vals if v is not None and str(v).strip() != ""
+        }
     except Exception:
         # conservative fallback: iterate rows if the vectorized route fails
         vals = []
@@ -264,9 +277,12 @@ def load_taxon_keys(taxa_path, taxa_cols=None, taxon_rank="order", flag_det_erro
     print("Found", len(target_values), taxon_rank, "values.")
     return target_values
 
+
 def load_taxon_keys_old(taxa_path, taxa_cols, taxon_rank="order", flag_det_errors=True):
     print("Reading", taxa_path, "extracting", taxon_rank, "values.")
-    df = pl.read_csv(taxa_path, separator='\t')  # Changed separator to '\t' for tab-delimited
+    df = pl.read_csv(
+        taxa_path, separator="\t"
+    )  # Changed separator to '\t' for tab-delimited
     target_values = set(
         pl.Series(df.select(taxon_rank).drop_nulls())
         .str.to_lowercase()
@@ -274,12 +290,14 @@ def load_taxon_keys_old(taxa_path, taxa_cols, taxon_rank="order", flag_det_error
         .to_list()
     )
     print("Found", len(target_values), taxon_rank, "values: ")
-    #print(target_values)
-  
+    # print(target_values)
+
     return target_values
 
 
-def load_taxon_keys_comma(taxa_path, taxa_cols, taxon_rank="order", flag_det_errors=True):
+def load_taxon_keys_comma(
+    taxa_path, taxa_cols, taxon_rank="order", flag_det_errors=True
+):
     """
     Loads taxon keys from a Comma-delimited CSV file into a list.
 
@@ -301,11 +319,12 @@ def load_taxon_keys_comma(taxa_path, taxa_cols, taxon_rank="order", flag_det_err
         .to_list()
     )
     print("Found", len(target_values), taxon_rank, "values: ")
-    #print(target_values)
+    # print(target_values)
 
     return target_values
 
-#We don't use this function much anymore
+
+# We don't use this function much anymore
 def process_files_in_directory(data_path, classifier, taxon_rank="order"):
     """
     Processes files within a specified subdirectory.
@@ -376,6 +395,7 @@ def rotate_image_to_vertical(image, angle):
     image = image.rotate(-angle, expand=True)
     return image
 
+
 """ 
 #don't use anymore
 def crop_rect(
@@ -398,6 +418,7 @@ def crop_rect(
 
     return img_crop, img_rot
  """
+
 
 # not sure we use this anymore
 def rotate_cropped(img, points):
@@ -468,7 +489,8 @@ def calculate_rotation_angle(points):
     angle = np.arctan2(p2[1] - p1[1], p2[0] - p1[0]) * 180 / np.pi
     return angle
 
-#not sure we use this
+
+# not sure we use this
 def rotate_image_around_center(image, angle):
     """Rotates an image around its center by the specified angle."""
     cv_image = np.array(image)
@@ -490,7 +512,8 @@ def crop_image(image, x, y, w, h):
     cropped_image = image.crop((x, y, x + w, y + h))
     return cropped_image
 
-#not sure this is being used
+
+# not sure this is being used
 def warp_rotation(img, points):
     # cnt = np.array(points)
     cnt = np.array([[int(x), int(y)] for x, y in points])
@@ -526,7 +549,6 @@ def warp_rotation(img, points):
     return warped
 
 
-
 def get_bioclip_prediction(img_path, classifier):
 
     # Run inference
@@ -549,16 +571,18 @@ def get_bioclip_prediction_imgpath(img, classifier):
     winnerprob = ""
 
     img_embeddings = classifier.create_image_features(images)
-    for probs in classifier.create_probabilities(img_embeddings, classifier.txt_embeddings):
+    for probs in classifier.create_probabilities(
+        img_embeddings, classifier.txt_embeddings
+    ):
         topk = probs.topk(k=5)
         index = 0
         for pred in classifier.format_grouped_probs(
             "", probs, rank=TAXONOMIC_RANK_FILTER, min_prob=1e-9, k=5
         ):  # TODO make it so tags get saved for all ranks, and specify deepest rank? #this shows the depth of the order it searches to
-            #print(pred)
+            # print(pred)
             if index == 0:
                 kingdom = pred["kingdom"]
-                #print(str(TAXONOMIC_RANK_FILTER.get_label()))
+                # print(str(TAXONOMIC_RANK_FILTER.get_label()))
                 winner = pred[
                     str(TAXONOMIC_RANK_FILTER.get_label())
                 ]  # get the correct ID based on the deepest order we are searching
@@ -571,7 +595,6 @@ def get_bioclip_prediction_imgpath(img, classifier):
     return winner, winnerprob, winningdict
 
 
-
 def get_bioclip_prediction_PILimg(img, classifier):
     # create a PIL image array
     images = [img]
@@ -579,16 +602,18 @@ def get_bioclip_prediction_PILimg(img, classifier):
     winnerprob = ""
 
     img_embeddings = classifier.create_image_features(images)
-    for probs in classifier.create_probabilities(img_embeddings, classifier.txt_embeddings):
+    for probs in classifier.create_probabilities(
+        img_embeddings, classifier.txt_embeddings
+    ):
         topk = probs.topk(k=5)
         index = 0
         for pred in classifier.format_grouped_probs(
             "", probs, rank=TAXONOMIC_RANK_FILTER, min_prob=1e-9, k=5
         ):  # TODO make it so tags get saved for all ranks, and specify deepest rank? #this shows the depth of the order it searches to
-            #print(pred)
+            # print(pred)
             if index == 0:
                 kingdom = pred["kingdom"]
-                #print(str(TAXONOMIC_RANK_FILTER.get_label()))
+                # print(str(TAXONOMIC_RANK_FILTER.get_label()))
                 winner = pred[
                     str(TAXONOMIC_RANK_FILTER.get_label())
                 ]  # get the correct ID based on the deepest order we are searching
@@ -616,24 +641,24 @@ def update_json_labels_and_scores(json_path, index, pred, conf, winningdict):
 
     if 0 <= index < len(data["shapes"]):
         shape = data["shapes"][index]
-        
+
         # do stuff here now
         shape["identifier_bot"] = VERSION
-        shape["species_list"]= DOI
-        shape["timestamp_ID_bot"]=current_timestamp()
+        shape["species_list"] = DOI
+        shape["timestamp_ID_bot"] = current_timestamp()
         shape["confidence_ID"] = conf
-
-
 
         predstring = str(pred).strip().lower()
         if predstring in ["hole", "background", "wall", "floor", "blank", "sky"]:
             shape["label"] = "ERROR_" + pred
-        else:            
-            shape["label"] = str(TAXONOMIC_RANK_FILTER).replace("Rank.", "") + "_" + pred
+        else:
+            shape["label"] = (
+                str(TAXONOMIC_RANK_FILTER).replace("Rank.", "") + "_" + pred
+            )
 
-        #shape["description"] = (
+        # shape["description"] = (
         #    VERSION  # Put what Robot did the ID, put "" for human / ground_truth
-        #)
+        # )
 
         # Add taxonomic ranks only if they exist in the winningdict
         for rank in [
@@ -646,9 +671,16 @@ def update_json_labels_and_scores(json_path, index, pred, conf, winningdict):
             "species",
         ]:
             if rank in winningdict:
-                if winningdict[rank].strip().lower() in ["hole", "background", "wall", "floor", "blank", "sky"]:
+                if winningdict[rank].strip().lower() in [
+                    "hole",
+                    "background",
+                    "wall",
+                    "floor",
+                    "blank",
+                    "sky",
+                ]:
                     shape[rank] = "ERROR_" + winningdict[rank]
-                else:    
+                else:
                     shape[rank] = winningdict[rank]
 
     with open(json_path, "w") as f:
@@ -692,8 +724,14 @@ def fixed_get_txt_names(self):
 
 
 def ID_matched_img_json_pairs(
-    hu_matched_img_json_pairs,bot_matched_img_json_pairs, taxa_path, taxa_cols, taxon_rank, device, flag_the_det_errors):
-
+    hu_matched_img_json_pairs,
+    bot_matched_img_json_pairs,
+    taxa_path,
+    taxa_cols,
+    taxon_rank,
+    device,
+    flag_the_det_errors,
+):
 
     # derive cache filename
     cache_path = os.path.splitext(taxa_path)[0] + ".pt"
@@ -701,13 +739,15 @@ def ID_matched_img_json_pairs(
     if os.path.exists(cache_path):
         print(f"Loading cached embeddings from {cache_path}")
         cache = torch.load(cache_path, map_location=device)
-        TreeOfLifeClassifier.get_txt_names = fixed_get_txt_names # weird patch
-        classifier = TreeOfLifeClassifier(device=device)  # still need classifier structure
+        TreeOfLifeClassifier.get_txt_names = fixed_get_txt_names  # weird patch
+        classifier = TreeOfLifeClassifier(
+            device=device
+        )  # still need classifier structure
         classifier.txt_names = cache["txt_names"]
         classifier.txt_embeddings = cache["txt_embeddings"].to(device)
         print("TOL: Loaded number of labels:", len(classifier.txt_names))
         print("TOL: Loaded image embeddings shape:", classifier.txt_embeddings.shape)
-        #return classifier
+        # return classifier
 
     # ----------------------
     # No cache → build fresh
@@ -723,10 +763,9 @@ def ID_matched_img_json_pairs(
 
         target_values = taxon_keys_list
 
-
         print("Loading TOL classifier")
-        TreeOfLifeClassifier.get_txt_names = fixed_get_txt_names # weird patch to make it not give an undefined character error!  
-        classifier = TreeOfLifeClassifier(device=DEVICE) #it used to crash here
+        TreeOfLifeClassifier.get_txt_names = fixed_get_txt_names  # weird patch to make it not give an undefined character error!
+        classifier = TreeOfLifeClassifier(device=DEVICE)  # it used to crash here
         print("TOL: number of labels:", len(classifier.txt_names))
         print("TOL: image embeddings shape:", classifier.txt_embeddings.shape)
 
@@ -737,7 +776,9 @@ def ID_matched_img_json_pairs(
             if name_dict[taxon_rank].lower() in target_values:
                 found_items.append((i, txt_name))
 
-        print("Found", len(found_items), "embeddings matching the", taxon_rank, "values")
+        print(
+            "Found", len(found_items), "embeddings matching the", taxon_rank, "values"
+        )
 
         print("Building the image embedding tensor")
         txt_feature_ary = []
@@ -751,9 +792,11 @@ def ID_matched_img_json_pairs(
         clc = CustomLabelsClassifier(custom_labels, device=DEVICE)
         for i, label in enumerate(custom_labels):
             txt_feature_ary.append(clc.txt_embeddings[:, i])
-            new_txt_names.append([[label, label, label, label, label, "", label], label])
+            new_txt_names.append(
+                [[label, label, label, label, label, "", label], label]
+            )
 
-        #HERE TO FIX
+        # HERE TO FIX
         classifier.txt_names = new_txt_names
         classifier.txt_embeddings = torch.stack(txt_feature_ary, dim=1)
         print("TOL: Updated number of labels:", len(classifier.txt_names))
@@ -763,19 +806,21 @@ def ID_matched_img_json_pairs(
         # Save cache
         # ----------------------
         print(f"Saving embeddings cache to {cache_path}")
-        torch.save({
-            "txt_names": classifier.txt_names,
-            "txt_embeddings": classifier.txt_embeddings.cpu(),  # save portable CPU tensors
-        }, cache_path)
+        torch.save(
+            {
+                "txt_names": classifier.txt_names,
+                "txt_embeddings": classifier.txt_embeddings.cpu(),  # save portable CPU tensors
+            },
+            cache_path,
+        )
 
-
-    #Process Human Detections
+    # Process Human Detections
     print("processing Human Detections.........")
     patch_paths_hu = []  # define this once before your loop
     json_paths_hu = []
     idx_paths_hu = []
 
-    if(ID_HUMANDETECTIONS):
+    if ID_HUMANDETECTIONS:
         # Next process each pair and generate temporary files for the ROI of each detection in each image
         # Iterate through image-JSON pairs
         index = 0
@@ -785,7 +830,7 @@ def ID_matched_img_json_pairs(
             # Load JSON file and extract rotated rectangle coordinates for each detection
             image_path, json_path = pair[:2]  # Always extract the first two elements
 
-            coordinates_of_detections_list, was_pre_ided_list,thepatch_list = (
+            coordinates_of_detections_list, was_pre_ided_list, thepatch_list = (
                 get_rotated_rect_raw_coordinates(json_path)
             )
             index = index + 1
@@ -800,29 +845,36 @@ def ID_matched_img_json_pairs(
             if coordinates_of_detections_list:
                 for idx, coordinates in enumerate(coordinates_of_detections_list):
                     # print(coordinates)
-                    if was_pre_ided_list[idx] and OVERWRITE_EXISTING_IDs==False:  # skip processing if IDed
+                    if (
+                        was_pre_ided_list[idx] and OVERWRITE_EXISTING_IDs == False
+                    ):  # skip processing if IDed
                         continue
 
-                    patchfullpath=os.path.dirname(image_path)+"/"+ thepatch_list[idx]
+                    patchfullpath = (
+                        os.path.dirname(image_path) + "/" + thepatch_list[idx]
+                    )
 
-                    patchPIL=Image.open(patchfullpath)
-                    pred, conf, winningdict = get_bioclip_prediction_imgpath(patchPIL,classifier)
+                    patchPIL = Image.open(patchfullpath)
+                    pred, conf, winningdict = get_bioclip_prediction_imgpath(
+                        patchPIL, classifier
+                    )
 
                     # next we can make a copy of the detection json with IDs / or figure out how to ADD the IDs
-                    update_json_labels_and_scores(json_path, idx, pred, conf, winningdict)
+                    update_json_labels_and_scores(
+                        json_path, idx, pred, conf, winningdict
+                    )
 
-                    #add path to list of patches for perceptual processing
+                    # add path to list of patches for perceptual processing
                     patch_paths_hu.append(patchfullpath)
                     json_paths_hu.append(json_path)
                     idx_paths_hu.append(idx)
 
-
-    #Process BOT Detections
+    # Process BOT Detections
     print("processing BOT Detections.........")
     patch_paths_bots = []  # define this once before your loop
     json_paths_bots = []
     idx_paths_bots = []
-    if(ID_BOTDETECTIONS):
+    if ID_BOTDETECTIONS:
         # Next process each pair and generate temporary files for the ROI of each detection in each image
         # Iterate through image-JSON pairs
         index = 0
@@ -832,7 +884,7 @@ def ID_matched_img_json_pairs(
             # Load JSON file and extract rotated rectangle coordinates for each detection
             image_path, json_path = pair[:2]  # Always extract the first two elements
 
-            coordinates_of_detections_list, was_pre_ided_list,thepatch_list  = (
+            coordinates_of_detections_list, was_pre_ided_list, thepatch_list = (
                 get_rotated_rect_raw_coordinates(json_path)
             )
             index = index + 1
@@ -847,26 +899,29 @@ def ID_matched_img_json_pairs(
             if coordinates_of_detections_list:
                 for idx, coordinates in enumerate(coordinates_of_detections_list):
                     # print(coordinates)
-                    if was_pre_ided_list[idx] and OVERWRITE_EXISTING_IDs==False:  # skip processing if IDed
+                    if (
+                        was_pre_ided_list[idx] and OVERWRITE_EXISTING_IDs == False
+                    ):  # skip processing if IDed
                         continue
 
-                    patchfullpath=os.path.dirname(image_path)+"/"+ thepatch_list[idx]
-                    
+                    patchfullpath = (
+                        os.path.dirname(image_path) + "/" + thepatch_list[idx]
+                    )
 
-
-                    patchPIL=Image.open(patchfullpath)
-                    pred, conf, winningdict = get_bioclip_prediction_imgpath(patchPIL,classifier)
-
-
+                    patchPIL = Image.open(patchfullpath)
+                    pred, conf, winningdict = get_bioclip_prediction_imgpath(
+                        patchPIL, classifier
+                    )
 
                     # next we can make a copy of the detection json with IDs / or figure out how to ADD the IDs
-                    update_json_labels_and_scores(json_path, idx, pred, conf, winningdict)
+                    update_json_labels_and_scores(
+                        json_path, idx, pred, conf, winningdict
+                    )
 
-                    #add path to list of patches for later perceptual processing
+                    # add path to list of patches for later perceptual processing
                     patch_paths_bots.append(patchfullpath)
                     json_paths_bots.append(json_path)
                     idx_paths_bots.append(idx)
-
 
 
 def extract_doi_from_csv_path(csv_path: str) -> str:
@@ -900,7 +955,9 @@ def extract_doi_from_csv_path(csv_path: str) -> str:
     return f"https://doi.org/{doi_fixed}"
 
 
-def run(input_path, taxa_csv, rank=3, ID_Hum=True, ID_Bot=True, overwrite_prev_bot_ID=True):
+def run(
+    input_path, taxa_csv, rank=3, ID_Hum=True, ID_Bot=True, overwrite_prev_bot_ID=True
+):
     """Run the full ID pipeline programmatically.
 
     Parameters
@@ -960,16 +1017,16 @@ def run(input_path, taxa_csv, rank=3, ID_Hum=True, ID_Bot=True, overwrite_prev_b
         + " pairs of images and HUMAN detection data to try to ID",
     )
     print("example human detection and json pair:")
-    if(len(hu_matched_img_json_pairs)>0):
+    if len(hu_matched_img_json_pairs) > 0:
         print(hu_matched_img_json_pairs[0])
-  
+
     print(
         "Found ",
         str(len(bot_matched_img_json_pairs))
         + " pairs of images and BOT detection data to try to ID",
     )
     print("example human detection and json pair:")
-    if(len(bot_matched_img_json_pairs)>0):
+    if len(bot_matched_img_json_pairs) > 0:
         print(bot_matched_img_json_pairs[0])
 
     # Now that we have our data to be processed in a big list, it's time to load up the Pybioclip stuff

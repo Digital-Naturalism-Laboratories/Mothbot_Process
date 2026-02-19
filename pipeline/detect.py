@@ -40,6 +40,7 @@ GEN_THUMBNAILS = True
 
 # ~~~~Functions~~~~~~~
 
+
 def load_yolo_model(model_path):
     """Load YOLO model with a PyTorch 2.6 compatibility fallback."""
     resolved_model_path = str(Path(model_path).expanduser().resolve())
@@ -60,10 +61,14 @@ def load_yolo_model(model_path):
 
         # PyTorch 2.6+ defaults torch.load(..., weights_only=True), which can
         # fail for trusted Ultralytics checkpoints that include model classes.
-        print("Retrying model load with torch.load(weights_only=False) compatibility mode...")
+        print(
+            "Retrying model load with torch.load(weights_only=False) compatibility mode..."
+        )
         original_torch_load = torch.load
         original_force_weights_only = os.environ.get("TORCH_FORCE_WEIGHTS_ONLY_LOAD")
-        original_force_no_weights_only = os.environ.get("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD")
+        original_force_no_weights_only = os.environ.get(
+            "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"
+        )
 
         def _torch_load_compat(*args, **kwargs):
             # Force unsafe-load mode for trusted local checkpoints.
@@ -81,11 +86,16 @@ def load_yolo_model(model_path):
             if original_force_weights_only is None:
                 os.environ.pop("TORCH_FORCE_WEIGHTS_ONLY_LOAD", None)
             else:
-                os.environ["TORCH_FORCE_WEIGHTS_ONLY_LOAD"] = original_force_weights_only
+                os.environ["TORCH_FORCE_WEIGHTS_ONLY_LOAD"] = (
+                    original_force_weights_only
+                )
             if original_force_no_weights_only is None:
                 os.environ.pop("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", None)
             else:
-                os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = original_force_no_weights_only
+                os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = (
+                    original_force_no_weights_only
+                )
+
 
 def is_valid_image(image_path):
     """Checks if an image file is valid using Pillow."""
@@ -135,16 +145,22 @@ def process_jpg_files(img_files, date_folder):
         # Check 1: human detection file
         if os.path.isfile(human_json_path):
             print(human_json_path)
-            print("Earlier Human detection file exists, check to see if we should skip it")
+            print(
+                "Earlier Human detection file exists, check to see if we should skip it"
+            )
             try:
-                with open(human_json_path, 'r') as json_file:
+                with open(human_json_path, "r") as json_file:
                     json_data = json.load(json_file)
                     if GEN_THUMBNAILS:
-                        json_data = generateThumbnailPatches_JSON(image_path, json_data, patch_folder_path)
-                        with open(human_json_path, 'w') as json_file_write:
+                        json_data = generateThumbnailPatches_JSON(
+                            image_path, json_data, patch_folder_path
+                        )
+                        with open(human_json_path, "w") as json_file_write:
                             json.dump(json_data, json_file_write, indent=4)
                     if not GEN_BOT_DET_EVENIF_HUMAN_EXISTS:
-                        print("skipping-will not create bot detections in parallel with human detections")
+                        print(
+                            "skipping-will not create bot detections in parallel with human detections"
+                        )
                         continue
             except json.JSONDecodeError:
                 print(f"error with HUMAN made {filename}: Corrupted JSON file.")
@@ -152,16 +168,22 @@ def process_jpg_files(img_files, date_folder):
         # Check 2: existing bot detection file
         if os.path.isfile(bot_json_path):
             print(bot_json_path)
-            print("Earlier BOT detection file exists, check to see if we should skip it, ")
+            print(
+                "Earlier BOT detection file exists, check to see if we should skip it, "
+            )
             try:
-                with open(bot_json_path, 'r') as json_file:
+                with open(bot_json_path, "r") as json_file:
                     json_data = json.load(json_file)
                     if not OVERWRITE_PREV_BOT_DETECTIONS:
                         if GEN_THUMBNAILS:
-                            json_data = generateThumbnailPatches_JSON(image_path, json_data, patch_folder_path)
-                            with open(bot_json_path, 'w') as json_file_write:
+                            json_data = generateThumbnailPatches_JSON(
+                                image_path, json_data, patch_folder_path
+                            )
+                            with open(bot_json_path, "w") as json_file_write:
                                 json.dump(json_data, json_file_write, indent=4)
-                        print("skipping previously generated detection files that were able to be opened")
+                        print(
+                            "skipping previously generated detection files that were able to be opened"
+                        )
                         continue
             except json.JSONDecodeError:
                 print(f"error with {filename}: Corrupted JSON file.")
@@ -169,10 +191,14 @@ def process_jpg_files(img_files, date_folder):
         # ~~~~~~~~ Run YOLO detection ~~~~~~~~~~~~~
         try:
             print("Predict where insects are on a new image :", image_path)
-            results = model.predict(source=image_path, imgsz=IMGSZ, device=DEVICE, verbose=False)
+            results = model.predict(
+                source=image_path, imgsz=IMGSZ, device=DEVICE, verbose=False
+            )
         except Exception as e:
             print(f"❌ Skipping corrupt/unreadable image: {image_path} ({e})")
-            print(f"Skipping {filename}: Image file is missing or empty and messed up in YOLO.")
+            print(
+                f"Skipping {filename}: Image file is missing or empty and messed up in YOLO."
+            )
             continue
 
         # Extract OBB coordinates and crop
@@ -203,7 +229,9 @@ def process_jpg_files(img_files, date_folder):
 
                 thepatchpath = ""
                 if GEN_THUMBNAILS:
-                    thepatchpath = generateThumbnailPatches(result.orig_img, image_path, rect, det_idx, model_name)
+                    thepatchpath = generateThumbnailPatches(
+                        result.orig_img, image_path, rect, det_idx, model_name
+                    )
                 shape["patch_path"] = thepatchpath
                 shape["confidence_detection"] = confidence
                 shape["identifier_bot"] = ""
@@ -278,10 +306,15 @@ def crop_rect(img, rect, interpolation=cv2.INTER_LINEAR):
 # run() – callable from the Gradio UI (no subprocess needed)
 # ---------------------------------------------------------------------------
 
-def run(input_path, yolo_model=None, imgsz=DEFAULT_IMGSZ,
-        overwrite_prev_bot_detections=True,
-        gen_bot_det_evenif_human_exists=True,
-        gen_thumbnails=True):
+
+def run(
+    input_path,
+    yolo_model=None,
+    imgsz=DEFAULT_IMGSZ,
+    overwrite_prev_bot_detections=True,
+    gen_bot_det_evenif_human_exists=True,
+    gen_thumbnails=True,
+):
     """Main entry point for detection.  Called directly by the UI or via CLI."""
     global YOLO_MODEL, IMGSZ, DEVICE, GEN_THUMBNAILS
     global GEN_BOT_DET_EVENIF_HUMAN_EXISTS, OVERWRITE_PREV_BOT_DETECTIONS
@@ -318,7 +351,9 @@ if __name__ == "__main__":
     parser.add_argument("--input_path", default=DEFAULT_INPUT_PATH, required=False)
     parser.add_argument("--yolo_model", default=DEFAULT_YOLO_MODEL, required=False)
     parser.add_argument("--imgsz", default=DEFAULT_IMGSZ, type=int, required=False)
-    parser.add_argument("--gen_bot_det_evenif_human_exists", default=True, required=False)
+    parser.add_argument(
+        "--gen_bot_det_evenif_human_exists", default=True, required=False
+    )
     parser.add_argument("--overwrite_prev_bot_detections", default=True, required=False)
     parser.add_argument("--gen_thumbnails", default=True, required=False)
     args = parser.parse_args()
@@ -329,5 +364,9 @@ if __name__ == "__main__":
         imgsz=args.imgsz,
         overwrite_prev_bot_detections=bool(int(args.overwrite_prev_bot_detections)),
         gen_bot_det_evenif_human_exists=bool(int(args.gen_bot_det_evenif_human_exists)),
-        gen_thumbnails=bool(int(args.gen_thumbnails)) if not isinstance(args.gen_thumbnails, bool) else args.gen_thumbnails,
+        gen_thumbnails=(
+            bool(int(args.gen_thumbnails))
+            if not isinstance(args.gen_thumbnails, bool)
+            else args.gen_thumbnails
+        ),
     )

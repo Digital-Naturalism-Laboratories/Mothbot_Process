@@ -15,7 +15,7 @@ dataset = fo.Dataset.from_dir(
     dataset_type=dataset_type,
 )
 # Sort the dataset by patch_width in ascending order
-sorted_dataset = dataset.sort_by("patch_width",True)
+sorted_dataset = dataset.sort_by("patch_width", True)
 
 session = fo.launch_app(sorted_dataset)
 print("FiftyOne session launched. Press Ctrl+C to close.")

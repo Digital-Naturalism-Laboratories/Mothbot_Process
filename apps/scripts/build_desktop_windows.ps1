@@ -17,6 +17,8 @@ New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 & $PythonExe -m pip install -e ".[cpu,packaging]"
 & $PythonExe -m PyInstaller --clean --noconfirm --workpath $BuildDir --distpath $DistDir apps/packaging/pyinstaller/mothbot_desktop.spec
 
+& "$RootDir\apps\scripts\package_release_windows.ps1"
+
 Write-Host ""
 Write-Host "Build complete."
 Write-Host "Artifact: $DistDir\Mothbot"

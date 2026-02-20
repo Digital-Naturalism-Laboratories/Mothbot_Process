@@ -20,6 +20,8 @@ python -m PyInstaller --clean --noconfirm \
   --distpath "$DIST_DIR" \
   apps/packaging/pyinstaller/mothbot_desktop.spec
 
+bash "./apps/scripts/package_release_linux.sh"
+
 echo
 echo "Build complete."
 echo "Artifact: $DIST_DIR/Mothbot"

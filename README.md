@@ -70,4 +70,6 @@ Release flow:
 2. Create and push a version tag: `git tag -a vX.Y.Z -m "Release vX.Y.Z"` then `git push origin vX.Y.Z`.
 3. Wait for the GitHub workflow to publish the release artifacts.
 
+The workflow enforces an artifact size budget (warning at 1.6 GiB, fail at 1.8 GiB per file) to stay under GitHub Releases upload limits.
+
 For full release and local packaging steps, see `docs/DESKTOP_PACKAGING.md`.

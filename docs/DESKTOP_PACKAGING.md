@@ -104,6 +104,15 @@ This creates:
 - `apps/release/Mothbot-<version>-macos-<arch>.dmg`
 - `apps/release/SHA256SUMS.txt`
 
+## 3.2) Linux and Windows distributable release files
+
+After `make build-linux` or `make build-windows`, the build scripts also package release artifacts:
+
+- Linux: `apps/release/Mothbot-<version>-linux-<arch>.zip`
+- Windows: `apps/release/Mothbot-<version>-windows-<arch>.zip`
+
+Linux and Windows packaging use 7-Zip compression (`-tzip -mx=9`) to reduce artifact size while keeping `.zip` output.
+
 ## 4) ExifTool Requirement
 
 `pipeline/insert_exif.py` requires `exiftool`.
@@ -167,11 +176,13 @@ If the app icon bounces and the app closes, open this file and check the most re
 
 ## 8) Release a new version (GitHub tags + Actions)
 
-Desktop release builds for all three platforms (macOS, Linux, Windows) are run only when a Git tag is pushed:
+Desktop release builds for all three platforms (macOS, Linux, Windows) are run when a Git tag is pushed:
 
 - Workflow: `.github/workflows/windows-desktop-build.yml`
 - Trigger: `push` tags matching `v*` (for example `v0.8.0`)
 - Output: a GitHub Release with uploaded build artifacts and a unified `SHA256SUMS.txt`
+
+The workflow can also be started manually with `workflow_dispatch`; manual runs upload build artifacts but do not publish a GitHub Release.
 
 Recommended release checklist:
 
@@ -198,7 +209,12 @@ git push origin vX.Y.Z
 shasum -a 256 -c SHA256SUMS.txt
 ```
 
+Size policy:
+
+- Warning at 1.6 GiB per artifact
+- Hard fail at 1.8 GiB per artifact
+
 Notes:
 
 - Keep the tag version and `pyproject.toml` version aligned.
-- The workflow can also be started manually with `workflow_dispatch` if needed, but the normal release path is pushing a new version tag.
+- The size budget leaves headroom under GitHub Releases' 2 GiB per-asset API limit.

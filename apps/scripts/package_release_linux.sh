@@ -27,7 +27,8 @@ mkdir -p "$RELEASE_DIR"
 rm -f "$TARGET_PATH"
 
 # Keep .zip output for user compatibility but use 7z compression for better ratios.
-7z a -tzip -mx=9 "$TARGET_PATH" "$DIST_DIR/Mothbot" >/dev/null
+echo "Compressing Linux artifact with 7z (this can take a while on CI)..."
+7z a -tzip -mx=9 -bsp1 "$TARGET_PATH" "$DIST_DIR/Mothbot"
 
 MAX_BYTES=1932735283
 WARN_BYTES=1717986918

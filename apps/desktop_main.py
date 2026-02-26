@@ -9,6 +9,22 @@ import sys
 import traceback
 
 
+_DEVNULL_STREAMS = []
+
+
+def _ensure_stdio_streams() -> None:
+    """
+    PyInstaller windowed mode can leave stdio streams as None on Windows.
+    Uvicorn's default logging formatter expects streams with isatty().
+    """
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            fallback = open(os.devnull, "w", encoding="utf-8")
+            _DEVNULL_STREAMS.append(fallback)
+            setattr(sys, stream_name, fallback)
+
+
 def _log_path() -> Path:
     home = Path.home()
     if sys.platform == "darwin":
@@ -79,6 +95,7 @@ def _pick_server_port(preferred_port: int = 7861) -> int:
 
 
 def main():
+    _ensure_stdio_streams()
     log_path = _configure_logging()
     _install_exception_hooks()
     logger = logging.getLogger("mothbot.desktop")

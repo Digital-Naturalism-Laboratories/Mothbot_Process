@@ -13,6 +13,8 @@ VENV_DIR="$ROOT_DIR/.venv-packaging"
 python3 -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"
 
+export ULTRALYTICS_AUTOINSTALL=0
+
 python -m pip install --upgrade pip
 python -m pip install -e ".[cpu,packaging]"
 python -m PyInstaller --clean --noconfirm \

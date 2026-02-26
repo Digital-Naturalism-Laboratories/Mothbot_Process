@@ -13,6 +13,8 @@ $PythonExe = Join-Path $VenvDir "Scripts\python.exe"
 New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 
+$env:ULTRALYTICS_AUTOINSTALL = "0"
+
 & $PythonExe -m pip install --upgrade pip
 & $PythonExe -m pip install -e ".[cpu,packaging]"
 & $PythonExe -m PyInstaller --clean --noconfirm --workpath $BuildDir --distpath $DistDir apps/packaging/pyinstaller/mothbot_desktop.spec

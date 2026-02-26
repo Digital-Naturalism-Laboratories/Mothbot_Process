@@ -14,6 +14,8 @@ jobs:
     name: Build (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
+    env:
+      ULTRALYTICS_AUTOINSTALL: "0"
     strategy:
       fail-fast: false
       matrix:

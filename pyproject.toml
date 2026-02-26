@@ -45,6 +45,7 @@ cuda118 = [
     "torchvision==0.22.1+cu118",
 ]
 packaging = [
+    "lap>=0.5.12",
     "pyinstaller>=6.10,<7",
 ]
 

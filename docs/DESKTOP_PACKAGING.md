@@ -174,6 +174,30 @@ Default log locations:
 
 If the app icon bounces and the app closes, open this file and check the most recent stack trace at the end.
 
+## 7.1) Windows CUDA troubleshooting logs
+
+When a Windows user reports "CUDA not detected", ask them to run one pipeline step (for example `Detect`) and send `%LOCALAPPDATA%\Mothbot\logs\desktop.log`.
+
+The pipeline now logs a device diagnostics block. Look for these lines:
+
+- `PyTorch version: ...`
+- `PyTorch CUDA build: ...`
+- `torch.cuda.is_available(): ...`
+- `Selected runtime device: ...`
+
+Interpretation guide:
+
+- `PyTorch CUDA build: None (CPU-only build likely)` means the packaged app has a CPU-only torch build, so CUDA cannot be selected on that build.
+- `PyTorch CUDA build: 11.8` (or similar) with `torch.cuda.is_available(): False` usually means GPU driver/runtime mismatch, missing NVIDIA runtime, or no visible GPU.
+- `CUDA_VISIBLE_DEVICES` set to an empty value or restrictive value can hide GPUs from torch.
+
+Please ask users to include these extra details with the log:
+
+1. Windows version
+2. GPU model
+3. Installed NVIDIA driver version
+4. Whether they used an official release build or a locally-built package
+
 ## 8) Release a new version (GitHub tags + Actions)
 
 Desktop release builds for all three platforms (macOS, Linux, Windows) are run when a Git tag is pushed:

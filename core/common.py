@@ -10,6 +10,7 @@ stream output from in-process worker calls.
 
 import io
 import json
+import logging
 import os
 import queue
 import re
@@ -111,17 +112,56 @@ def get_device():
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def print_device_info():
-    """Print CUDA availability and GPU details (or CPU fallback)."""
+def build_cuda_diagnostics():
+    """Return a structured CUDA diagnostics report as text lines."""
     import torch
-    if torch.cuda.is_available():
-        print("CUDA is available!")
-        print("CUDA version:", torch.version.cuda)
-        print("Number of GPUs:", torch.cuda.device_count())
-        print("Current device:", torch.cuda.current_device())
-        print("GPU Name:", torch.cuda.get_device_name(torch.cuda.current_device()))
+
+    cuda_available = torch.cuda.is_available()
+    cuda_build = torch.version.cuda
+    cuda_backend = getattr(torch.backends, "cuda", None)
+    cuda_backend_built = bool(
+        cuda_backend
+        and hasattr(cuda_backend, "is_built")
+        and cuda_backend.is_built()
+    )
+
+    lines = [
+        f"PyTorch version: {torch.__version__}",
+        f"PyTorch CUDA build: {cuda_build or 'None (CPU-only build likely)'}",
+        f"PyTorch CUDA backend built: {cuda_backend_built}",
+        f"torch.cuda.is_available(): {cuda_available}",
+        f"CUDA_VISIBLE_DEVICES: {os.getenv('CUDA_VISIBLE_DEVICES', '<unset>')}",
+    ]
+
+    if cuda_available:
+        lines.append(f"Number of GPUs: {torch.cuda.device_count()}")
+        try:
+            current_device = torch.cuda.current_device()
+            lines.append(f"Current device index: {current_device}")
+            lines.append(f"Current GPU name: {torch.cuda.get_device_name(current_device)}")
+        except Exception as exc:
+            lines.append(f"Could not read current CUDA device details: {exc}")
     else:
-        print("CUDA not available, using CPU")
+        if not cuda_backend_built or cuda_build is None:
+            lines.append("Likely cause: CPU-only torch build in this environment.")
+        else:
+            lines.append(
+                "Likely cause: CUDA build exists, but runtime cannot access a compatible GPU/driver."
+            )
+    return lines
+
+
+def print_device_info(selected_device=None):
+    """Print CUDA diagnostics and selected runtime device."""
+    selected_device = selected_device or get_device()
+    print("=== Device diagnostics ===")
+    for line in build_cuda_diagnostics():
+        print(line)
+    print(f"Selected runtime device: {selected_device}")
+    if selected_device == "cpu":
+        print(
+            "If you expected CUDA, verify your torch install profile and the target machine's NVIDIA driver/runtime."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +216,12 @@ class _OutputCapture(io.TextIOBase):
         pass
 
 
+def _log_stream_chunk(logger, chunk):
+    for line in chunk.splitlines():
+        if line.strip():
+            logger.info(line.rstrip())
+
+
 def run_in_thread(fn, *args, **kwargs):
     """Run *fn* in a background thread and **yield** captured stdout chunks.
 
@@ -190,6 +236,8 @@ def run_in_thread(fn, *args, **kwargs):
     """
     cap = _OutputCapture()
     error_holder: list = [None]
+    logger = logging.getLogger("mothbot.pipeline")
+    should_log_to_logger = logger.hasHandlers()
 
     def _worker():
         _orig = sys.stdout
@@ -212,6 +260,9 @@ def run_in_thread(fn, *args, **kwargs):
             continue
         if chunk is None:
             break
+        if should_log_to_logger:
+            # Mirror streamed worker output to desktop log files when configured.
+            _log_stream_chunk(logger, chunk)
         yield chunk
 
     t.join(timeout=10)

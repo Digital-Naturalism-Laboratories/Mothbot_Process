@@ -765,7 +765,7 @@ def ID_matched_img_json_pairs(
 
         print("Loading TOL classifier")
         TreeOfLifeClassifier.get_txt_names = fixed_get_txt_names  # weird patch to make it not give an undefined character error!
-        classifier = TreeOfLifeClassifier(device=DEVICE)  # it used to crash here
+        classifier = TreeOfLifeClassifier(device=device)  # it used to crash here
         print("TOL: number of labels:", len(classifier.txt_names))
         print("TOL: image embeddings shape:", classifier.txt_embeddings.shape)
 
@@ -789,7 +789,7 @@ def ID_matched_img_json_pairs(
 
         print("Creating embeddings for custom labels")
         custom_labels = ["hole", "background", "wall", "floor", "blank", "sky"]
-        clc = CustomLabelsClassifier(custom_labels, device=DEVICE)
+        clc = CustomLabelsClassifier(custom_labels, device=device)
         for i, label in enumerate(custom_labels):
             txt_feature_ary.append(clc.txt_embeddings[:, i])
             new_txt_names.append(
@@ -987,8 +987,8 @@ def run(
     DOI = extract_doi_from_csv_path(taxa_csv)
     print("using species list: " + DOI)
 
-    print_device_info()
-    DEVICE = torch.device(get_device())
+    DEVICE = get_device()
+    print_device_info(selected_device=DEVICE)
 
     # Find all the dated folders that our data lives in
     print("Looking in this folder for MothboxData: " + INPUT_PATH)

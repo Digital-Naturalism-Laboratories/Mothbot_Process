@@ -43,8 +43,6 @@ from collections import defaultdict
 ImageFile.LOAD_TRUNCATED_IMAGES = (
     True  # makes ok for use images that are messed up slightly
 )
-import torch
-import json
 
 # import PIL.Image
 import warnings
@@ -497,8 +495,8 @@ def run(input_path, ID_Hum=True, ID_Bot=True):
 
     print("Starting script to cluster detections into meaningful groups")
 
-    print_device_info()
     DEVICE = get_device()
+    print_device_info(selected_device=DEVICE)
 
     # ~~~~~~~~~~~~~~~~ GATHERING DATA ~~~~~~~~~~~~~~~~~~~~~~~~~~
 

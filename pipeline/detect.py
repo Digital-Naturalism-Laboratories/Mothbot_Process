@@ -327,7 +327,7 @@ def run(
     OVERWRITE_PREV_BOT_DETECTIONS = overwrite_prev_bot_detections
 
     print("Starting Mothbot Detection Script")
-    print_device_info()
+    print_device_info(selected_device=DEVICE)
     print(f"Processing {input_path} with model {YOLO_MODEL} and image size {IMGSZ}")
 
     date_folders = find_date_folders(input_path)

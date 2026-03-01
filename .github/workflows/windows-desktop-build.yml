@@ -24,8 +24,9 @@ jobs:
             platform: windows
           - os: macos-latest
             platform: macos
-          - os: ubuntu-latest
-            platform: linux
+          #Disabling linux for now, because it fails because it is over 1.6 gb
+          #- os: ubuntu-latest
+          #  platform: linux
 
 
     steps:

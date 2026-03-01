@@ -22,8 +22,8 @@ jobs:
         include:
           - os: windows-latest
             platform: windows
-          #- os: windows-latest
-          #  platform: windows-cuda  #disabling cuda for now because it ends up 2.86gb and github won't let us build that big
+          - os: windows-latest
+            platform: windows-cuda  # maybe disabling cuda for now because it ends up 2.86gb and github won't let us build that big
           - os: macos-latest
             platform: macos
           #Disabling linux for now, because it fails because it is over 1.6 gb

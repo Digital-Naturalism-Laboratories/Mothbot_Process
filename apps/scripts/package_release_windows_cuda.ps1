@@ -26,8 +26,8 @@ if (Test-Path $TargetPath) {
 }
 
 # Keep .zip output for user compatibility but use 7z compression for better ratios.
-& $SevenZip.Source a -tzip -mx=9 $TargetPath (Join-Path $DistDir "Mothbot\*") | Out-Null
-
+#& $SevenZip.Source a -tzip -mx=9 $TargetPath (Join-Path $DistDir "Mothbot\*") | Out-Null
+& $SevenZip.Source a -tzip -mx=5 -v800m $TargetPath (Join-Path $DistDir "Mothbot\*") | Out-Null
 $MaxBytes = 1932735283
 $WarnBytes = 1717986918
 $FileInfo = Get-Item $TargetPath
@@ -35,22 +35,20 @@ $FileSizeBytes = [int64]$FileInfo.Length
 $FileSizeHuman = "{0:N2} GiB" -f ($FileSizeBytes / 1GB)
 
 if ($env:GITHUB_STEP_SUMMARY) {
-  @"
-### Windows artifact size
-
-| Artifact | Size |
+    $parts = Get-ChildItem "$TargetPath.*" | Sort-Object Name
+    $totalBytes = ($parts | Measure-Object -Property Length -Sum).Sum
+    $totalHuman = "{0:N2} GiB" -f ($totalBytes / 1GB)
+    @"
+### Windows CUDA artifact size
+| Part | Size |
 | --- | --- |
-| $($FileInfo.Name) | $FileSizeHuman |
+$(($parts | ForEach-Object { "| $($_.Name) | $("{0:N0} MB" -f ($_.Length / 1MB)) |" }) -join "`n")
+| **Total** | **$totalHuman** |
 "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 }
 
 Write-Host "Windows release artifact size: $FileSizeHuman"
-if ($FileSizeBytes -ge $WarnBytes) {
-  Write-Host "::warning::Windows release artifact is above 1.6 GiB ($FileSizeHuman)."
-}
-if ($FileSizeBytes -ge $MaxBytes) {
-  throw "Windows release artifact exceeds 1.8 GiB ($FileSizeHuman)."
-}
+
 
 Write-Host ""
 Write-Host "Release artifact created:"

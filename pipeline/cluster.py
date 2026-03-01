@@ -168,7 +168,8 @@ def _ensure_dino_loaded():
             "Please ensure dinov2_vits14_pretrain.pth is in the assets/ folder."
         )
 
-    model = timm.create_model("vit_small_patch14_dinov2.lvd142m", pretrained=False)
+    #model = timm.create_model("vit_small_patch14_dinov2.lvd142m", pretrained=False)
+    model = timm.create_model("vit_small_patch14_dinov2.lvd142m", pretrained=False, img_size=224)
     state_dict = torch.load(weights_path, map_location=device)
     model.load_state_dict(state_dict, strict=False)
     model = model.to(device).eval()
@@ -176,8 +177,8 @@ def _ensure_dino_loaded():
     _dino_model = model
 
     _dino_transform = T.Compose([
-        T.Resize(518),
-        T.CenterCrop(518),
+        T.Resize(224),
+        T.CenterCrop(224),
         T.ToTensor(),
         T.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
     ])
@@ -465,7 +466,7 @@ def Cluster_matched_img_json_pairs(
 
     # ~~~~~~~~~~~~~ PERCEPTUAL PROCESSING ~~~~~~~~~~~~~~~~~~~~~~~~
     # process perceptual similarities for bot and hu detections
-
+    print("Loading Embeddings for Perceptual Processing...")
     # Hu detections first
     if len(patch_paths_hu) > 0:
         embeddings = extract_embeddings(patch_paths_hu)

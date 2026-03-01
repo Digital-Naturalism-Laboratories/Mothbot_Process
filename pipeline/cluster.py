@@ -34,7 +34,6 @@ from PIL import ImageFile
 
 # perception clustering
 import torch
-from tqdm import tqdm
 import torchvision.transforms as T
 import sklearn.utils as sk_utils
 from sklearn.utils import validation as sk_validation
@@ -217,10 +216,19 @@ def extract_embeddings(image_files, batch_size=8):
         print("⚠️ DINOv2 embedding model unavailable, falling back to histogram embeddings.")
         print(f"   details: {e}")
 
-    device = next(_dino_model.parameters()).device if not use_fallback else None
+    device = None
+    if not use_fallback:
+        device = next(_dino_model.parameters()).device
+    total = len(image_files)
+    total_batches = (total + batch_size - 1) // batch_size
+    print(f"🔍 Extracting embeddings for {total} images in {total_batches} batches on {device}...")
 
-    for i in tqdm(range(0, len(image_files), batch_size), desc="Extracting embeddings"):
+    import time
+    start_time = time.time()
+
+    for batch_num, i in enumerate(range(0, total, batch_size)):
         batch_paths = image_files[i:i+batch_size]
+
         if use_fallback:
             for path in batch_paths:
                 try:
@@ -229,12 +237,10 @@ def extract_embeddings(image_files, batch_size=8):
                     print(f"⚠️ Skipping {path}: {e}")
         else:
             tensors = []
-            valid_paths = []
             for path in batch_paths:
                 try:
                     img = Image.open(path).convert("RGB")
                     tensors.append(_dino_transform(img))
-                    valid_paths.append(path)
                 except Exception as e:
                     print(f"⚠️ Skipping {path}: {e}")
             if tensors:
@@ -243,21 +249,20 @@ def extract_embeddings(image_files, batch_size=8):
                     feats = _dino_model(batch_tensor)
                 embeddings.extend(feats.cpu().numpy())
 
-    return np.array(embeddings)
+        # Progress + ETA after first batch
+        elapsed = time.time() - start_time
+        batches_done = batch_num + 1
+        images_done = min(i + batch_size, total)
+        if batches_done == 1 and total_batches > 1:
+            eta_seconds = (elapsed / batches_done) * (total_batches - batches_done)
+            print(f"   ⏱️ First batch done in {elapsed:.1f}s — estimated {eta_seconds:.0f}s remaining ({eta_seconds/60:.1f} min)")
+        elif batches_done % 5 == 0 or batches_done == total_batches:
+            eta_seconds = (elapsed / batches_done) * (total_batches - batches_done)
+            print(f"   📦 Batch {batches_done}/{total_batches} — {images_done}/{total} images — ~{eta_seconds:.0f}s remaining")
 
-def extract_embeddings_from_folder(image_folder):
-    embeddings, filenames = [], []
-    for fname in tqdm(os.listdir(image_folder), desc="Extracting embeddings"):
-        if not fname.lower().endswith((".jpg", ".jpeg", ".png")):
-            continue
-        path = os.path.join(image_folder, fname)
-        try:
-            feat = get_embedding(path)
-            embeddings.append(feat)
-            filenames.append(fname)
-        except Exception as e:
-            print(f"⚠️ Skipping {fname}: {e}")
-    return np.array(embeddings), filenames
+    total_time = time.time() - start_time
+    print(f"✅ Embeddings complete — {total} images in {total_time:.1f}s ({total_time/60:.1f} min)")
+    return np.array(embeddings)
 
 
 # --------------------------

@@ -174,9 +174,10 @@ def _ensure_dino_loaded():
     model = model.to(device).eval()
 
     _dino_model = model
+
     _dino_transform = T.Compose([
-        T.Resize(256),
-        T.CenterCrop(224),
+        T.Resize(518),
+        T.CenterCrop(518),
         T.ToTensor(),
         T.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
     ])

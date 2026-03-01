@@ -49,6 +49,16 @@ packaging = [
     "pyinstaller>=6.10,<7",
 ]
 
+
+cuda118-packaging = [
+    "torch==2.7.1+cu118",
+    "torchaudio==2.7.1+cu118",
+    "torchvision==0.22.1+cu118",
+    "lap>=0.5.12",
+    "pyinstaller>=6.10,<7",
+]
+
+
 [project.scripts]
 mothbot-local = "ui.local_main:main"
 mothbot-desktop = "apps.desktop_main:main"

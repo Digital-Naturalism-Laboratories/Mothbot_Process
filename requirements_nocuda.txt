@@ -14,7 +14,7 @@ regex==2025.9.1
 torch
 torchvision
 torchaudio
-tqdm==4.67.1
+tqdm
 typing-extensions
 tzdata==2025.2
 ultralytics==8.3.175

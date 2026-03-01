@@ -168,8 +168,8 @@ def _ensure_dino_loaded():
             "Please ensure dinov2_vits14_pretrain.pth is in the assets/ folder."
         )
 
-    #model = timm.create_model("vit_small_patch14_dinov2.lvd142m", pretrained=False)
-    model = timm.create_model("vit_small_patch14_dinov2.lvd142m", pretrained=False, img_size=224)
+    model = timm.create_model("vit_small_patch14_dinov2.lvd142m", pretrained=False)
+    #model = timm.create_model("vit_small_patch14_dinov2.lvd142m", pretrained=False, img_size=224) # this model gets grumpy if not 518
     state_dict = torch.load(weights_path, map_location=device)
     model.load_state_dict(state_dict, strict=False)
     model = model.to(device).eval()
@@ -177,8 +177,8 @@ def _ensure_dino_loaded():
     _dino_model = model
 
     _dino_transform = T.Compose([
-        T.Resize(224),
-        T.CenterCrop(224),
+        T.Resize(518),
+        T.CenterCrop(518),
         T.ToTensor(),
         T.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
     ])
@@ -207,33 +207,43 @@ def get_fallback_embedding(img_path):
     norm = np.linalg.norm(feat)
     return feat if norm == 0 else feat / norm
 
-
-def extract_embeddings(image_files):
-    embeddings, filenames = [], []
+def extract_embeddings(image_files, batch_size=8):
+    embeddings = []
     use_fallback = False
     try:
         _ensure_dino_loaded()
     except Exception as e:
         use_fallback = True
-        print(
-            "⚠️ DINOv2 embedding model unavailable (offline/packaged mode likely). "
-            "Falling back to local histogram embeddings."
-        )
+        print("⚠️ DINOv2 embedding model unavailable, falling back to histogram embeddings.")
         print(f"   details: {e}")
 
-    for image_file in tqdm(image_files, desc="Extracting embeddings"):
-        try:
-            feat = (
-                get_fallback_embedding(image_file)
-                if use_fallback
-                else get_embedding(image_file)
-            )
-            embeddings.append(feat)
-            filenames.append(image_file)
-        except Exception as e:
-            print(f"⚠️ Skipping {image_file}: {e}")
-    return np.array(embeddings)
+    device = next(_dino_model.parameters()).device if not use_fallback else None
 
+    for i in tqdm(range(0, len(image_files), batch_size), desc="Extracting embeddings"):
+        batch_paths = image_files[i:i+batch_size]
+        if use_fallback:
+            for path in batch_paths:
+                try:
+                    embeddings.append(get_fallback_embedding(path))
+                except Exception as e:
+                    print(f"⚠️ Skipping {path}: {e}")
+        else:
+            tensors = []
+            valid_paths = []
+            for path in batch_paths:
+                try:
+                    img = Image.open(path).convert("RGB")
+                    tensors.append(_dino_transform(img))
+                    valid_paths.append(path)
+                except Exception as e:
+                    print(f"⚠️ Skipping {path}: {e}")
+            if tensors:
+                batch_tensor = torch.stack(tensors).to(device)
+                with torch.no_grad():
+                    feats = _dino_model(batch_tensor)
+                embeddings.extend(feats.cpu().numpy())
+
+    return np.array(embeddings)
 
 def extract_embeddings_from_folder(image_folder):
     embeddings, filenames = [], []
@@ -467,9 +477,11 @@ def Cluster_matched_img_json_pairs(
     # ~~~~~~~~~~~~~ PERCEPTUAL PROCESSING ~~~~~~~~~~~~~~~~~~~~~~~~
     # process perceptual similarities for bot and hu detections
     print("Loading Embeddings for Perceptual Processing...")
+    batch_size = 32 if torch.cuda.is_available() else 8
+
     # Hu detections first
     if len(patch_paths_hu) > 0:
-        embeddings = extract_embeddings(patch_paths_hu)
+        embeddings = extract_embeddings(patch_paths_hu, batch_size=batch_size)
         labels = cluster_embeddings(embeddings)
         # save_clusters(input_folder, filenames, labels, output_folder)
         labels = temporal_subclusters(
@@ -479,7 +491,7 @@ def Cluster_matched_img_json_pairs(
 
     # bot detections first
     if len(patch_paths_bots) > 0:
-        embeddings = extract_embeddings(patch_paths_bots)
+        embeddings = extract_embeddings(patch_paths_bots,  batch_size=batch_size)
         labels = cluster_embeddings(embeddings)
         labels = temporal_subclusters(
             patch_paths_bots, json_paths_bots, idx_paths_bots, labels

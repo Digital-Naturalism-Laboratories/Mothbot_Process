@@ -22,6 +22,8 @@ jobs:
         include:
           - os: windows-latest
             platform: windows
+          - os: windows-latest
+            platform: windows-cuda
           - os: macos-latest
             platform: macos
           #Disabling linux for now, because it fails because it is over 1.6 gb
@@ -53,6 +55,7 @@ jobs:
           pip --version
           pwsh --version
 
+
       - name: Install 7z on Linux runner
         if: runner.os == 'Linux'
         shell: bash
@@ -77,6 +80,13 @@ jobs:
         shell: pwsh
         run: |
           ./apps/scripts/build_desktop_windows.ps1
+
+      - name: Build Windows CUDA desktop app
+        if: matrix.platform == 'windows-cuda'
+        shell: pwsh
+        run: |
+          ./apps/scripts/build_desktop_windows_cuda.ps1
+
 
       - name: Validate expected build output (Unix)
         if: runner.os != 'Windows'

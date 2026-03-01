@@ -103,6 +103,7 @@ jobs:
           name: release-assets-${{ matrix.platform }}
           path: apps/release/*
           if-no-files-found: error
+          compression-level: 0  # Try to make it not doublezip
 
   publish-release:
     name: Publish GitHub Release

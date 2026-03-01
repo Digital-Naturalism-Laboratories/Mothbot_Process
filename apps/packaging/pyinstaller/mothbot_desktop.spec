@@ -90,6 +90,12 @@ dino_weights = project_dir / "assets" / "dinov2_vits14_pretrain.pth"
 if dino_weights.exists():
     datas.append((str(dino_weights), "assets"))
 
+# Bundle favicon.ico for the exe icon
+favicon_ico = project_dir / "assets" / "favicon.ico"
+if favicon_ico.exists():
+    datas.append((str(favicon_ico), "assets"))
+
+
 a = Analysis(
     [str(project_dir / "apps" / "desktop_main.py")],
     pathex=[str(project_dir)],
@@ -116,6 +122,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
+	icon=str(project_dir / "assets" / "favicon.ico"), 
 )
 
 coll = COLLECT(

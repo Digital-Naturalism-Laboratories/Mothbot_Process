@@ -360,6 +360,18 @@ def app():
                 ],
                 outputs=process_output_box,
             )
+        
+        # ── Quit button – always visible outside tabs ──
+        with gr.Row():
+            quit_btn = gr.Button("⏹ Quit Mothbot", variant="stop", size="sm")
+        
+        def quit_app():
+            import signal
+            import threading
+            threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+            return gr.update()  # lets Gradio send a response first
+        
+        quit_btn.click(fn=quit_app, inputs=[], outputs=[])
 
     return demo
 

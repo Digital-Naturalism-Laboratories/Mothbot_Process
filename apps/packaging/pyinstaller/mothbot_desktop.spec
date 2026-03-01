@@ -74,6 +74,7 @@ for package_name in ["gradio", "safehttpx", "groovy", "open_clip", "bioclip"]:
 for src in [
     project_dir / "artifacts",
     project_dir / "assets" / "favicon.png",
+	# dino weights gets handled below
     project_dir / "Mothbox_Main_Metadata_Field_Sheet_Example - Form responses 1.csv",
     project_dir / "SpeciesList_CountryIndonesia_TaxaInsecta_doi.org10.15468dl.8p8wua.csv",
     ai_dir / "exiftool-13.32_64",
@@ -83,6 +84,11 @@ for src in [
             datas.append((str(src), src.name))
         else:
             datas.append((str(src), "."))
+			
+# Bundle DINOv2 weights into assets/ subfolder
+dino_weights = project_dir / "assets" / "dinov2_vits14_pretrain.pth"
+if dino_weights.exists():
+    datas.append((str(dino_weights), "assets"))
 
 a = Analysis(
     [str(project_dir / "apps" / "desktop_main.py")],
@@ -95,6 +101,7 @@ a = Analysis(
     runtime_hooks=[],
     excludes=[],
     noarchive=False,
+	
 )
 pyz = PYZ(a.pure)
 

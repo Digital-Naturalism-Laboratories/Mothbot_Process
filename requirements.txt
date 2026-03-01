@@ -29,4 +29,4 @@ gradio-client==1.11.1
 babel==2.17.0
 tkfilebrowser==2.3.2
 hdbscan==0.8.40
-
+timm

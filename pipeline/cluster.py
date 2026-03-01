@@ -16,6 +16,7 @@ Arguments:
 
 """
 import ssl
+import timm
 
 ssl._create_default_https_context = (
     ssl._create_unverified_context
@@ -144,31 +145,41 @@ _dino_model = None
 _dino_transform = None
 
 
+def _get_bundled_weights_path():
+    if getattr(sys, "frozen", False):
+        base = sys._MEIPASS
+    else:
+        # cluster.py is in pipeline/, assets/ is one level up
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "assets", "dinov2_vits14_pretrain.pth")
+
+
 def _ensure_dino_loaded():
     global _dino_model, _dino_transform
     if _dino_model is not None:
         return
-    # In frozen/desktop builds we avoid torch.hub network behavior and use
-    # the deterministic fallback embedding path instead.
-    if getattr(sys, "frozen", False):
-        raise RuntimeError("DINOv2 hub loading disabled in packaged app")
-    device = get_device()
-    _dino_model = torch.hub.load(
-        "facebookresearch/dinov2",
-        "dinov2_vits14",
-        trust_repo=True,
-        skip_validation=True,
-    ).to(device)
-    _dino_model.eval()
-    _dino_transform = T.Compose(
-        [
-            T.Resize(256),
-            T.CenterCrop(224),
-            T.ToTensor(),
-            T.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
-        ]
-    )
 
+    device = get_device()
+    weights_path = _get_bundled_weights_path()
+
+    if not os.path.exists(weights_path):
+        raise RuntimeError(
+            f"Bundled DINOv2 weights not found at: {weights_path}\n"
+            "Please ensure dinov2_vits14_pretrain.pth is in the assets/ folder."
+        )
+
+    model = timm.create_model("vit_small_patch14_dinov2.lvd142m", pretrained=False)
+    state_dict = torch.load(weights_path, map_location=device)
+    model.load_state_dict(state_dict)
+    model = model.to(device).eval()
+
+    _dino_model = model
+    _dino_transform = T.Compose([
+        T.Resize(256),
+        T.CenterCrop(224),
+        T.ToTensor(),
+        T.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
+    ])
 
 # --------------------------
 # 2. Extract embeddings
@@ -176,11 +187,10 @@ def _ensure_dino_loaded():
 def get_embedding(img_path):
     _ensure_dino_loaded()
     img = Image.open(img_path).convert("RGB")
-    img_tensor = _dino_transform(img).unsqueeze(0).to(DEVICE)
+    img_tensor = _dino_transform(img).unsqueeze(0).to(next(_dino_model.parameters()).device)
     with torch.no_grad():
-        feat = _dino_model(img_tensor)  # shape [1, 384]
+        feat = _dino_model(img_tensor)
     return feat.cpu().numpy().squeeze()
-
 
 def get_fallback_embedding(img_path):
     """Local deterministic embedding when DINOv2 hub cannot be used."""

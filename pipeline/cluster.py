@@ -170,7 +170,7 @@ def _ensure_dino_loaded():
 
     model = timm.create_model("vit_small_patch14_dinov2.lvd142m", pretrained=False)
     state_dict = torch.load(weights_path, map_location=device)
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=False)
     model = model.to(device).eval()
 
     _dino_model = model

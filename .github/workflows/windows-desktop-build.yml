@@ -20,12 +20,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - os: windows-latest
+            platform: windows
           - os: macos-latest
             platform: macos
           - os: ubuntu-latest
             platform: linux
-          - os: windows-latest
-            platform: windows
+
 
     steps:
       - name: Checkout repository

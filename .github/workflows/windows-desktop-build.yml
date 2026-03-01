@@ -20,12 +20,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - os: windows-latest
+            platform: windows
           - os: macos-latest
             platform: macos
           - os: ubuntu-latest
             platform: linux
-          - os: windows-latest
-            platform: windows
+
 
     steps:
       - name: Checkout repository
@@ -103,6 +104,7 @@ jobs:
           name: release-assets-${{ matrix.platform }}
           path: apps/release/*
           if-no-files-found: error
+          compression-level: 0  # Try to make it not doublezip
 
   publish-release:
     name: Publish GitHub Release

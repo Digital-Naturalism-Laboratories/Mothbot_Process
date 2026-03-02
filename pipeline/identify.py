@@ -551,8 +551,13 @@ def warp_rotation(img, points):
 
 def get_bioclip_predictions_batch(imgs, classifier, batch_size=32):
     """Process a batch of PIL images at once."""
+    import time
     results = []
-    for i in range(0, len(imgs), batch_size):
+    total = len(imgs)
+    total_batches = (total + batch_size - 1) // batch_size
+    start_time = time.time()
+
+    for batch_num, i in enumerate(range(0, total, batch_size)):
         batch = imgs[i:i+batch_size]
         img_embeddings = classifier.create_image_features(batch)
         for probs in classifier.create_probabilities(img_embeddings, classifier.txt_embeddings):
@@ -569,8 +574,22 @@ def get_bioclip_predictions_batch(imgs, classifier, batch_size=32):
                     winningdict = pred
                 index += 1
             results.append((winner, winnerprob, winningdict))
-    return results
 
+        # Progress update after each batch
+        batches_done = batch_num + 1
+        images_done = min(i + batch_size, total)
+        elapsed = time.time() - start_time
+
+        if batches_done == 1 and total_batches > 1:
+            eta_seconds = (elapsed / batches_done) * (total_batches - batches_done)
+            print(f"   ⏱️ First batch done in {elapsed:.1f}s — estimated {eta_seconds:.0f}s remaining ({eta_seconds/60:.1f} min)")
+        elif batches_done % 5 == 0 or batches_done == total_batches:
+            eta_seconds = (elapsed / batches_done) * (total_batches - batches_done)
+            print(f"   📦 Batch {batches_done}/{total_batches} — {images_done}/{total} images — ~{eta_seconds:.0f}s remaining")
+
+    total_time = time.time() - start_time
+    print(f"✅ Batch predictions complete — {total} images in {total_time:.1f}s ({total_time/60:.1f} min)")
+    return results
 def get_bioclip_prediction(img_path, classifier):
 
     # Run inference

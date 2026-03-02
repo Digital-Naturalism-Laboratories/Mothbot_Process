@@ -549,6 +549,28 @@ def warp_rotation(img, points):
     return warped
 
 
+def get_bioclip_predictions_batch(imgs, classifier, batch_size=32):
+    """Process a batch of PIL images at once."""
+    results = []
+    for i in range(0, len(imgs), batch_size):
+        batch = imgs[i:i+batch_size]
+        img_embeddings = classifier.create_image_features(batch)
+        for probs in classifier.create_probabilities(img_embeddings, classifier.txt_embeddings):
+            winner = ""
+            winnerprob = ""
+            winningdict = {}
+            index = 0
+            for pred in classifier.format_grouped_probs(
+                "", probs, rank=TAXONOMIC_RANK_FILTER, min_prob=1e-9, k=5
+            ):
+                if index == 0:
+                    winner = pred[str(TAXONOMIC_RANK_FILTER.get_label())]
+                    winnerprob = pred["score"]
+                    winningdict = pred
+                index += 1
+            results.append((winner, winnerprob, winningdict))
+    return results
+
 def get_bioclip_prediction(img_path, classifier):
 
     # Run inference
@@ -819,110 +841,116 @@ def ID_matched_img_json_pairs(
     patch_paths_hu = []  # define this once before your loop
     json_paths_hu = []
     idx_paths_hu = []
-
     if ID_HUMANDETECTIONS:
-        # Next process each pair and generate temporary files for the ROI of each detection in each image
-        # Iterate through image-JSON pairs
         index = 0
         numofpairs = len(hu_matched_img_json_pairs)
+        
+        # Collect all patches first
+        all_patches_hu = []  # (patchfullpath, json_path, idx)
         for pair in hu_matched_img_json_pairs:
-
-            # Load JSON file and extract rotated rectangle coordinates for each detection
-            image_path, json_path = pair[:2]  # Always extract the first two elements
-
+            image_path, json_path = pair[:2]
             coordinates_of_detections_list, was_pre_ided_list, thepatch_list = (
                 get_rotated_rect_raw_coordinates(json_path)
             )
-            index = index + 1
-            print(
-                str(index)
-                + "/"
-                + str(numofpairs)
-                + "  | "
-                + str(len(coordinates_of_detections_list)),
-                "HUMAN detections in " + json_path,
-            )
+            index += 1
+            print(f"{index}/{numofpairs} | {len(coordinates_of_detections_list)} HUMAN detections in {json_path}")
             if coordinates_of_detections_list:
                 for idx, coordinates in enumerate(coordinates_of_detections_list):
-                    # print(coordinates)
-                    if (
-                        was_pre_ided_list[idx] and OVERWRITE_EXISTING_IDs == False
-                    ):  # skip processing if IDed
+                    if was_pre_ided_list[idx] and OVERWRITE_EXISTING_IDs == False:
                         continue
+                    patchfullpath = os.path.dirname(image_path) + "/" + thepatch_list[idx]
+                    all_patches_hu.append((patchfullpath, json_path, idx))
 
-                    patchfullpath = (
-                        os.path.dirname(image_path) + "/" + thepatch_list[idx]
-                    )
+        # Load all images
+        print(f"🔍 Running bioclip on {len(all_patches_hu)} HUMAN detections in batches...")
+        import time
+        start_time = time.time()
 
-                    patchPIL = Image.open(patchfullpath)
-                    pred, conf, winningdict = get_bioclip_prediction_imgpath(
-                        patchPIL, classifier
-                    )
+        batch_size = 32 if torch.cuda.is_available() else 8
+        imgs_hu = []
+        for patchfullpath, _, _ in all_patches_hu:
+            try:
+                imgs_hu.append(Image.open(patchfullpath))
+            except Exception as e:
+                print(f"⚠️ Could not open {patchfullpath}: {e}")
+                imgs_hu.append(None)
 
-                    # next we can make a copy of the detection json with IDs / or figure out how to ADD the IDs
-                    update_json_labels_and_scores(
-                        json_path, idx, pred, conf, winningdict
-                    )
+        # Filter out None images but keep track of indices
+        valid_patches_hu = [(p, j, i, img) for (p, j, i), img in zip(all_patches_hu, imgs_hu) if img is not None]
+        valid_imgs_hu = [img for _, _, _, img in valid_patches_hu]
 
-                    # add path to list of patches for perceptual processing
-                    patch_paths_hu.append(patchfullpath)
-                    json_paths_hu.append(json_path)
-                    idx_paths_hu.append(idx)
+        # Batch predict
+        predictions_hu = get_bioclip_predictions_batch(valid_imgs_hu, classifier, batch_size=batch_size)
 
+        # Write results
+        for (patchfullpath, json_path, idx, _), (pred, conf, winningdict) in zip(valid_patches_hu, predictions_hu):
+            print(f"  {os.path.basename(patchfullpath)}: {pred} ({conf:.3f})")
+            update_json_labels_and_scores(json_path, idx, pred, conf, winningdict)
+            patch_paths_hu.append(patchfullpath)
+            json_paths_hu.append(json_path)
+            idx_paths_hu.append(idx)
+
+        total_time = time.time() - start_time
+        print(f"✅ HUMAN ID complete — {len(valid_patches_hu)} detections in {total_time:.1f}s ({total_time/60:.1f} min)")
+        
+    
     # Process BOT Detections
     print("processing BOT Detections.........")
     patch_paths_bots = []  # define this once before your loop
     json_paths_bots = []
     idx_paths_bots = []
+    
     if ID_BOTDETECTIONS:
-        # Next process each pair and generate temporary files for the ROI of each detection in each image
-        # Iterate through image-JSON pairs
         index = 0
         numofpairs = len(bot_matched_img_json_pairs)
+        
+        # Collect all patches first
+        all_patches = []  # (patchfullpath, json_path, idx)
         for pair in bot_matched_img_json_pairs:
-
-            # Load JSON file and extract rotated rectangle coordinates for each detection
-            image_path, json_path = pair[:2]  # Always extract the first two elements
-
+            image_path, json_path = pair[:2]
             coordinates_of_detections_list, was_pre_ided_list, thepatch_list = (
                 get_rotated_rect_raw_coordinates(json_path)
             )
-            index = index + 1
-            print(
-                str(index)
-                + "/"
-                + str(numofpairs)
-                + "  | "
-                + str(len(coordinates_of_detections_list)),
-                "BOT detections in " + json_path,
-            )
+            index += 1
+            print(f"{index}/{numofpairs} | {len(coordinates_of_detections_list)} BOT detections in {json_path}")
             if coordinates_of_detections_list:
                 for idx, coordinates in enumerate(coordinates_of_detections_list):
-                    # print(coordinates)
-                    if (
-                        was_pre_ided_list[idx] and OVERWRITE_EXISTING_IDs == False
-                    ):  # skip processing if IDed
+                    if was_pre_ided_list[idx] and OVERWRITE_EXISTING_IDs == False:
                         continue
+                    patchfullpath = os.path.dirname(image_path) + "/" + thepatch_list[idx]
+                    all_patches.append((patchfullpath, json_path, idx))
 
-                    patchfullpath = (
-                        os.path.dirname(image_path) + "/" + thepatch_list[idx]
-                    )
+        # Load all images
+        print(f"🔍 Running bioclip on {len(all_patches)} BOT detections in batches...")
+        import time
+        start_time = time.time()
+        
+        batch_size = 32 if torch.cuda.is_available() else 8
+        imgs = []
+        for patchfullpath, _, _ in all_patches:
+            try:
+                imgs.append(Image.open(patchfullpath))
+            except Exception as e:
+                print(f"⚠️ Could not open {patchfullpath}: {e}")
+                imgs.append(None)
 
-                    patchPIL = Image.open(patchfullpath)
-                    pred, conf, winningdict = get_bioclip_prediction_imgpath(
-                        patchPIL, classifier
-                    )
+        # Filter out None images but keep track of indices
+        valid_patches = [(p, j, i, img) for (p, j, i), img in zip(all_patches, imgs) if img is not None]
+        valid_imgs = [img for _, _, _, img in valid_patches]
 
-                    # next we can make a copy of the detection json with IDs / or figure out how to ADD the IDs
-                    update_json_labels_and_scores(
-                        json_path, idx, pred, conf, winningdict
-                    )
+        # Batch predict
+        predictions = get_bioclip_predictions_batch(valid_imgs, classifier, batch_size=batch_size)
 
-                    # add path to list of patches for later perceptual processing
-                    patch_paths_bots.append(patchfullpath)
-                    json_paths_bots.append(json_path)
-                    idx_paths_bots.append(idx)
+        # Write results
+        for (patchfullpath, json_path, idx, _), (pred, conf, winningdict) in zip(valid_patches, predictions):
+            print(f"  {os.path.basename(patchfullpath)}: {pred} ({conf:.3f})")
+            update_json_labels_and_scores(json_path, idx, pred, conf, winningdict)
+            patch_paths_bots.append(patchfullpath)
+            json_paths_bots.append(json_path)
+            idx_paths_bots.append(idx)
 
+        total_time = time.time() - start_time
+        print(f"✅ BOT ID complete — {len(valid_patches)} detections in {total_time:.1f}s ({total_time/60:.1f} min)")
 
 def extract_doi_from_csv_path(csv_path: str) -> str:
     """

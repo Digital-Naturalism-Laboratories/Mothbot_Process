@@ -42,35 +42,52 @@ def app():
     with gr.Blocks(
         title="Mothbot",
         css="""
-            /* Tab 1 - Pastel Red */
-            button.svelte-1ipelgc:nth-child(1).selected {
-                background-color: #ff9999 !important;
+            /* Setup - neutral white */
+            button.svelte-1tcem6n:nth-child(1).selected {
+                background-color: #e0e0e0 !important;
+                color: #000000 !important;
+            }
+            /* Process - orange (run all) */
+            button.svelte-1tcem6n:nth-child(2).selected {
+                background-color: #ff8c00 !important;
                 color: #ffffff !important;
             }
-            /* Tab 2 - Pastel Orange */
-            button.svelte-1ipelgc:nth-child(2).selected {
-                background-color: #ffcc99 !important;
-                color: #000000 !important;
-            }
-            /* Tab 3 - Pastel Yellow */
-            button.svelte-1ipelgc:nth-child(3).selected {
-                background-color: #ffff99 !important;
-                color: #000000 !important;
-            }
-            /* Tab 4 - Pastel Green */
-            button.svelte-1ipelgc:nth-child(4).selected {
-                background-color: #ccffcc !important;
-                color: #000000 !important;
-            }
-            /* Tab 5 - Pastel Blue */
-            button.svelte-1ipelgc:nth-child(5).selected {
-                background-color: #99ccff !important;
-                color: #000000 !important;
-            }
-            /* Tab 6 - Pastel Indigo */
-            button.svelte-1ipelgc:nth-child(6).selected {
-                background-color: #cc99ff !important;
+            /* Detect - red (step 1) */
+            button.svelte-1tcem6n:nth-child(3).selected {
+                background-color: #ff4444 !important;
                 color: #ffffff !important;
+            }
+            /* Cluster - blue (step 2) */
+            button.svelte-1tcem6n:nth-child(4).selected {
+                background-color: #4488ff !important;
+                color: #ffffff !important;
+            }
+            /* ID - green (step 3 group) */
+            button.svelte-1tcem6n:nth-child(5).selected {
+                background-color: #22ff44 !important;
+                color: #ffffff !important;
+            }
+            /* Insert Metadata - green (step 3 group) */
+            button.svelte-1tcem6n:nth-child(6).selected {
+                background-color: #22ff44 !important;
+                color: #ffffff !important;
+            }
+            /* Insert Exif - green (step 3 group) */
+            button.svelte-1tcem6n:nth-child(7).selected {
+                background-color: #22ff44 !important;
+                color: #ffffff !important;
+            }
+            /* Unselected tab color hints */
+            button.svelte-1tcem6n:nth-child(3):not(.selected) {
+                border-bottom: 3px solid #ff4444 !important;
+            }
+            button.svelte-1tcem6n:nth-child(4):not(.selected) {
+                border-bottom: 3px solid #4488ff !important;
+            }
+            button.svelte-1tcem6n:nth-child(5):not(.selected),
+            button.svelte-1tcem6n:nth-child(6):not(.selected),
+            button.svelte-1tcem6n:nth-child(7):not(.selected) {
+                border-bottom: 3px solid #44ff44 !important;
             }
         """,
     ) as demo:
@@ -83,6 +100,13 @@ def app():
         with gr.Tabs(selected="setup") as main_tabs:
             # ~~~~~~~~~~~~ Setup TAB ~~~~~~~~~~~~~~~~~~~~~~
             with gr.Tab("Setup", id="setup"):
+                advanced_mode = gr.Checkbox(
+                        label="Advanced mode",
+                        value=False,
+                        scale=0,
+                        min_width=150,
+                        container=False,
+                    )
                 with gr.Row():
                     with gr.Column():
                         gr.Markdown(
@@ -138,10 +162,7 @@ def app():
                                     label="YOLO Model Path",
                                 )
                                 yolo_browse_btn = gr.Button("Browse", size="sm")
-                        advanced_mode = gr.Checkbox(
-                            label="Advanced mode",
-                            value=False,
-                        )
+
 
                 deployment_browse_btn.click(
                     fn=browse_deployment_folder,
@@ -247,6 +268,17 @@ def app():
                     outputs=[main_tabs],
                 )
 
+            # ~~~~~~~~~~~~ Cluster Tab ~~~~~~~~~~~~~~~~~~~~~~
+            with gr.Tab("Cluster Perceptually", id="cluster", visible=False) as cluster_tab:
+                cluster_run_btn = gr.Button("Cluster Perceptually", variant="primary")
+                cluster_output_box = gr.Textbox(label="Cluster Output", lines=20)
+
+                cluster_run_btn.click(
+                    fn=run_cluster,
+                    inputs=[selected_paths],
+                    outputs=cluster_output_box,
+                )
+
             # ~~~~~~~~~~~~ IDENTIFICATION TAB ~~~~~~~~~~~~~~~~~~~~~~
             with gr.Tab("ID", id="id", visible=False) as id_tab:
                 with gr.Row():
@@ -305,17 +337,6 @@ def app():
                     fn=run_metadata,
                     inputs=[selected_paths, metadata_csv_file],
                     outputs=metadata_output_box,
-                )
-
-            # ~~~~~~~~~~~~ Cluster Tab ~~~~~~~~~~~~~~~~~~~~~~
-            with gr.Tab("Cluster Perceptually", id="cluster", visible=False) as cluster_tab:
-                cluster_run_btn = gr.Button("Cluster Perceptually", variant="primary")
-                cluster_output_box = gr.Textbox(label="Cluster Output", lines=20)
-
-                cluster_run_btn.click(
-                    fn=run_cluster,
-                    inputs=[selected_paths],
-                    outputs=cluster_output_box,
                 )
 
             # ~~~~~~~~~~~~ Exif Tab ~~~~~~~~~~~~~~~~~~~~~~

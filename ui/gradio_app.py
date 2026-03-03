@@ -64,17 +64,17 @@ def app():
             }
             /* ID - green (step 3 group) */
             button.svelte-1tcem6n:nth-child(5).selected {
-                background-color: #22ff44 !important;
+                background-color: #22ff88 !important;
                 color: #ffffff !important;
             }
             /* Insert Metadata - green (step 3 group) */
             button.svelte-1tcem6n:nth-child(6).selected {
-                background-color: #22ff44 !important;
+                background-color: #22ff88 !important;
                 color: #ffffff !important;
             }
             /* Insert Exif - green (step 3 group) */
             button.svelte-1tcem6n:nth-child(7).selected {
-                background-color: #22ff44 !important;
+                background-color: #22ff88 !important;
                 color: #ffffff !important;
             }
             /* Unselected tab color hints */

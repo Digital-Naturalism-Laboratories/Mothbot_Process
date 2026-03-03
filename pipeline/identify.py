@@ -42,6 +42,7 @@ from PIL import Image
 from PIL import ImageFile
 import torch
 from datetime import datetime
+from collections import defaultdict
 
 ImageFile.LOAD_TRUNCATED_IMAGES = (
     True  # makes ok for use images that are messed up slightly
@@ -590,6 +591,7 @@ def get_bioclip_predictions_batch(imgs, classifier, batch_size=32):
     total_time = time.time() - start_time
     print(f"✅ Batch predictions complete — {total} images in {total_time:.1f}s ({total_time/60:.1f} min)")
     return results
+
 def get_bioclip_prediction(img_path, classifier):
 
     # Run inference
@@ -666,6 +668,24 @@ def get_bioclip_prediction_PILimg(img, classifier):
     print(f"  This is the winner: {winner} with a score of {winnerprob}")
     return winner, winnerprob, winningdict
 
+def read_cluster_id(json_path, shape_idx):
+    """Read clusterID from a shape in a JSON file. Returns None if not present."""
+    try:
+        with open(json_path, "r") as f:
+            data = json.load(f)
+        if 0 <= shape_idx < len(data["shapes"]):
+            cluster_val = data["shapes"][shape_idx].get("clusterID", None)
+            if cluster_val is not None:
+                return float(cluster_val)
+    except Exception:
+        pass
+    return None
+
+
+def apply_id_to_cluster(json_paths, idxes, pred, conf, winningdict):
+    """Write the same ID result to every member of a cluster."""
+    for json_path, idx in zip(json_paths, idxes):
+        update_json_labels_and_scores(json_path, idx, pred, conf, winningdict)
 
 def update_json_labels_and_scores(json_path, index, pred, conf, winningdict):
     """Updates the "label" and "score" entries for a specific shape in a JSON file.
@@ -860,57 +880,97 @@ def ID_matched_img_json_pairs(
     patch_paths_hu = []  # define this once before your loop
     json_paths_hu = []
     idx_paths_hu = []
+    
     if ID_HUMANDETECTIONS:
         index = 0
         numofpairs = len(hu_matched_img_json_pairs)
-        
-        # Collect all patches first
-        all_patches_hu = []  # (patchfullpath, json_path, idx)
+
+        # Collect all patches with their cluster IDs
+        all_patches = []  # (patchfullpath, json_path, idx, cluster_id)
         for pair in hu_matched_img_json_pairs:
             image_path, json_path = pair[:2]
             coordinates_of_detections_list, was_pre_ided_list, thepatch_list = (
                 get_rotated_rect_raw_coordinates(json_path)
             )
             index += 1
-            print(f"{index}/{numofpairs} | {len(coordinates_of_detections_list)} HUMAN detections in {json_path}")
+            print(f"{index}/{numofpairs} | {len(coordinates_of_detections_list)} HU detections in {json_path}")
             if coordinates_of_detections_list:
                 for idx, coordinates in enumerate(coordinates_of_detections_list):
                     if was_pre_ided_list[idx] and OVERWRITE_EXISTING_IDs == False:
                         continue
                     patchfullpath = os.path.dirname(image_path) + "/" + thepatch_list[idx]
-                    all_patches_hu.append((patchfullpath, json_path, idx))
+                    cluster_id = read_cluster_id(json_path, idx)
+                    all_patches.append((patchfullpath, json_path, idx, cluster_id))
 
-        # Load all images
-        print(f"🔍 Running bioclip on {len(all_patches_hu)} HUMAN detections in batches...")
+        # ── Cluster-aware deduplication ──────────────────────────────
+        # Group by cluster_id. Noise (-1) and unclustered (None) are each identified individually.
+        # For real clusters, pick one representative image to identify, then copy to the rest.
+        cluster_groups = defaultdict(list)  # cluster_id -> [(patchfullpath, json_path, idx), ...]
+        noise_counter = 0  # give each noise/unclustered item a unique key
+
+        for patchfullpath, json_path, idx, cluster_id in all_patches:
+            if cluster_id is None or cluster_id == -1.0:
+                # No cluster info or noise — identify individually
+                unique_key = f"__individual_{noise_counter}__"
+                noise_counter += 1
+                cluster_groups[unique_key].append((patchfullpath, json_path, idx))
+            else:
+                # Group by the integer part only — 3.1 and 3.4 → group 3
+                perceptual_group = int(cluster_id)
+                cluster_groups[perceptual_group].append((patchfullpath, json_path, idx))
+        # Build list of representative images to actually run inference on
+        representatives = []       # (patchfullpath, json_path, idx) — one per cluster
+        cluster_members = []       # all members of that cluster (including representative)
+
+        clustered_count = 0
+        individual_count = 0
+        for key, members in cluster_groups.items():
+            rep = members[0]  # first member is the representative
+            representatives.append(rep)
+            cluster_members.append(members)
+            if str(key).startswith("__individual_"):
+                individual_count += 1
+            else:
+                clustered_count += len(members)
+
+        print(f" Human detections: {len(all_patches)} total — {clustered_count} in clusters → {len(cluster_groups) - individual_count} representative IDs needed, {individual_count} individual")
+        print(f" Running bioclip on {len(representatives)} representative images (down from {len(all_patches)})...")
+
         import time
         start_time = time.time()
-
         batch_size = 32 if torch.cuda.is_available() else 8
-        imgs_hu = []
-        for patchfullpath, _, _ in all_patches_hu:
+
+        # Load representative images
+        rep_imgs = []
+        valid_reps = []
+        valid_members = []
+        for rep, members in zip(representatives, cluster_members):
+            patchfullpath, json_path, idx = rep
             try:
-                imgs_hu.append(Image.open(patchfullpath))
+                rep_imgs.append(Image.open(patchfullpath))
+                valid_reps.append(rep)
+                valid_members.append(members)
             except Exception as e:
-                print(f"⚠️ Could not open {patchfullpath}: {e}")
-                imgs_hu.append(None)
+                print(f"⚠️ Could not open representative {patchfullpath}: {e}")
 
-        # Filter out None images but keep track of indices
-        valid_patches_hu = [(p, j, i, img) for (p, j, i), img in zip(all_patches_hu, imgs_hu) if img is not None]
-        valid_imgs_hu = [img for _, _, _, img in valid_patches_hu]
+        # Batch predict on representatives only
+        predictions = get_bioclip_predictions_batch(rep_imgs, classifier, batch_size=batch_size)
 
-        # Batch predict
-        predictions_hu = get_bioclip_predictions_batch(valid_imgs_hu, classifier, batch_size=batch_size)
-
-        # Write results
-        for (patchfullpath, json_path, idx, _), (pred, conf, winningdict) in zip(valid_patches_hu, predictions_hu):
-            print(f"  {os.path.basename(patchfullpath)}: {pred} ({conf:.3f})")
-            update_json_labels_and_scores(json_path, idx, pred, conf, winningdict)
-            patch_paths_hu.append(patchfullpath)
-            json_paths_hu.append(json_path)
-            idx_paths_hu.append(idx)
+        # Write results — apply each prediction to ALL members of that cluster
+        for (rep_path, rep_json, rep_idx), members, (pred, conf, winningdict) in zip(valid_reps, valid_members, predictions):
+            print(f"  {os.path.basename(rep_path)}: {pred} ({conf:.3f}) → applied to {len(members)} detection(s)")
+            apply_id_to_cluster(
+                [m[1] for m in members],
+                [m[2] for m in members],
+                pred, conf, winningdict
+            )
+            for m in members:
+                patch_paths_hu.append(m[0])
+                json_paths_hu.append(m[1])
+                idx_paths_hu.append(m[2])
 
         total_time = time.time() - start_time
-        print(f"✅ HUMAN ID complete — {len(valid_patches_hu)} detections in {total_time:.1f}s ({total_time/60:.1f} min)")
+        print(f"✅ Human detection ID complete — {len(all_patches)} detections identified in {total_time:.1f}s ({total_time/60:.1f} min)")
         
     
     # Process BOT Detections
@@ -922,9 +982,9 @@ def ID_matched_img_json_pairs(
     if ID_BOTDETECTIONS:
         index = 0
         numofpairs = len(bot_matched_img_json_pairs)
-        
-        # Collect all patches first
-        all_patches = []  # (patchfullpath, json_path, idx)
+
+        # Collect all patches with their cluster IDs
+        all_patches = []  # (patchfullpath, json_path, idx, cluster_id)
         for pair in bot_matched_img_json_pairs:
             image_path, json_path = pair[:2]
             coordinates_of_detections_list, was_pre_ided_list, thepatch_list = (
@@ -937,39 +997,78 @@ def ID_matched_img_json_pairs(
                     if was_pre_ided_list[idx] and OVERWRITE_EXISTING_IDs == False:
                         continue
                     patchfullpath = os.path.dirname(image_path) + "/" + thepatch_list[idx]
-                    all_patches.append((patchfullpath, json_path, idx))
+                    cluster_id = read_cluster_id(json_path, idx)
+                    all_patches.append((patchfullpath, json_path, idx, cluster_id))
 
-        # Load all images
-        print(f"🔍 Running bioclip on {len(all_patches)} BOT detections in batches...")
+        # ── Cluster-aware deduplication ──────────────────────────────
+        # Group by cluster_id. Noise (-1) and unclustered (None) are each identified individually.
+        # For real clusters, pick one representative image to identify, then copy to the rest.
+        cluster_groups = defaultdict(list)  # cluster_id -> [(patchfullpath, json_path, idx), ...]
+        noise_counter = 0  # give each noise/unclustered item a unique key
+
+        for patchfullpath, json_path, idx, cluster_id in all_patches:
+            if cluster_id is None or cluster_id == -1.0:
+                # No cluster info or noise — identify individually
+                unique_key = f"__individual_{noise_counter}__"
+                noise_counter += 1
+                cluster_groups[unique_key].append((patchfullpath, json_path, idx))
+            else:
+                # Group by the integer part only — 3.1 and 3.4 → group 3
+                perceptual_group = int(cluster_id)
+                cluster_groups[perceptual_group].append((patchfullpath, json_path, idx))
+        # Build list of representative images to actually run inference on
+        representatives = []       # (patchfullpath, json_path, idx) — one per cluster
+        cluster_members = []       # all members of that cluster (including representative)
+
+        clustered_count = 0
+        individual_count = 0
+        for key, members in cluster_groups.items():
+            rep = members[0]  # first member is the representative
+            representatives.append(rep)
+            cluster_members.append(members)
+            if str(key).startswith("__individual_"):
+                individual_count += 1
+            else:
+                clustered_count += len(members)
+
+        print(f" BOT detections: {len(all_patches)} total — {clustered_count} in clusters → {len(cluster_groups) - individual_count} representative IDs needed, {individual_count} individual")
+        print(f" Running bioclip on {len(representatives)} representative images (down from {len(all_patches)})...")
+
         import time
         start_time = time.time()
-        
         batch_size = 32 if torch.cuda.is_available() else 8
-        imgs = []
-        for patchfullpath, _, _ in all_patches:
+
+        # Load representative images
+        rep_imgs = []
+        valid_reps = []
+        valid_members = []
+        for rep, members in zip(representatives, cluster_members):
+            patchfullpath, json_path, idx = rep
             try:
-                imgs.append(Image.open(patchfullpath))
+                rep_imgs.append(Image.open(patchfullpath))
+                valid_reps.append(rep)
+                valid_members.append(members)
             except Exception as e:
-                print(f"⚠️ Could not open {patchfullpath}: {e}")
-                imgs.append(None)
+                print(f"⚠️ Could not open representative {patchfullpath}: {e}")
 
-        # Filter out None images but keep track of indices
-        valid_patches = [(p, j, i, img) for (p, j, i), img in zip(all_patches, imgs) if img is not None]
-        valid_imgs = [img for _, _, _, img in valid_patches]
+        # Batch predict on representatives only
+        predictions = get_bioclip_predictions_batch(rep_imgs, classifier, batch_size=batch_size)
 
-        # Batch predict
-        predictions = get_bioclip_predictions_batch(valid_imgs, classifier, batch_size=batch_size)
-
-        # Write results
-        for (patchfullpath, json_path, idx, _), (pred, conf, winningdict) in zip(valid_patches, predictions):
-            print(f"  {os.path.basename(patchfullpath)}: {pred} ({conf:.3f})")
-            update_json_labels_and_scores(json_path, idx, pred, conf, winningdict)
-            patch_paths_bots.append(patchfullpath)
-            json_paths_bots.append(json_path)
-            idx_paths_bots.append(idx)
+        # Write results — apply each prediction to ALL members of that cluster
+        for (rep_path, rep_json, rep_idx), members, (pred, conf, winningdict) in zip(valid_reps, valid_members, predictions):
+            print(f"  {os.path.basename(rep_path)}: {pred} ({conf:.3f}) → applied to {len(members)} detection(s)")
+            apply_id_to_cluster(
+                [m[1] for m in members],
+                [m[2] for m in members],
+                pred, conf, winningdict
+            )
+            for m in members:
+                patch_paths_bots.append(m[0])
+                json_paths_bots.append(m[1])
+                idx_paths_bots.append(m[2])
 
         total_time = time.time() - start_time
-        print(f"✅ BOT ID complete — {len(valid_patches)} detections in {total_time:.1f}s ({total_time/60:.1f} min)")
+        print(f"✅ BOT ID complete — {len(all_patches)} detections identified in {total_time:.1f}s ({total_time/60:.1f} min)")
 
 def extract_doi_from_csv_path(csv_path: str) -> str:
     """

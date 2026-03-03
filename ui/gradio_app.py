@@ -248,10 +248,11 @@ def app():
                     )
                 DET_run_btn = gr.Button("Run Detection", variant="primary")
                 DET_output_box = gr.Textbox(label="Detection Output", lines=20)
-                continue_id_btn = gr.Button(
-                    "Continue to ID", variant="primary", interactive=False
-                )
 
+                continue_cluster_btn = gr.Button(
+                    "Continue to Cluster", variant="primary", interactive=False
+                )
+                
                 DET_run_btn.click(
                     fn=run_detection_with_continue,
                     inputs=[
@@ -260,10 +261,11 @@ def app():
                         imgsz,
                         OVERWRITE_PREV_BOT_DETECTIONS,
                     ],
-                    outputs=[DET_output_box, continue_id_btn],
+                    outputs=[DET_output_box, continue_cluster_btn],  # ← use continue_cluster_btn
                 )
-                continue_id_btn.click(
-                    fn=go_to_id_tab,
+
+                continue_cluster_btn.click(
+                    fn=go_to_cluster_tab,
                     inputs=[],
                     outputs=[main_tabs],
                 )
@@ -277,6 +279,14 @@ def app():
                     fn=run_cluster,
                     inputs=[selected_paths],
                     outputs=cluster_output_box,
+                )
+                continue_id_btn = gr.Button(
+                    "Continue to ID", variant="primary", interactive=False
+                )
+                continue_id_btn.click(
+                    fn=go_to_id_tab,
+                    inputs=[],
+                    outputs=[main_tabs],
                 )
 
             # ~~~~~~~~~~~~ IDENTIFICATION TAB ~~~~~~~~~~~~~~~~~~~~~~
@@ -507,6 +517,8 @@ def go_to_process_tab():
 def go_to_id_tab():
     return gr.Tabs(selected="id")
 
+def go_to_cluster_tab():
+    return gr.Tabs(selected="cluster")
 
 def toggle_advanced_mode(enabled):
     visible = bool(enabled)
@@ -639,6 +651,11 @@ def run_full_process(
             },
         ),
         (
+            "Cluster",
+            Mothbot_Cluster.run,
+            lambda folder: {"input_path": folder},
+        ),
+        (
             "ID",
             Mothbot_ID.run,
             lambda folder: {
@@ -658,11 +675,7 @@ def run_full_process(
                 "metadata_path": str(metadata_csv),
             },
         ),
-        (
-            "Cluster",
-            Mothbot_Cluster.run,
-            lambda folder: {"input_path": folder},
-        ),
+
         (
             "Exif",
             Mothbot_InsertExif.run,

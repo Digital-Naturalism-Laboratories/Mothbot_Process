@@ -252,7 +252,7 @@ def app():
                 continue_cluster_btn = gr.Button(
                     "Continue to Cluster", variant="primary", interactive=False
                 )
-                
+
                 DET_run_btn.click(
                     fn=run_detection_with_continue,
                     inputs=[
@@ -274,15 +274,15 @@ def app():
             with gr.Tab("Cluster Perceptually", id="cluster", visible=False) as cluster_tab:
                 cluster_run_btn = gr.Button("Cluster Perceptually", variant="primary")
                 cluster_output_box = gr.Textbox(label="Cluster Output", lines=20)
-
-                cluster_run_btn.click(
-                    fn=run_cluster,
-                    inputs=[selected_paths],
-                    outputs=cluster_output_box,
-                )
                 continue_id_btn = gr.Button(
                     "Continue to ID", variant="primary", interactive=False
                 )
+                cluster_run_btn.click(
+                    fn=run_cluster_with_continue,
+                    inputs=[selected_paths],
+                    outputs=[cluster_output_box, continue_id_btn],
+                )
+
                 continue_id_btn.click(
                     fn=go_to_id_tab,
                     inputs=[],
@@ -599,6 +599,32 @@ def run_metadata(selected_folders, metadata):
             "metadata_path": str(metadata),
         },
     )
+
+
+def run_cluster_with_continue(selected_folders):
+    if not selected_folders:
+        yield "No nightly folders selected.\n", gr.update(interactive=False)
+        return
+
+    output_log = ""
+    had_error = False
+
+    for folder in selected_folders:
+        output_log += f"---🔍 Running Cluster for {folder} ---\n"
+        yield output_log, gr.update(interactive=False)
+
+        try:
+            for chunk in run_in_thread(Mothbot_Cluster.run, input_path=folder):
+                output_log += chunk
+                yield output_log, gr.update(interactive=False)
+            output_log += f"✅ Cluster completed for {folder}\n"
+        except Exception as exc:
+            had_error = True
+            output_log += f"\n❌ Exception while processing {folder}: {exc}\n"
+        yield output_log, gr.update(interactive=False)
+
+    output_log += "------  Cluster  processing finished ------"
+    yield output_log, gr.update(interactive=(not had_error))
 
 
 def run_cluster(selected_folders):

@@ -21,7 +21,7 @@ import tomllib
 import gradio as gr
 
 from core.common import run_in_thread
-from ui.path_picker import browse_path
+from ui.path_picker import browse_path, browse_path_with_status
 
 # Lazy-import worker modules so heavy ML deps only load when a tab is used.
 from pipeline import cluster as Mothbot_Cluster
@@ -197,6 +197,7 @@ def app():
     ) as demo:
         mapping_state = gr.State({})
         toggle_label_state = gr.State("Select All")
+        picker_error_state = gr.State("")
         selected_paths = gr.JSON(
             label="Confirmed Nightly Folders to be Processed", visible=False
         )
@@ -271,10 +272,10 @@ def app():
                 deployment_browse_btn.click(
                     fn=browse_deployment_folder,
                     inputs=[deployment_path],
-                    outputs=[deployment_path],
+                    outputs=[deployment_path, picker_error_state],
                 ).then(
                     fn=scan_deployment_folder,
-                    inputs=[deployment_path],
+                    inputs=[deployment_path, picker_error_state],
                     outputs=[
                         status,
                         folder_choices,
@@ -286,7 +287,7 @@ def app():
                     ],
                 )
                 deployment_path.change(
-                    fn=scan_deployment_folder,
+                    fn=scan_deployment_folder_on_change,
                     inputs=[deployment_path],
                     outputs=[
                         status,
@@ -518,7 +519,11 @@ def app():
 
 
 def browse_deployment_folder(current_path):
-    return browse_path(current_path=current_path, mode="folder") or current_path
+    selected_path, picker_error = browse_path_with_status(
+        current_path=current_path,
+        mode="folder",
+    )
+    return (selected_path or current_path), picker_error
 
 
 def browse_metadata_csv(current_path):
@@ -539,8 +544,19 @@ def browse_yolo_model(current_path):
     )
 
 
-def scan_deployment_folder(folder_path):
+def scan_deployment_folder(folder_path, picker_error_message=""):
     """Scan *folder_path* for nightly sub-folders and return UI updates."""
+    if picker_error_message:
+        return (
+            gr.update(value=f"Picker error: {picker_error_message}", visible=True),
+            gr.update(choices=[], value=[], visible=False),
+            {},
+            "Select All",
+            gr.update(interactive=False, visible=False),
+            [],
+            gr.update(visible=False),
+        )
+
     if not folder_path or not os.path.isdir(folder_path):
         return (
             gr.update(value="No valid folder path provided.", visible=True),
@@ -600,6 +616,10 @@ def scan_deployment_folder(folder_path):
         [],
         gr.update(visible=True),
     )
+
+
+def scan_deployment_folder_on_change(folder_path):
+    return scan_deployment_folder(folder_path, "")
 
 
 def toggle_select_all(current_values, mapping, button_label):

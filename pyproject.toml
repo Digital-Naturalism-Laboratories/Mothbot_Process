@@ -1,6 +1,6 @@
 [project]
 name = "mothbot"
-version = "0.1.0"
+version = "1.0.15"
 description = "Desktop-packaging-friendly Gradio app for Mothbot processing pipelines."
 readme = "README.md"
 requires-python = ">=3.11"

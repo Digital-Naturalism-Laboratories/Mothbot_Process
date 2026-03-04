@@ -14,6 +14,14 @@ New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 
 $env:ULTRALYTICS_AUTOINSTALL = "0"
+if ($env:GITHUB_REF_NAME -and $env:GITHUB_REF_NAME.StartsWith("v")) {
+  $env:MOTHBOT_RELEASE_VERSION = $env:GITHUB_REF_NAME.Substring(1)
+} else {
+  $env:MOTHBOT_RELEASE_VERSION = python -c "import tomllib, pathlib; p=pathlib.Path('pyproject.toml'); print(tomllib.loads(p.read_text())['project']['version'])"
+}
+$VersionFile = Join-Path $BuildDir "VERSION"
+Set-Content -Path $VersionFile -Value $env:MOTHBOT_RELEASE_VERSION -NoNewline
+$env:MOTHBOT_VERSION_FILE = $VersionFile
 
 & $PythonExe -m pip install --upgrade pip
 & $PythonExe -m pip install -e ".[cuda118-packaging]" --extra-index-url https://download.pytorch.org/whl/cu118

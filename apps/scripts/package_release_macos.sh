@@ -13,7 +13,10 @@ if [ ! -d "$DIST_DIR/Mothbot.app" ]; then
   exit 1
 fi
 
-VERSION="$(python3 -c 'import tomllib, pathlib; p=pathlib.Path("pyproject.toml"); print(tomllib.loads(p.read_text())["project"]["version"])')"
+VERSION="${MOTHBOT_RELEASE_VERSION:-}"
+if [ -z "$VERSION" ]; then
+  VERSION="$(python3 -c 'import tomllib, pathlib; p=pathlib.Path("pyproject.toml"); print(tomllib.loads(p.read_text())["project"]["version"])')"
+fi
 ARCH="$(uname -m)"
 TARGET_BASENAME="Mothbot-${VERSION}-macos-${ARCH}"
 

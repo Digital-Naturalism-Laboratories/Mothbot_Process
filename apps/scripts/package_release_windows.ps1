@@ -16,7 +16,10 @@ if ($null -eq $SevenZip) {
   throw "7z is required to package Windows release artifacts."
 }
 
-$Version = python -c "import tomllib, pathlib; p=pathlib.Path('pyproject.toml'); print(tomllib.loads(p.read_text())['project']['version'])"
+$Version = $env:MOTHBOT_RELEASE_VERSION
+if ([string]::IsNullOrWhiteSpace($Version)) {
+  $Version = python -c "import tomllib, pathlib; p=pathlib.Path('pyproject.toml'); print(tomllib.loads(p.read_text())['project']['version'])"
+}
 $Arch = $env:PROCESSOR_ARCHITECTURE.ToLower()
 $TargetPath = Join-Path $ReleaseDir "Mothbot-$Version-windows-$Arch.zip"
 

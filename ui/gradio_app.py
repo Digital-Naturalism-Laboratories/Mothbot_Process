@@ -12,7 +12,12 @@ Key changes from the subprocess-based original:
 import os
 import re
 import glob
+import sys
+import platform
+import subprocess
+from importlib.metadata import version
 from pathlib import Path
+import tomllib
 import gradio as gr
 
 from core.common import run_in_thread
@@ -31,6 +36,91 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ARTIFACTS_DIR = Path(
     os.getenv("MOTHBOT_ARTIFACTS_DIR", str(PROJECT_ROOT / "artifacts"))
 )
+
+
+def _normalize_version(raw_version):
+    normalized = (raw_version or "").strip()
+    if normalized.startswith("v"):
+        normalized = normalized[1:]
+    return normalized or "dev"
+
+
+def _read_version_file(version_file):
+    try:
+        if version_file.exists():
+            return _normalize_version(version_file.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return None
+
+
+def _get_git_tag_version():
+    if not (PROJECT_ROOT / ".git").exists():
+        return None
+
+    git_commands = [
+        ["git", "describe", "--tags", "--exact-match"],
+        ["git", "describe", "--tags", "--abbrev=0"],
+    ]
+    for command in git_commands:
+        try:
+            raw_output = subprocess.check_output(
+                command,
+                cwd=str(PROJECT_ROOT),
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+            return _normalize_version(raw_output)
+        except Exception:
+            continue
+    return None
+
+
+def _get_app_version():
+    env_version = _normalize_version(os.getenv("MOTHBOT_RELEASE_VERSION", ""))
+    if env_version != "dev":
+        return env_version
+
+    # Prefer an explicitly bundled version file so packaged apps can show
+    # the exact GitHub release version used during the build.
+    version_candidates = [Path(sys.executable).resolve().parent / "VERSION", PROJECT_ROOT / "VERSION"]
+    maybe_meipass = getattr(sys, "_MEIPASS", None)
+    if maybe_meipass:
+        version_candidates.insert(0, Path(maybe_meipass) / "VERSION")
+
+    for candidate in version_candidates:
+        file_version = _read_version_file(candidate)
+        if file_version:
+            return file_version
+
+    git_tag_version = _get_git_tag_version()
+    if git_tag_version:
+        return git_tag_version
+
+    try:
+        return _normalize_version(version("mothbot"))
+    except Exception:
+        pass
+
+    try:
+        pyproject_data = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())
+        return _normalize_version(pyproject_data["project"]["version"])
+    except Exception:
+        return "dev"
+
+
+def _get_platform_label():
+    system_name = platform.system().lower()
+    if system_name == "darwin":
+        return "macOS"
+    if system_name == "windows":
+        return "Windows"
+    if system_name == "linux":
+        return "Linux"
+    return platform.system() or "Unknown OS"
+
+
+APP_META_LABEL = f"v{_get_app_version()} | {_get_platform_label()}"
 
 
 # ──────────────────────────────────────────────────────────────
@@ -88,6 +178,20 @@ def app():
             button.svelte-1tcem6n:nth-child(6):not(.selected),
             button.svelte-1tcem6n:nth-child(7):not(.selected) {
                 border-bottom: 3px solid #44ff44 !important;
+            }
+            #app-meta-row {
+                justify-content: flex-end;
+                margin-top: 10px;
+            }
+            #app-meta-badge p {
+                margin: 0;
+                font-size: 12px;
+                color: #666666;
+                background: #f4f4f4;
+                border: 1px solid #d8d8d8;
+                border-radius: 999px;
+                padding: 4px 10px;
+                line-height: 1.2;
             }
         """,
     ) as demo:
@@ -402,6 +506,8 @@ def app():
             return gr.update(value="Mothbot is shutting down — you can now close this browser tab.", interactive=False)
 
         quit_btn.click(fn=quit_app, inputs=[], outputs=[quit_btn])
+        with gr.Row(elem_id="app-meta-row"):
+            gr.Markdown(APP_META_LABEL, elem_id="app-meta-badge")
 
     return demo
 

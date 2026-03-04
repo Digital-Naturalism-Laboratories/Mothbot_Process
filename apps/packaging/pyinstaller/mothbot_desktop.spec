@@ -8,6 +8,7 @@ Usage:
 
 from pathlib import Path
 import importlib.util
+import os
 import sys
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
@@ -24,6 +25,13 @@ def _resolve_project_dir():
 
 project_dir = _resolve_project_dir()
 ai_dir = project_dir.parent
+release_version = os.environ.get("MOTHBOT_RELEASE_VERSION", "").strip().lstrip("v")
+if not release_version:
+    try:
+        import tomllib
+        release_version = tomllib.loads((project_dir / "pyproject.toml").read_text())["project"]["version"]
+    except Exception:
+        release_version = "0.1.0"
 
 hiddenimports = []
 for package in [
@@ -95,6 +103,13 @@ favicon_ico = project_dir / "assets" / "favicon.ico"
 if favicon_ico.exists():
     datas.append((str(favicon_ico), "assets"))
 
+# Bundle explicit build/release version marker when available.
+build_version_file = os.environ.get("MOTHBOT_VERSION_FILE", "").strip()
+if build_version_file:
+    version_path = Path(build_version_file)
+    if version_path.exists():
+        datas.append((str(version_path), "."))
+
 
 a = Analysis(
     [str(project_dir / "apps" / "desktop_main.py")],
@@ -144,8 +159,8 @@ if sys.platform == "darwin":
         info_plist={
             "CFBundleName": "Mothbot",
             "CFBundleDisplayName": "Mothbot",
-            "CFBundleShortVersionString": "0.1.0",
-            "CFBundleVersion": "0.1.0",
+            "CFBundleShortVersionString": release_version,
+            "CFBundleVersion": release_version,
             "NSHighResolutionCapable": True,
         },
     )

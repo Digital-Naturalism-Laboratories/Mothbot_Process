@@ -19,7 +19,10 @@ if ! command -v 7z >/dev/null 2>&1; then
   exit 1
 fi
 
-VERSION="$(python3 -c 'import tomllib, pathlib; p=pathlib.Path("pyproject.toml"); print(tomllib.loads(p.read_text())["project"]["version"])')"
+VERSION="${MOTHBOT_RELEASE_VERSION:-}"
+if [ -z "$VERSION" ]; then
+  VERSION="$(python3 -c 'import tomllib, pathlib; p=pathlib.Path("pyproject.toml"); print(tomllib.loads(p.read_text())["project"]["version"])')"
+fi
 ARCH="$(uname -m)"
 TARGET_PATH="$RELEASE_DIR/Mothbot-${VERSION}-linux-${ARCH}.zip"
 

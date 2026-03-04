@@ -4,7 +4,7 @@ ORG ?= Digital-Naturalism-Laboratories
 REPO ?= mothbot-detect
 VISIBILITY ?= public
 
-.PHONY: help setup run run-watch gpu-setup dev-help release-help venv install-cpu install-gpu-cuda118 run-local run-local-watch clean build-macos build-linux build-windows package-macos init-git publish-org
+.PHONY: help setup run run-watch gpu-setup dev-help release-help release-bump venv install-cpu install-gpu-cuda118 run-local run-local-watch clean build-macos build-linux build-windows package-macos init-git publish-org
 
 help:
 	@echo "Mothbot Make entrypoint"
@@ -20,6 +20,7 @@ help:
 	@echo ""
 	@echo "Release / packaging:"
 	@echo "  make release-help           Show all release + cleanup targets"
+	@echo "  make release-bump           Interactive SemVer bump + tag push (triggers release workflow)"
 	@echo "  make build-macos            Build macOS app bundle"
 	@echo "  make build-linux            Build Linux app folder"
 	@echo "  make build-windows          Build Windows app folder"
@@ -56,6 +57,9 @@ venv install-cpu install-gpu-cuda118 run-local run-local-watch:
 	@$(MAKE) -f make/dev.mk $@
 
 clean build-macos build-linux build-windows package-macos:
+	@$(MAKE) -f make/release.mk $@
+
+release-bump:
 	@$(MAKE) -f make/release.mk $@
 
 init-git:

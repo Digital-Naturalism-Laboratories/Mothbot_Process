@@ -1,8 +1,24 @@
 #!/usr/bin/env python3
+import os
+
+
+import os
+
+# Ultralytics and some other dependencies can set CUDA_VISIBLE_DEVICES="-1"
+# at import time, which disables GPU for the entire process.
+# Clear it here before any other imports happen.
+if os.environ.get("CUDA_VISIBLE_DEVICES") == "-1":
+    del os.environ["CUDA_VISIBLE_DEVICES"]
 
 import logging
 from logging.handlers import RotatingFileHandler
-import os
+
+
+
+
+import logging
+from logging.handlers import RotatingFileHandler
+
 from pathlib import Path
 import socket
 import sys

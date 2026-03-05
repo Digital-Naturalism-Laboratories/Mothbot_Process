@@ -96,8 +96,13 @@ taxa_path = SPECIES_LIST
 # Paths to save filtered list of embeddings/labels
 image_embeddings_path = INPUT_PATH + "/image_embeddings.npy"
 embedding_labels_path = INPUT_PATH + "/embedding_labels.json"
+
 # print(torch.cuda.is_available())
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+# TODO: Re-enable CUDA once pybioclip batch performance on GPU is fixed.
+# Original line: DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE = "cpu"  # Temporarily forced to CPU — bioclip runs slower on CUDA currently
+
 DOI = ""
 
 
@@ -1134,6 +1139,10 @@ def run(
     print("using species list: " + DOI)
 
     DEVICE = get_device()
+    # TODO: Re-enable once pybioclip CUDA performance is fixed.
+    print("Note: Cuda temporarily disabled for ID while we figure out what's going on with bioclip and CUDA")
+    # Temporarily force CPU regardless of what get_device() returns.
+    DEVICE = "cpu"
     print_device_info(selected_device=DEVICE)
 
     # Find all the dated folders that our data lives in

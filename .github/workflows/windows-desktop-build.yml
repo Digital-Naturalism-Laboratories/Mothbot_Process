@@ -23,7 +23,7 @@ jobs:
           - os: windows-latest
             platform: windows
           - os: windows-latest
-            platform: windows-cuda  # maybe disabling cuda for now because it ends up 2.86gb and github won't let us build that big
+            platform: windows-cuda  
           - os: macos-latest
             platform: macos
           #Disabling linux for now, because it fails because it is over 1.6 gb
@@ -76,7 +76,7 @@ jobs:
           bash apps/scripts/build_desktop_linux.sh
 
       - name: Build Windows desktop app
-        if: runner.os == 'windows'
+        if: matrix.platform == 'windows'
         shell: pwsh
         run: |
           ./apps/scripts/build_desktop_windows.ps1

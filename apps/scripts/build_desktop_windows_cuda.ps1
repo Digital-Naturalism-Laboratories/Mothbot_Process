@@ -25,6 +25,10 @@ $env:MOTHBOT_VERSION_FILE = $VersionFile
 
 & $PythonExe -m pip install --upgrade pip
 & $PythonExe -m pip install -e ".[cuda118-packaging]" --extra-index-url https://download.pytorch.org/whl/cu118
+
+Write-Host "=== Verifying torch installation ==="
+& $PythonExe -c "import torch; print('torch version:', torch.__version__); print('CUDA available:', torch.cuda.is_available())"
+
 & $PythonExe -m PyInstaller --clean --noconfirm --workpath $BuildDir --distpath $DistDir apps/packaging/pyinstaller/mothbot_desktop.spec
 
 & "$RootDir\apps\scripts\package_release_windows_cuda.ps1"

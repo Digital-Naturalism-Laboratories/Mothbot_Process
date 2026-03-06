@@ -76,7 +76,7 @@ jobs:
           bash apps/scripts/build_desktop_linux.sh
 
       - name: Build Windows desktop app
-        if: runner.os == 'Windows'
+        if: runner.os == 'windows'
         shell: pwsh
         run: |
           ./apps/scripts/build_desktop_windows.ps1

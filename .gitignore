@@ -23,7 +23,7 @@ apps/release/
 
 # Local generated data and models
 artifacts/
-*.pt
+#*.pt
 *.onnx
 *.engine
 

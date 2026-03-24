@@ -7,6 +7,13 @@ This script tries to group all the detections in a night perceptually and then t
 
 It takes a path to a nightly folder containing already detected creatures
 
+Long Description:
+The clustering algorithm aims to group detections by visual similarity. It achieves this grouping in the following way. First it extracts the embeddings of each of the night's visual detections using DINOv2. The Open Source DINOv2 is a machine learning model for "producing universal features suitable for image-level visual tasks" [https://dinov2.metademolab.com/] and is used to abstract each image into a set of visual features in a hyper-dimensional parameter space. (In the case that DINOv2 is not accessible for whatever reason, the script also defaults to just extracting features via a more basic histogram approach). 
+Once all the embeddings of the features have been loaded into a common hyperspace, we group images with visual similarity using HDBSCAN. This open source python library which stands for Hierarchical Density-Based Spatial Clustering of Applications with Noise [https://scikit-learn.org/stable/modules/generated/sklearn.cluster.HDBSCAN.html], allows us to quickly find groupings within arbitrary data.  Images that are grouped into clusters of at least 2 other detections are assigned a unique positive "Visual Cluster" number such as "3" or "56". Detections with no other visual mates are given the same "-1" "Visual Cluster" identifier, indicating that they are somewhat unique within this dataset (and thus likely a unique insect). 
+Then we further organize these visual clusters through a stage of "temporal clustering," where we pass over these visual clusters and see if they have neighbors in adjacent source images. If so, temporal lineages , or tracks within visual clusters are given a sub-designation with an extra numerical suffix (such as "3.1", "3.2", "3.17). 
+This clustering then allows for rapid selection of visually similar detections in our Classify UI.
+
+
 
 Usage:
   python Mothbox_ID.py

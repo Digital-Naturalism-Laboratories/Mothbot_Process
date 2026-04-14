@@ -1139,10 +1139,13 @@ def run(
     print("using species list: " + DOI)
 
     DEVICE = get_device()
+    
+    '''
     # TODO: Re-enable once pybioclip CUDA performance is fixed.
     print("Note: Cuda temporarily disabled for ID while we figure out what's going on with bioclip and CUDA")
     # Temporarily force CPU regardless of what get_device() returns.
     DEVICE = "cpu"
+    '''
     print_device_info(selected_device=DEVICE)
 
     # Find all the dated folders that our data lives in

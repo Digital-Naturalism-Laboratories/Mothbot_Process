@@ -5,7 +5,7 @@ from pathlib import Path
 from PIL import Image
 import piexif
 import argparse
-
+import re
 from core.common import find_date_folders, find_detection_matches, update_main_list
 
 # TODO: make work for entire deployment
@@ -177,24 +177,26 @@ def deg_to_dms_rational(deg_float):
 
     return ((abs(deg), 1), (minute, 1), (sec, 10000))
 
-
 def add_gps_exif(input_path, output_path, lat, lng, altitude=None):
-    # Load image
     img = Image.open(input_path)
 
-    # Try to load existing EXIF data, or start fresh
     exif_bytes = img.info.get("exif")
     if exif_bytes:
         exif_dict = piexif.load(exif_bytes)
     else:
         exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
 
-    # Check if GPS data already exists
-    gps_existing = exif_dict.get("GPS", {})
-    # Skipping the Skipping for now!
-    # if gps_existing.get(piexif.GPSIFD.GPSLatitude) and gps_existing.get(piexif.GPSIFD.GPSLongitude):
-    #    print("GPS data already exists. No changes made.")
-    #    return
+    # Extract datetime from filename
+    filename = Path(input_path).name
+    match = re.search(r"_(\d{4})_(\d{2})_(\d{2})__?(\d{2})_(\d{2})_(\d{2})", filename)
+    if match:
+        y, m, d, h, mi, s = match.groups()
+        datetime_str = f"{y}:{m}:{d} {h}:{mi}:{s}".encode("utf-8")
+        exif_dict["Exif"][piexif.ExifIFD.DateTimeOriginal] = datetime_str
+        exif_dict["Exif"][piexif.ExifIFD.DateTimeDigitized] = datetime_str
+        exif_dict["0th"][piexif.ImageIFD.DateTime] = datetime_str
+    else:
+        print(f"No datetime found in filename: {filename}")
 
     # Create GPS IFD
     gps_ifd = {
@@ -208,14 +210,11 @@ def add_gps_exif(input_path, output_path, lat, lng, altitude=None):
         gps_ifd[piexif.GPSIFD.GPSAltitudeRef] = 0 if altitude >= 0 else 1
         gps_ifd[piexif.GPSIFD.GPSAltitude] = (int(abs(altitude * 100)), 100)
 
-    # Inject GPS into EXIF
     exif_dict["GPS"] = gps_ifd
     exif_bytes = piexif.dump(exif_dict)
 
-    # Save the image with new EXIF
     img.save(output_path, exif=exif_bytes)
-    print(f"Saved image with GPS data: {output_path}")
-
+    print(f"Saved image with GPS and datetime data: {output_path}")
 
 def connect_metadata_matched_img_json_pairs(
     hu_matched_img_json_pairs, bot_matched_img_json_pairs

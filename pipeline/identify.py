@@ -106,6 +106,9 @@ DEVICE = "cpu"  # Temporarily forced to CPU — bioclip runs slower on CUDA curr
 DOI = ""
 
 
+from importlib.metadata import version
+print(f"pybioclip version: {version('pybioclip')}")
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -1140,12 +1143,12 @@ def run(
 
     DEVICE = get_device()
     
-    '''
+    
     # TODO: Re-enable once pybioclip CUDA performance is fixed.
     print("Note: Cuda temporarily disabled for ID while we figure out what's going on with bioclip and CUDA")
     # Temporarily force CPU regardless of what get_device() returns.
     DEVICE = "cpu"
-    '''
+    
     print_device_info(selected_device=DEVICE)
 
     # Find all the dated folders that our data lives in

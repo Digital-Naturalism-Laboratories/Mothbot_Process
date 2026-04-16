@@ -36,13 +36,14 @@ import json
 import argparse
 import re
 import io
+import time
 from pathlib import Path
+from collections import defaultdict
 import numpy as np
 from PIL import Image
 from PIL import ImageFile
 import torch
 from datetime import datetime
-from collections import defaultdict
 
 ImageFile.LOAD_TRUNCATED_IMAGES = (
     True  # makes ok for use images that are messed up slightly
@@ -85,23 +86,20 @@ OVERWRITE_EXISTING_IDs = True  # True
 # you probably always want these below as true
 ID_HUMANDETECTIONS = True
 ID_BOTDETECTIONS = True
+
 # ~~~~Other Global Variables~~~~~~~
 
 TAXA_COLS = ["kingdom", "phylum", "class", "order", "family", "genus", "species"]
 TAXONOMIC_RANK_FILTER = Rank.ORDER
-TOL_TAXONOMIC_RANK = "species"  # Change this to "species" to target just the species in your CSV # Note i think this is actually just always needs to be set for SPECIES for this exampple
+TOL_TAXONOMIC_RANK = "species"  # Change this to "species" to target just the species in your CSV # Note i think this is actually just always needs to be set for SPECIES for this example
 DOMAIN = "Eukarya"  # basically our "creature" tag? figure we will never see a prokaryote on the mothbox # Also i think GBIF has a "Biota" category that is a fancier version of "creature" or "life"
 taxa_path = SPECIES_LIST
-
-# Paths to save filtered list of embeddings/labels
-image_embeddings_path = INPUT_PATH + "/image_embeddings.npy"
-embedding_labels_path = INPUT_PATH + "/embedding_labels.json"
 
 # print(torch.cuda.is_available())
 
 # TODO: Re-enable CUDA once pybioclip batch performance on GPU is fixed.
-# Original line: DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-DEVICE = "cpu"  # Temporarily forced to CPU — bioclip runs slower on CUDA currently
+# Original line: 
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 DOI = ""
 
@@ -122,7 +120,6 @@ def parse_args():
         default=TOL_TAXONOMIC_RANK,
         # help="rank to which to classify; must be column in --taxa-csv (default: {TAXONOMIC_RANK})", #this always needs to just be left at species i think
     )
-
     parser.add_argument(
         "--rank",
         default=TAXONOMIC_RANK_FILTER_num,
@@ -287,193 +284,11 @@ def load_taxon_keys(
     return target_values
 
 
-def load_taxon_keys_old(taxa_path, taxa_cols, taxon_rank="order", flag_det_errors=True):
-    print("Reading", taxa_path, "extracting", taxon_rank, "values.")
-    df = pl.read_csv(
-        taxa_path, separator="\t"
-    )  # Changed separator to '\t' for tab-delimited
-    target_values = set(
-        pl.Series(df.select(taxon_rank).drop_nulls())
-        .str.to_lowercase()
-        .unique()
-        .to_list()
-    )
-    print("Found", len(target_values), taxon_rank, "values: ")
-    # print(target_values)
-
-    return target_values
-
-
-def load_taxon_keys_comma(
-    taxa_path, taxa_cols, taxon_rank="order", flag_det_errors=True
-):
-    """
-    Loads taxon keys from a Comma-delimited CSV file into a list.
-
-    Args:
-      taxa_path: String. Path to the taxa CSV file.
-      taxa_cols: List of strings. Taxonomic columns in taxa CSV to load (default: ["kingdom", "phylum", "class", "order", "family", "genus", "species"]).
-      taxon_rank: String. Taxonomic rank to which to classify images (must be present as column in the taxa csv at file_path). Default: "order".
-      flag_det_errors: Boolean. Whether to flag holes and smudges blanks (adds "hole" and "background" and "blank" to taxon_keys). Default: True.
-
-    Returns:
-      taxon_keys: List. A list of taxon keys to feed to the CustomClassifier for bioCLIP classification.
-    """
-    print("Reading", taxa_path, "extracting", taxon_rank, "values.")
-    df = pl.read_csv(taxa_path)
-    target_values = set(
-        pl.Series(df.select(taxon_rank).drop_nulls())
-        .str.to_lowercase()
-        .unique()
-        .to_list()
-    )
-    print("Found", len(target_values), taxon_rank, "values: ")
-    # print(target_values)
-
-    return target_values
-
-
-# We don't use this function much anymore
-def process_files_in_directory(data_path, classifier, taxon_rank="order"):
-    """
-    Processes files within a specified subdirectory.
-
-    Args:
-    data_path: String. The path to the directory containing files.
-    classifier: CustomLabelsClassifier object from TAXA_KEYS_CSV.
-    taxon_rank: String. Taxonomic rank to which to classify images (must be present as column in the taxa csv at file_path). Default: "order".
-    """
-
-    # Example: Print all file names in the subdirectory
-    for file in os.listdir(data_path):
-        file_path = os.path.join(data_path, file)
-        if os.path.isfile(file_path):
-            print(f"File: {file_path}")
-
-    img_list = [f for f in os.listdir(data_path) if f.endswith(".jpg")]
-
-    if not img_list:
-        # No imgs were found in base level
-        sys.exit("No .jpg images found in the data path: " + data_path)
-    else:
-        predictions = {}
-        # Analyze the files
-        print(f"Found {len(img_list)} .jpg images. \n Getting predictions...")
-        i = 1
-        for file in img_list:
-            filename = os.path.splitext(file)[0]
-            # print(filename)
-            data = os.path.join(data_path, file)
-            print(f"\n img # {str(i)} out of {str(len(img_list))}")
-            i = i + 1
-
-            # Run inference
-            results = classifier.predict(data)
-            classifier.predict_classifications_from_list()  # def predict_classifications_from_list(img: Union[PIL.Image.Image, str], cls_ary: List[str], device: Union[str, torch.device] = 'cpu') -> dict[str, float]:
-            sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)
-            # Get the highest scoring result
-            winner = sorted_results[0]
-            pred = winner["classification"]
-
-            # Print the winner
-            print(
-                filename
-                + f"  This is the winner: {pred} with a score of {winner['score']}"
-            )
-            key = f"data/{file}"
-            predstring = str(pred).strip().lower()
-            print(predstring)
-            if predstring in ["hole", "background", "wall", "floor", "blank", "sky"]:
-                predictions[key] = f"abiotic_{pred}"
-            else:
-                predictions[key] = taxon_rank + "_" + pred
-    return predictions
-
-
 def calculate_rotation_angle(points):
     """Calculates the rotation angle of the rectangle."""
-    # Implement a suitable algorithm to calculate the angle based on the points
-    # For example, using the slope of the first two points
     p1, p2 = points[:2]
     angle = np.arctan2(p2[1] - p1[1], p2[0] - p1[0]) * 180 / np.pi
     return angle
-
-
-def rotate_image_to_vertical(image, angle):
-    """Rotates an image to vertical orientation based on the given angle."""
-    image = image.rotate(-angle, expand=True)
-    return image
-
-
-""" 
-#don't use anymore
-def crop_rect(
-    img, rect, interpolation=cv2.INTER_LINEAR
-):  # cv2.INTER_LANCZOS4  cv2.INTER_LINEAR cv2.INTER_CUBIC
-    # get the parameter of the small rectangle
-    center, size, angle = rect[0], rect[1], rect[2]
-    center, size = tuple(map(int, center)), tuple(map(int, size))
-
-    # get row and col num in img
-    height, width = img.shape[0], img.shape[1]
-
-    # calculate the rotation matrix
-    M = cv2.getRotationMatrix2D(center, angle, 1)
-    # rotate the original image
-    img_rot = cv2.warpAffine(img, M, (width, height), flags=interpolation)
-
-    # now rotated rectangle becomes vertical, and we crop it
-    img_crop = cv2.getRectSubPix(img_rot, size, center)
-
-    return img_crop, img_rot
- """
-
-
-# not sure we use this anymore
-def rotate_cropped(img, points):
-    # print("shape of cnt: {}".format(points.shape))
-    rect = cv2.minAreaRect(points)
-    # print("rect: {}".format(rect))
-
-    # the order of the box points: bottom left, top left, top right,
-    # bottom right
-    box = cv2.boxPoints(rect)
-    box = np.int0(box)
-
-    # print("bounding box: {}".format(box))
-    cv2.drawContours(img, [box], 0, (0, 0, 255), 2)
-
-    # get width and height of the detected rectangle
-    width = int(rect[1][0])
-    height = int(rect[1][1])
-
-    src_pts = box.astype("float32")
-    # coordinate of the points in box points after the rectangle has been
-    # straightened
-    dst_pts = np.array(
-        [[0, height - 1], [0, 0], [width - 1, 0], [width - 1, height - 1]],
-        dtype="float32",
-    )
-
-    # the perspective transformation matrix
-    M = cv2.getPerspectiveTransform(src_pts, dst_pts)
-
-    # directly warp the rotated rectangle to get the straightened rectangle
-    warped = cv2.warpPerspective(img, M, (width, height))
-    return warped
-
-
-def get_rotated_rect_coordinates(json_file):
-    """Reads rotated rectangle coordinates from a JSON file and returns them."""
-    with open(json_file, "r") as f:
-        data = json.load(f)
-        coordinates_list = []
-        for shape in data["shapes"]:
-            if shape["shape_type"] == "rotation":
-                points = shape["points"]
-                x, y, w, h, angle = extract_rectangle_coordinates(points)
-                coordinates_list.append((x, y, w, h, angle))
-        return coordinates_list
 
 
 def extract_rectangle_coordinates(points):
@@ -490,98 +305,34 @@ def extract_rectangle_coordinates(points):
     return min_x, min_y, width, height, angle
 
 
-def calculate_rotation_angle(points):
-    """Calculates the rotation angle of the rectangle."""
-    # Implement a suitable algorithm to calculate the angle based on the points
-    # For example, using the slope of the first two points
-    p1, p2 = points[:2]
-    angle = np.arctan2(p2[1] - p1[1], p2[0] - p1[0]) * 180 / np.pi
-    return angle
-
-
-# not sure we use this
-def rotate_image_around_center(image, angle):
-    """Rotates an image around its center by the specified angle."""
-    cv_image = np.array(image)
-
-    height, width, _ = cv_image.shape
-    center = (width // 2, height // 2)
-    M_translate = np.float32([[1, 0, -center[0]], [0, 1, -center[1]]])
-    translated_image = cv2.warpAffine(cv_image, M_translate, (width, height))
-
-    rotated_image = cv2.rotate(translated_image, angle=angle)
-
-    M_translate_back = np.float32([[1, 0, center[0]], [0, 1, center[1]]])
-    final_image = cv2.warpAffine(rotated_image, M_translate_back, (width, height))
-    return final_image
-
-
 def crop_image(image, x, y, w, h):
     """Crops an image based on the specified coordinates."""
     cropped_image = image.crop((x, y, x + w, y + h))
     return cropped_image
 
 
-# not sure this is being used
-def warp_rotation(img, points):
-    # cnt = np.array(points)
-    cnt = np.array([[int(x), int(y)] for x, y in points])
-    # print("shape of cnt: {}".format(cnt.shape))
-    rect = cv2.minAreaRect(cnt)
-    # print("rect: {}".format(rect))
-
-    # the order of the box points: bottom left, top left, top right,
-    # bottom right
-    box = cv2.boxPoints(rect)
-    box = np.int0(box)
-
-    # print("bounding box: {}".format(box))
-    # cv2.drawContours(img, [box], 0, (0, 0, 255), 2)
-
-    # get width and height of the detected rectangle
-    width = int(rect[1][0])
-    height = int(rect[1][1])
-
-    src_pts = box.astype("float32")
-    # coordinate of the points in box points after the rectangle has been
-    # straightened
-    dst_pts = np.array(
-        [[0, height - 1], [0, 0], [width - 1, 0], [width - 1, height - 1]],
-        dtype="float32",
-    )
-
-    # the perspective transformation matrix
-    M = cv2.getPerspectiveTransform(src_pts, dst_pts)
-
-    # directly warp the rotated rectangle to get the straightened rectangle
-    warped = cv2.warpPerspective(img, M, (width, height))
-    return warped
-
-
 def get_bioclip_predictions_batch(imgs, classifier, batch_size=32):
-    """Process a batch of PIL images at once."""
-    import time
+    """Process a batch of PIL images using pybioclip's batch API."""
     results = []
     total = len(imgs)
     total_batches = (total + batch_size - 1) // batch_size
     start_time = time.time()
 
     for batch_num, i in enumerate(range(0, total, batch_size)):
-        batch = imgs[i:i+batch_size]
+        batch = imgs[i:i + batch_size]
         img_embeddings = classifier.create_image_features(batch)
         for probs in classifier.create_probabilities(img_embeddings, classifier.txt_embeddings):
             winner = ""
             winnerprob = ""
             winningdict = {}
-            index = 0
-            for pred in classifier.format_grouped_probs(
-                "", probs, rank=TAXONOMIC_RANK_FILTER, min_prob=1e-9, k=5
-            ):
+            for index, pred in enumerate(classifier.format_grouped_probs(
+                "", probs, rank=TAXONOMIC_RANK_FILTER, min_prob=1e-9, k=1
+            )):
                 if index == 0:
                     winner = pred[str(TAXONOMIC_RANK_FILTER.get_label())]
                     winnerprob = pred["score"]
                     winningdict = pred
-                index += 1
+                    break
             results.append((winner, winnerprob, winningdict))
 
         # Progress update after each batch
@@ -597,84 +348,17 @@ def get_bioclip_predictions_batch(imgs, classifier, batch_size=32):
             print(f"   📦 Batch {batches_done}/{total_batches} — {images_done}/{total} images — ~{eta_seconds:.0f}s remaining")
 
     total_time = time.time() - start_time
-    print(f"✅ Batch predictions complete — {total} images in {total_time:.1f}s ({total_time/60:.1f} min)")
+    print(f" Batch predictions complete — {total} images in {total_time:.1f}s ({total_time/60:.1f} min)")
     return results
-
-def get_bioclip_prediction(img_path, classifier):
-
-    # Run inference
-    results = classifier.predict(img_path, rank=TAXONOMIC_RANK_FILTER)
-    classifier.predict_classifications_from_list()  # def predict_classifications_from_list(img: Union[PIL.Image.Image, str], cls_ary: List[str], device: Union[str, torch.device] = 'cpu') -> dict[str, float]:
-    sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)
-    # Get the highest scoring result
-    winner = sorted_results[0]
-    pred = winner["classification"]
-
-    # Print the winner
-    print(f"  This is the winner: {pred} with a score of {winner['score']}")
-    return pred
-
-
-def get_bioclip_prediction_imgpath(img, classifier):
-    # create a PIL image array
-    images = [img]
-    winner = ""
-    winnerprob = ""
-
-    img_embeddings = classifier.create_image_features(images)
-    for probs in classifier.create_probabilities(
-        img_embeddings, classifier.txt_embeddings
-    ):
-        topk = probs.topk(k=5)
-        index = 0
-        for pred in classifier.format_grouped_probs(
-            "", probs, rank=TAXONOMIC_RANK_FILTER, min_prob=1e-9, k=5
-        ):  # TODO make it so tags get saved for all ranks, and specify deepest rank? #this shows the depth of the order it searches to
-            # print(pred)
-            if index == 0:
-                kingdom = pred["kingdom"]
-                # print(str(TAXONOMIC_RANK_FILTER.get_label()))
-                winner = pred[
-                    str(TAXONOMIC_RANK_FILTER.get_label())
-                ]  # get the correct ID based on the deepest order we are searching
-                winnerprob = pred["score"]
-                winningdict = pred
-            index = index + 1
-
-    # Print the winner
-    print(f"  This is the winner: {winner} with a score of {winnerprob}")
-    return winner, winnerprob, winningdict
 
 
 def get_bioclip_prediction_PILimg(img, classifier):
-    # create a PIL image array
-    images = [img]
-    winner = ""
-    winnerprob = ""
-
-    img_embeddings = classifier.create_image_features(images)
-    for probs in classifier.create_probabilities(
-        img_embeddings, classifier.txt_embeddings
-    ):
-        topk = probs.topk(k=5)
-        index = 0
-        for pred in classifier.format_grouped_probs(
-            "", probs, rank=TAXONOMIC_RANK_FILTER, min_prob=1e-9, k=5
-        ):  # TODO make it so tags get saved for all ranks, and specify deepest rank? #this shows the depth of the order it searches to
-            # print(pred)
-            if index == 0:
-                kingdom = pred["kingdom"]
-                # print(str(TAXONOMIC_RANK_FILTER.get_label()))
-                winner = pred[
-                    str(TAXONOMIC_RANK_FILTER.get_label())
-                ]  # get the correct ID based on the deepest order we are searching
-                winnerprob = pred["score"]
-                winningdict = pred
-            index = index + 1
-
-    # Print the winner
+    """Run inference on a single PIL image. Returns (winner, winnerprob, winningdict)."""
+    results = get_bioclip_predictions_batch([img], classifier, batch_size=1)
+    winner, winnerprob, winningdict = results[0]
     print(f"  This is the winner: {winner} with a score of {winnerprob}")
     return winner, winnerprob, winningdict
+
 
 def read_cluster_id(json_path, shape_idx):
     """Read clusterID from a shape in a JSON file. Returns None if not present."""
@@ -695,23 +379,23 @@ def apply_id_to_cluster(json_paths, idxes, pred, conf, winningdict):
     for json_path, idx in zip(json_paths, idxes):
         update_json_labels_and_scores(json_path, idx, pred, conf, winningdict)
 
+
 def update_json_labels_and_scores(json_path, index, pred, conf, winningdict):
-    """Updates the "label" and "score" entries for a specific shape in a JSON file.
+    """Updates the label and score entries for a specific shape in a JSON file.
 
     Args:
         json_path: The path to the JSON file.
         index: The index of the shape to update (0-based).
         pred: The new label value.
         conf: The new score value.
+        winningdict: Full prediction dict containing taxonomic rank values.
     """
-    # TODO add winningdict here correctly
     with open(json_path, "r") as f:
         data = json.load(f)
 
     if 0 <= index < len(data["shapes"]):
         shape = data["shapes"][index]
 
-        # do stuff here now
         shape["identifier_bot"] = VERSION
         shape["species_list"] = DOI
         shape["timestamp_ID_bot"] = current_timestamp()
@@ -725,29 +409,10 @@ def update_json_labels_and_scores(json_path, index, pred, conf, winningdict):
                 str(TAXONOMIC_RANK_FILTER).replace("Rank.", "") + "_" + pred
             )
 
-        # shape["description"] = (
-        #    VERSION  # Put what Robot did the ID, put "" for human / ground_truth
-        # )
-
         # Add taxonomic ranks only if they exist in the winningdict
-        for rank in [
-            "kingdom",
-            "phylum",
-            "class",
-            "order",
-            "family",
-            "genus",
-            "species",
-        ]:
+        for rank in ["kingdom", "phylum", "class", "order", "family", "genus", "species"]:
             if rank in winningdict:
-                if winningdict[rank].strip().lower() in [
-                    "hole",
-                    "background",
-                    "wall",
-                    "floor",
-                    "blank",
-                    "sky",
-                ]:
+                if winningdict[rank].strip().lower() in ["hole", "background", "wall", "floor", "blank", "sky"]:
                     shape[rank] = "ERROR_" + winningdict[rank]
                 else:
                     shape[rank] = winningdict[rank]
@@ -763,7 +428,6 @@ def add_metadata_to_json(json_path, metadata_path):
       json_path: The path to the JSON file to modify.
       metadata_path: The path to the JSON file containing the metadata to add.
     """
-
     with open(json_path, "r") as f:
         data = json.load(f)
 
@@ -792,6 +456,215 @@ def fixed_get_txt_names(self):
         return json.load(fd)
 
 
+def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_errors):
+    """Build (or load from cache) a TreeOfLifeClassifier filtered to the given taxa.
+
+    The filtered text embeddings are cached as a .pt file alongside the CSV so
+    subsequent runs skip the expensive rebuild.
+
+    Args:
+        taxa_path: Path to the GBIF species-list CSV.
+        taxa_cols: Column name list for the CSV.
+        taxon_rank: Taxonomic rank string (e.g. "order", "species").
+        device: Torch device string ("cpu" or "cuda").
+        flag_the_det_errors: Whether to add abiotic error labels.
+
+    Returns:
+        TreeOfLifeClassifier with txt_names and txt_embeddings filtered to taxa.
+    """
+    cache_path = os.path.splitext(taxa_path)[0] + ".pt"
+
+    TreeOfLifeClassifier.get_txt_names = fixed_get_txt_names  # UTF-8 patch
+
+    if os.path.exists(cache_path):
+        print(f"Loading cached embeddings from {cache_path}")
+        cache = torch.load(cache_path, map_location=device)
+        classifier = TreeOfLifeClassifier(device=device)
+        classifier.txt_names = cache["txt_names"]
+        classifier.txt_embeddings = cache["txt_embeddings"].to(device)
+        print("TOL: Loaded number of labels:", len(classifier.txt_names))
+        print("TOL: Loaded embeddings shape:", classifier.txt_embeddings.shape)
+        return classifier
+
+    # ── No cache → build fresh ──────────────────────────────────────
+    taxon_keys_list = load_taxon_keys(
+        taxa_path=taxa_path,
+        taxa_cols=taxa_cols,
+        taxon_rank=taxon_rank.lower(),
+        flag_det_errors=flag_the_det_errors,
+    )
+
+    print("Loading TOL classifier")
+    classifier = TreeOfLifeClassifier(device=device)
+    print("TOL: number of labels:", len(classifier.txt_names))
+    print("TOL: embeddings shape:", classifier.txt_embeddings.shape)
+
+    print("Finding embeddings matching the targets.")
+    found_items = [
+        (i, txt_name)
+        for i, txt_name in enumerate(classifier.txt_names)
+        if create_classification_dict(txt_name, Rank.SPECIES)[taxon_rank].lower() in taxon_keys_list
+    ]
+    print(f"Found {len(found_items)} embeddings matching the {taxon_rank} values")
+
+    print("Building the filtered embedding tensor")
+    txt_feature_ary = [classifier.txt_embeddings[:, i] for i, _ in found_items]
+    new_txt_names = [txt_name for _, txt_name in found_items]
+
+    # Append abiotic / error labels
+    custom_labels = ["hole", "background", "wall", "floor", "blank", "sky"]
+    clc = CustomLabelsClassifier(custom_labels, device=device)
+    for i, label in enumerate(custom_labels):
+        txt_feature_ary.append(clc.txt_embeddings[:, i])
+        new_txt_names.append([[label, label, label, label, label, "", label], label])
+
+    classifier.txt_names = new_txt_names
+    classifier.txt_embeddings = torch.stack(txt_feature_ary, dim=1)
+    print("TOL: Updated number of labels:", len(classifier.txt_names))
+    print("TOL: Updated embeddings shape:", classifier.txt_embeddings.shape)
+
+    print(f"Saving embeddings cache to {cache_path}")
+    torch.save(
+        {
+            "txt_names": classifier.txt_names,
+            "txt_embeddings": classifier.txt_embeddings.cpu(),
+        },
+        cache_path,
+    )
+
+    return classifier
+
+
+def collect_patches_for_detection_set(matched_img_json_pairs, label):
+    """Walk a list of (image_path, json_path) pairs and collect all detection patches.
+
+    Args:
+        matched_img_json_pairs: List of (image_path, json_path) tuples.
+        label: Human-readable label for progress printing ("HU" or "BOT").
+
+    Returns:
+        List of (patchfullpath, json_path, idx, cluster_id) tuples.
+    """
+    all_patches = []
+    numofpairs = len(matched_img_json_pairs)
+
+    for index, pair in enumerate(matched_img_json_pairs, start=1):
+        image_path, json_path = pair[:2]
+        coordinates_of_detections_list, was_pre_ided_list, thepatch_list = (
+            get_rotated_rect_raw_coordinates(json_path)
+        )
+        print(f"{index}/{numofpairs} | {len(coordinates_of_detections_list)} {label} detections in {json_path}")
+
+        for idx, coordinates in enumerate(coordinates_of_detections_list):
+            if was_pre_ided_list[idx] and not OVERWRITE_EXISTING_IDs:
+                continue
+            patchfullpath = os.path.dirname(image_path) + "/" + thepatch_list[idx]
+            cluster_id = read_cluster_id(json_path, idx)
+            all_patches.append((patchfullpath, json_path, idx, cluster_id))
+
+    return all_patches
+
+
+def group_patches_by_cluster(all_patches):
+    """Group patches by cluster ID, treating noise/unclustered as individual items.
+
+    Args:
+        all_patches: List of (patchfullpath, json_path, idx, cluster_id) tuples.
+
+    Returns:
+        cluster_groups: dict mapping cluster key → list of (patchfullpath, json_path, idx).
+        clustered_count: number of patches that belong to a named cluster.
+        individual_count: number of patches treated individually (noise or no cluster).
+    """
+    cluster_groups = defaultdict(list)
+    noise_counter = 0
+
+    for patchfullpath, json_path, idx, cluster_id in all_patches:
+        if cluster_id is None or cluster_id == -1.0:
+            unique_key = f"__individual_{noise_counter}__"
+            noise_counter += 1
+            cluster_groups[unique_key].append((patchfullpath, json_path, idx))
+        else:
+            # Group by the integer part only — 3.1 and 3.4 → group 3
+            perceptual_group = int(cluster_id)
+            cluster_groups[perceptual_group].append((patchfullpath, json_path, idx))
+
+    individual_count = sum(
+        1 for k in cluster_groups if str(k).startswith("__individual_")
+    )
+    clustered_count = sum(
+        len(v) for k, v in cluster_groups.items()
+        if not str(k).startswith("__individual_")
+    )
+    return cluster_groups, clustered_count, individual_count
+
+
+def run_id_on_detection_set(matched_img_json_pairs, classifier, label):
+    """Collect, cluster-deduplicate, batch-predict, and write IDs for one detection set.
+
+    Args:
+        matched_img_json_pairs: List of (image_path, json_path) pairs.
+        classifier: Loaded TreeOfLifeClassifier.
+        label: "HU" or "BOT" — used only for progress messages.
+    """
+    print(f"\nProcessing {label} detections...")
+
+    all_patches = collect_patches_for_detection_set(matched_img_json_pairs, label)
+    if not all_patches:
+        print(f"  No {label} detections to process.")
+        return
+
+    cluster_groups, clustered_count, individual_count = group_patches_by_cluster(all_patches)
+
+    representatives = []   # one per cluster — the image we actually run inference on
+    cluster_members = []   # all members of that cluster (receives the same result)
+    for members in cluster_groups.values():
+        representatives.append(members[0])
+        cluster_members.append(members)
+
+    num_clusters = len(cluster_groups) - individual_count
+    print(
+        f"  {label} detections: {len(all_patches)} total — "
+        f"{clustered_count} in clusters → {num_clusters} representative IDs needed, "
+        f"{individual_count} individual"
+    )
+    print(f"  Running bioclip on {len(representatives)} representative images (down from {len(all_patches)})...")
+
+    batch_size = 32 if DEVICE=="cuda" else 8
+    start_time = time.time()
+
+    # Load representative images, skipping any that can't be opened
+    rep_imgs, valid_reps, valid_members = [], [], []
+    for rep, members in zip(representatives, cluster_members):
+        patchfullpath, json_path, idx = rep
+        try:
+            rep_imgs.append(Image.open(patchfullpath))
+            valid_reps.append(rep)
+            valid_members.append(members)
+        except Exception as e:
+            print(f"  Could not open representative {patchfullpath}: {e}")
+
+    # Batch predict on representatives only
+    predictions = get_bioclip_predictions_batch(rep_imgs, classifier, batch_size=batch_size)
+
+    # Write results — apply each prediction to ALL members of that cluster
+    for (rep_path, rep_json, rep_idx), members, (pred, conf, winningdict) in zip(
+        valid_reps, valid_members, predictions
+    ):
+        print(f" representative: {os.path.basename(rep_path)}: {pred} ({conf:.3f}) → applied to {len(members)} detection(s) in cluster")
+        apply_id_to_cluster(
+            [m[1] for m in members],
+            [m[2] for m in members],
+            pred, conf, winningdict,
+        )
+
+    total_time = time.time() - start_time
+    print(
+        f"✅ {label} ID complete — {len(all_patches)} detections identified "
+        f"in {total_time:.1f}s ({total_time/60:.1f} min)"
+    )
+
+
 def ID_matched_img_json_pairs(
     hu_matched_img_json_pairs,
     bot_matched_img_json_pairs,
@@ -801,282 +674,16 @@ def ID_matched_img_json_pairs(
     device,
     flag_the_det_errors,
 ):
+    """Build the classifier once, then ID human and bot detections."""
 
-    # derive cache filename
-    cache_path = os.path.splitext(taxa_path)[0] + ".pt"
+    classifier = build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_errors)
 
-    if os.path.exists(cache_path):
-        print(f"Loading cached embeddings from {cache_path}")
-        cache = torch.load(cache_path, map_location=device)
-        TreeOfLifeClassifier.get_txt_names = fixed_get_txt_names  # weird patch
-        classifier = TreeOfLifeClassifier(
-            device=device
-        )  # still need classifier structure
-        classifier.txt_names = cache["txt_names"]
-        classifier.txt_embeddings = cache["txt_embeddings"].to(device)
-        print("TOL: Loaded number of labels:", len(classifier.txt_names))
-        print("TOL: Loaded image embeddings shape:", classifier.txt_embeddings.shape)
-        # return classifier
-
-    # ----------------------
-    # No cache → build fresh
-    # ----------------------
-    else:
-        # load up the Pybioclip stuff
-        taxon_keys_list = load_taxon_keys(
-            taxa_path=taxa_path,
-            taxa_cols=taxa_cols,
-            taxon_rank=taxon_rank.lower(),
-            flag_det_errors=flag_the_det_errors,
-        )
-
-        target_values = taxon_keys_list
-
-        print("Loading TOL classifier")
-        TreeOfLifeClassifier.get_txt_names = fixed_get_txt_names  # weird patch to make it not give an undefined character error!
-        classifier = TreeOfLifeClassifier(device=device)  # it used to crash here
-        print("TOL: number of labels:", len(classifier.txt_names))
-        print("TOL: image embeddings shape:", classifier.txt_embeddings.shape)
-
-        print("Finding embeddings matching the targets.")
-        found_items = []
-        for i, txt_name in enumerate(classifier.txt_names):
-            name_dict = create_classification_dict(txt_name, Rank.SPECIES)
-            if name_dict[taxon_rank].lower() in target_values:
-                found_items.append((i, txt_name))
-
-        print(
-            "Found", len(found_items), "embeddings matching the", taxon_rank, "values"
-        )
-
-        print("Building the image embedding tensor")
-        txt_feature_ary = []
-        new_txt_names = []
-        for i, txt_name in found_items:
-            txt_feature_ary.append(classifier.txt_embeddings[:, i])
-            new_txt_names.append(txt_name)
-
-        print("Creating embeddings for custom labels")
-        custom_labels = ["hole", "background", "wall", "floor", "blank", "sky"]
-        clc = CustomLabelsClassifier(custom_labels, device=device)
-        for i, label in enumerate(custom_labels):
-            txt_feature_ary.append(clc.txt_embeddings[:, i])
-            new_txt_names.append(
-                [[label, label, label, label, label, "", label], label]
-            )
-
-        # HERE TO FIX
-        classifier.txt_names = new_txt_names
-        classifier.txt_embeddings = torch.stack(txt_feature_ary, dim=1)
-        print("TOL: Updated number of labels:", len(classifier.txt_names))
-        print("TOL: Updated image embeddings shape:", classifier.txt_embeddings.shape)
-
-        # ----------------------
-        # Save cache
-        # ----------------------
-        print(f"Saving embeddings cache to {cache_path}")
-        torch.save(
-            {
-                "txt_names": classifier.txt_names,
-                "txt_embeddings": classifier.txt_embeddings.cpu(),  # save portable CPU tensors
-            },
-            cache_path,
-        )
-
-    # Process Human Detections
-    print("processing Human Detections.........")
-    patch_paths_hu = []  # define this once before your loop
-    json_paths_hu = []
-    idx_paths_hu = []
-    
     if ID_HUMANDETECTIONS:
-        index = 0
-        numofpairs = len(hu_matched_img_json_pairs)
+        run_id_on_detection_set(hu_matched_img_json_pairs, classifier, "HU")
 
-        # Collect all patches with their cluster IDs
-        all_patches = []  # (patchfullpath, json_path, idx, cluster_id)
-        for pair in hu_matched_img_json_pairs:
-            image_path, json_path = pair[:2]
-            coordinates_of_detections_list, was_pre_ided_list, thepatch_list = (
-                get_rotated_rect_raw_coordinates(json_path)
-            )
-            index += 1
-            print(f"{index}/{numofpairs} | {len(coordinates_of_detections_list)} HU detections in {json_path}")
-            if coordinates_of_detections_list:
-                for idx, coordinates in enumerate(coordinates_of_detections_list):
-                    if was_pre_ided_list[idx] and OVERWRITE_EXISTING_IDs == False:
-                        continue
-                    patchfullpath = os.path.dirname(image_path) + "/" + thepatch_list[idx]
-                    cluster_id = read_cluster_id(json_path, idx)
-                    all_patches.append((patchfullpath, json_path, idx, cluster_id))
-
-        # ── Cluster-aware deduplication ──────────────────────────────
-        # Group by cluster_id. Noise (-1) and unclustered (None) are each identified individually.
-        # For real clusters, pick one representative image to identify, then copy to the rest.
-        cluster_groups = defaultdict(list)  # cluster_id -> [(patchfullpath, json_path, idx), ...]
-        noise_counter = 0  # give each noise/unclustered item a unique key
-
-        for patchfullpath, json_path, idx, cluster_id in all_patches:
-            if cluster_id is None or cluster_id == -1.0:
-                # No cluster info or noise — identify individually
-                unique_key = f"__individual_{noise_counter}__"
-                noise_counter += 1
-                cluster_groups[unique_key].append((patchfullpath, json_path, idx))
-            else:
-                # Group by the integer part only — 3.1 and 3.4 → group 3
-                perceptual_group = int(cluster_id)
-                cluster_groups[perceptual_group].append((patchfullpath, json_path, idx))
-        # Build list of representative images to actually run inference on
-        representatives = []       # (patchfullpath, json_path, idx) — one per cluster
-        cluster_members = []       # all members of that cluster (including representative)
-
-        clustered_count = 0
-        individual_count = 0
-        for key, members in cluster_groups.items():
-            rep = members[0]  # first member is the representative
-            representatives.append(rep)
-            cluster_members.append(members)
-            if str(key).startswith("__individual_"):
-                individual_count += 1
-            else:
-                clustered_count += len(members)
-
-        print(f" Human detections: {len(all_patches)} total — {clustered_count} in clusters → {len(cluster_groups) - individual_count} representative IDs needed, {individual_count} individual")
-        print(f" Running bioclip on {len(representatives)} representative images (down from {len(all_patches)})...")
-
-        import time
-        start_time = time.time()
-        batch_size = 32 if torch.cuda.is_available() else 8
-
-        # Load representative images
-        rep_imgs = []
-        valid_reps = []
-        valid_members = []
-        for rep, members in zip(representatives, cluster_members):
-            patchfullpath, json_path, idx = rep
-            try:
-                rep_imgs.append(Image.open(patchfullpath))
-                valid_reps.append(rep)
-                valid_members.append(members)
-            except Exception as e:
-                print(f"⚠️ Could not open representative {patchfullpath}: {e}")
-
-        # Batch predict on representatives only
-        predictions = get_bioclip_predictions_batch(rep_imgs, classifier, batch_size=batch_size)
-
-        # Write results — apply each prediction to ALL members of that cluster
-        for (rep_path, rep_json, rep_idx), members, (pred, conf, winningdict) in zip(valid_reps, valid_members, predictions):
-            print(f"  {os.path.basename(rep_path)}: {pred} ({conf:.3f}) → applied to {len(members)} detection(s)")
-            apply_id_to_cluster(
-                [m[1] for m in members],
-                [m[2] for m in members],
-                pred, conf, winningdict
-            )
-            for m in members:
-                patch_paths_hu.append(m[0])
-                json_paths_hu.append(m[1])
-                idx_paths_hu.append(m[2])
-
-        total_time = time.time() - start_time
-        print(f"✅ Human detection ID complete — {len(all_patches)} detections identified in {total_time:.1f}s ({total_time/60:.1f} min)")
-        
-    
-    # Process BOT Detections
-    print("processing BOT Detections.........")
-    patch_paths_bots = []  # define this once before your loop
-    json_paths_bots = []
-    idx_paths_bots = []
-    
     if ID_BOTDETECTIONS:
-        index = 0
-        numofpairs = len(bot_matched_img_json_pairs)
+        run_id_on_detection_set(bot_matched_img_json_pairs, classifier, "BOT")
 
-        # Collect all patches with their cluster IDs
-        all_patches = []  # (patchfullpath, json_path, idx, cluster_id)
-        for pair in bot_matched_img_json_pairs:
-            image_path, json_path = pair[:2]
-            coordinates_of_detections_list, was_pre_ided_list, thepatch_list = (
-                get_rotated_rect_raw_coordinates(json_path)
-            )
-            index += 1
-            print(f"{index}/{numofpairs} | {len(coordinates_of_detections_list)} BOT detections in {json_path}")
-            if coordinates_of_detections_list:
-                for idx, coordinates in enumerate(coordinates_of_detections_list):
-                    if was_pre_ided_list[idx] and OVERWRITE_EXISTING_IDs == False:
-                        continue
-                    patchfullpath = os.path.dirname(image_path) + "/" + thepatch_list[idx]
-                    cluster_id = read_cluster_id(json_path, idx)
-                    all_patches.append((patchfullpath, json_path, idx, cluster_id))
-
-        # ── Cluster-aware deduplication ──────────────────────────────
-        # Group by cluster_id. Noise (-1) and unclustered (None) are each identified individually.
-        # For real clusters, pick one representative image to identify, then copy to the rest.
-        cluster_groups = defaultdict(list)  # cluster_id -> [(patchfullpath, json_path, idx), ...]
-        noise_counter = 0  # give each noise/unclustered item a unique key
-
-        for patchfullpath, json_path, idx, cluster_id in all_patches:
-            if cluster_id is None or cluster_id == -1.0:
-                # No cluster info or noise — identify individually
-                unique_key = f"__individual_{noise_counter}__"
-                noise_counter += 1
-                cluster_groups[unique_key].append((patchfullpath, json_path, idx))
-            else:
-                # Group by the integer part only — 3.1 and 3.4 → group 3
-                perceptual_group = int(cluster_id)
-                cluster_groups[perceptual_group].append((patchfullpath, json_path, idx))
-        # Build list of representative images to actually run inference on
-        representatives = []       # (patchfullpath, json_path, idx) — one per cluster
-        cluster_members = []       # all members of that cluster (including representative)
-
-        clustered_count = 0
-        individual_count = 0
-        for key, members in cluster_groups.items():
-            rep = members[0]  # first member is the representative
-            representatives.append(rep)
-            cluster_members.append(members)
-            if str(key).startswith("__individual_"):
-                individual_count += 1
-            else:
-                clustered_count += len(members)
-
-        print(f" BOT detections: {len(all_patches)} total — {clustered_count} in clusters → {len(cluster_groups) - individual_count} representative IDs needed, {individual_count} individual")
-        print(f" Running bioclip on {len(representatives)} representative images (down from {len(all_patches)})...")
-
-        import time
-        start_time = time.time()
-        batch_size = 32 if torch.cuda.is_available() else 8
-
-        # Load representative images
-        rep_imgs = []
-        valid_reps = []
-        valid_members = []
-        for rep, members in zip(representatives, cluster_members):
-            patchfullpath, json_path, idx = rep
-            try:
-                rep_imgs.append(Image.open(patchfullpath))
-                valid_reps.append(rep)
-                valid_members.append(members)
-            except Exception as e:
-                print(f"⚠️ Could not open representative {patchfullpath}: {e}")
-
-        # Batch predict on representatives only
-        predictions = get_bioclip_predictions_batch(rep_imgs, classifier, batch_size=batch_size)
-
-        # Write results — apply each prediction to ALL members of that cluster
-        for (rep_path, rep_json, rep_idx), members, (pred, conf, winningdict) in zip(valid_reps, valid_members, predictions):
-            print(f"  {os.path.basename(rep_path)}: {pred} ({conf:.3f}) → applied to {len(members)} detection(s)")
-            apply_id_to_cluster(
-                [m[1] for m in members],
-                [m[2] for m in members],
-                pred, conf, winningdict
-            )
-            for m in members:
-                patch_paths_bots.append(m[0])
-                json_paths_bots.append(m[1])
-                idx_paths_bots.append(m[2])
-
-        total_time = time.time() - start_time
-        print(f"✅ BOT ID complete — {len(all_patches)} detections identified in {total_time:.1f}s ({total_time/60:.1f} min)")
 
 def extract_doi_from_csv_path(csv_path: str) -> str:
     """
@@ -1142,22 +749,17 @@ def run(
     print("using species list: " + DOI)
 
     DEVICE = get_device()
-    
-    
+
     # TODO: Re-enable once pybioclip CUDA performance is fixed.
-    print("Note: Cuda temporarily disabled for ID while we figure out what's going on with bioclip and CUDA")
-    # Temporarily force CPU regardless of what get_device() returns.
-    DEVICE = "cpu"
-    
+    #print("Note: CUDA temporarily disabled for ID while we figure out what's going on with bioclip and CUDA")
+    #DEVICE = "cpu"
+
     print_device_info(selected_device=DEVICE)
 
     # Find all the dated folders that our data lives in
     print("Looking in this folder for MothboxData: " + INPUT_PATH)
     date_folders = find_date_folders(INPUT_PATH)
-    print(
-        "Found ",
-        str(len(date_folders)) + " dated folders potentially full of mothbox data",
-    )
+    print(f"Found {len(date_folders)} dated folders potentially full of mothbox data")
 
     # Look in each dated folder for .json detection files and the matching .jpgs
     hu_matched_img_json_pairs = []
@@ -1165,32 +767,17 @@ def run(
 
     for folder in date_folders:
         hu_list_of_matches, bot_list_of_matches = find_detection_matches(folder)
-        hu_matched_img_json_pairs = update_main_list(
-            hu_matched_img_json_pairs, hu_list_of_matches
-        )
-        bot_matched_img_json_pairs = update_main_list(
-            bot_matched_img_json_pairs, bot_list_of_matches
-        )
+        hu_matched_img_json_pairs = update_main_list(hu_matched_img_json_pairs, hu_list_of_matches)
+        bot_matched_img_json_pairs = update_main_list(bot_matched_img_json_pairs, bot_list_of_matches)
 
-    print(
-        "Found ",
-        str(len(hu_matched_img_json_pairs))
-        + " pairs of images and HUMAN detection data to try to ID",
-    )
-    print("example human detection and json pair:")
-    if len(hu_matched_img_json_pairs) > 0:
-        print(hu_matched_img_json_pairs[0])
+    print(f"Found {len(hu_matched_img_json_pairs)} pairs of images and HUMAN detection data to try to ID")
+    if hu_matched_img_json_pairs:
+        print("example human detection and json pair:", hu_matched_img_json_pairs[0])
 
-    print(
-        "Found ",
-        str(len(bot_matched_img_json_pairs))
-        + " pairs of images and BOT detection data to try to ID",
-    )
-    print("example human detection and json pair:")
-    if len(bot_matched_img_json_pairs) > 0:
-        print(bot_matched_img_json_pairs[0])
+    print(f"Found {len(bot_matched_img_json_pairs)} pairs of images and BOT detection data to try to ID")
+    if bot_matched_img_json_pairs:
+        print("example bot detection and json pair:", bot_matched_img_json_pairs[0])
 
-    # Now that we have our data to be processed in a big list, it's time to load up the Pybioclip stuff
     ID_matched_img_json_pairs(
         hu_matched_img_json_pairs,
         bot_matched_img_json_pairs,

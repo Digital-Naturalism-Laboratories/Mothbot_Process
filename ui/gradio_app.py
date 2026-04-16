@@ -936,7 +936,7 @@ def _run_batch_pipeline(
     output_log += finish_message
     yield output_log
 
-
+'''
 DEFAULT_METADATA_CSV = _resolve_artifact_path(
     "metadata.csv",
     Path("../artifacts/metadata.csv"),
@@ -951,6 +951,13 @@ DEFAULT_YOLO_MODEL = _resolve_first_artifact_match(
     "models/**/*.pt",
     "models/model.pt",
 )
+'''
+
+# Temporarily disable the artifact matching to just leave the defaults blank #because i don't know how to use the artifact thing right yet
+
+DEFAULT_METADATA_CSV = ""
+DEFAULT_SPECIES_CSV = ""
+DEFAULT_YOLO_MODEL = ""
 
 demo = app()
 

@@ -751,8 +751,8 @@ def run(
     DEVICE = get_device()
 
     # TODO: Re-enable once pybioclip CUDA performance is fixed.
-    #print("Note: CUDA temporarily disabled for ID while we figure out what's going on with bioclip and CUDA")
-    #DEVICE = "cpu"
+    print("Note: CUDA temporarily disabled for ID while we figure out what's going on with bioclip and CUDA")
+    DEVICE = "cpu"
 
     print_device_info(selected_device=DEVICE)
 

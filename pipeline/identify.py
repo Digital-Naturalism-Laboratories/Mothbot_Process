@@ -48,8 +48,8 @@ from datetime import datetime
 ImageFile.LOAD_TRUNCATED_IMAGES = (
     True  # makes ok for use images that are messed up slightly
 )
-from bioclip import TreeOfLifeClassifier, Rank, CustomLabelsClassifier
-from bioclip.predict import create_classification_dict
+import pandas as pd
+from bioclip import TreeOfLifeClassifier, Rank
 import importlib.metadata
 
 VERSION = "pybioclip_" + importlib.metadata.version("pybioclip")
@@ -97,8 +97,6 @@ taxa_path = SPECIES_LIST
 
 # print(torch.cuda.is_available())
 
-# TODO: Re-enable CUDA once pybioclip batch performance on GPU is fixed.
-# Original line: 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 DOI = ""
@@ -312,44 +310,49 @@ def crop_image(image, x, y, w, h):
 
 
 def get_bioclip_predictions_batch(imgs, classifier, batch_size=32):
-    """Process a batch of PIL images using pybioclip's batch API."""
-    results = []
+    """Predict taxonomic IDs for a list of PIL images using the modern predict() API.
+
+    classifier.predict() handles all batching internally. We use k=1 since we
+    only need the top hit per image, and wire a callback for progress reporting.
+
+    Returns:
+        List of (winner, winnerprob, winningdict) tuples, one per input image.
+    """
     total = len(imgs)
-    total_batches = (total + batch_size - 1) // batch_size
     start_time = time.time()
+    rank_label = str(TAXONOMIC_RANK_FILTER.get_label())
 
-    for batch_num, i in enumerate(range(0, total, batch_size)):
-        batch = imgs[i:i + batch_size]
-        img_embeddings = classifier.create_image_features(batch)
-        for probs in classifier.create_probabilities(img_embeddings, classifier.txt_embeddings):
-            winner = ""
-            winnerprob = ""
-            winningdict = {}
-            for index, pred in enumerate(classifier.format_grouped_probs(
-                "", probs, rank=TAXONOMIC_RANK_FILTER, min_prob=1e-9, k=1
-            )):
-                if index == 0:
-                    winner = pred[str(TAXONOMIC_RANK_FILTER.get_label())]
-                    winnerprob = pred["score"]
-                    winningdict = pred
-                    break
-            results.append((winner, winnerprob, winningdict))
-
-        # Progress update after each batch
-        batches_done = batch_num + 1
-        images_done = min(i + batch_size, total)
+    def progress_callback(processed, total_imgs):
         elapsed = time.time() - start_time
+        if processed > 0 and (processed % (batch_size * 5) == 0 or processed == total_imgs):
+            remaining = (elapsed / processed) * (total_imgs - processed)
+            print(f"   📦 {processed}/{total_imgs} images — ~{remaining:.0f}s remaining")
 
-        if batches_done == 1 and total_batches > 1:
-            eta_seconds = (elapsed / batches_done) * (total_batches - batches_done)
-            print(f"   ⏱️ First batch done in {elapsed:.1f}s — estimated {eta_seconds:.0f}s remaining ({eta_seconds/60:.1f} min)")
-        elif batches_done % 5 == 0 or batches_done == total_batches:
-            eta_seconds = (elapsed / batches_done) * (total_batches - batches_done)
-            print(f"   📦 Batch {batches_done}/{total_batches} — {images_done}/{total} images — ~{eta_seconds:.0f}s remaining")
+    # predict() returns one dict per result row; with k=1 that's exactly one per image
+    all_predictions = classifier.predict(
+        imgs,
+        rank=TAXONOMIC_RANK_FILTER,
+        k=1,
+        batch_size=batch_size,
+        callback=progress_callback,
+    )
+
+    results = []
+    for pred in all_predictions:
+        winner = pred.get(rank_label, "")
+        winnerprob = pred.get("score", 0.0)
+        results.append((winner, winnerprob, pred))
 
     total_time = time.time() - start_time
-    print(f" Batch predictions complete — {total} images in {total_time:.1f}s ({total_time/60:.1f} min)")
+    print(f"✅ Batch predictions complete — {total} images in {total_time:.1f}s ({total_time/60:.1f} min)")
     return results
+
+
+def get_bioclip_prediction_PILimg(img, classifier):
+    """Run inference on a single PIL image. Returns (winner, winnerprob, winningdict)."""
+    winner, winnerprob, winningdict = get_bioclip_predictions_batch([img], classifier, batch_size=1)[0]
+    print(f"  This is the winner: {winner} with a score of {winnerprob}")
+    return winner, winnerprob, winningdict
 
 
 def read_cluster_id(json_path, shape_idx):
@@ -441,88 +444,70 @@ def add_metadata_to_json(json_path, metadata_path):
     print(f"Metadata added to {json_path}")
 
 
-# Patch get_txt_names to always use UTF-8
-def fixed_get_txt_names(self):
-    txt_names_json = self.get_cached_datafile("embeddings/txt_emb_species.json")
-    with open(txt_names_json, encoding="utf-8") as fd:
-        return json.load(fd)
-
-
 def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_errors):
     """Build (or load from cache) a TreeOfLifeClassifier filtered to the given taxa.
 
-    The filtered text embeddings are cached as a .pt file alongside the CSV so
-    subsequent runs skip the expensive rebuild.
+    Uses the modern apply_filter() API. The boolean filter mask is cached as a
+    .pt file alongside the CSV so subsequent runs skip the expensive rebuild.
+
+    NOTE: If you have a .pt cache from an older version of this script (which
+    stored raw tensors instead of a bool list), delete it before running so it
+    gets rebuilt in the new format.
 
     Args:
         taxa_path: Path to the GBIF species-list CSV.
         taxa_cols: Column name list for the CSV.
         taxon_rank: Taxonomic rank string (e.g. "order", "species").
         device: Torch device string ("cpu" or "cuda").
-        flag_the_det_errors: Whether to add abiotic error labels.
+        flag_the_det_errors: Whether to add abiotic error labels (currently
+            unused with the filter approach — low-confidence noise detections
+            will naturally score low against the insect-only label set).
 
     Returns:
-        TreeOfLifeClassifier with txt_names and txt_embeddings filtered to taxa.
+        TreeOfLifeClassifier with embeddings filtered to the taxa in taxa_path.
     """
     cache_path = os.path.splitext(taxa_path)[0] + ".pt"
 
-    TreeOfLifeClassifier.get_txt_names = fixed_get_txt_names  # UTF-8 patch
+    print("Loading TOL classifier")
+    classifier = TreeOfLifeClassifier(device=device)
 
     if os.path.exists(cache_path):
-        print(f"Loading cached embeddings from {cache_path}")
-        cache = torch.load(cache_path, map_location=device)
-        classifier = TreeOfLifeClassifier(device=device)
-        classifier.txt_names = cache["txt_names"]
-        classifier.txt_embeddings = cache["txt_embeddings"].to(device)
-        print("TOL: Loaded number of labels:", len(classifier.txt_names))
-        print("TOL: Loaded embeddings shape:", classifier.txt_embeddings.shape)
-        return classifier
+        print(f"Loading cached taxa filter from {cache_path}")
+        cache = torch.load(cache_path, map_location="cpu")
+        if "keep_labels_ary" not in cache:
+            print("⚠️  Cache is in old tensor format — rebuilding. Delete the .pt file to suppress this message.")
+        else:
+            classifier.apply_filter(cache["keep_labels_ary"])
+            print(f"TOL: Loaded {sum(cache['keep_labels_ary'])} filtered labels from cache")
+            return classifier
 
-    # ── No cache → build fresh ──────────────────────────────────────
-    taxon_keys_list = load_taxon_keys(
+    # ── No valid cache → build filter fresh ────────────────────────
+    taxon_keys = load_taxon_keys(
         taxa_path=taxa_path,
         taxa_cols=taxa_cols,
         taxon_rank=taxon_rank.lower(),
         flag_det_errors=flag_the_det_errors,
     )
 
-    print("Loading TOL classifier")
-    classifier = TreeOfLifeClassifier(device=device)
-    print("TOL: number of labels:", len(classifier.txt_names))
-    print("TOL: embeddings shape:", classifier.txt_embeddings.shape)
+    print(f"Filtering TOL embeddings to {len(taxon_keys)} {taxon_rank} values...")
+    label_data = classifier.get_label_data()
 
-    print("Finding embeddings matching the targets.")
-    found_items = [
-        (i, txt_name)
-        for i, txt_name in enumerate(classifier.txt_names)
-        if create_classification_dict(txt_name, Rank.SPECIES)[taxon_rank].lower() in taxon_keys_list
-    ]
-    print(f"Found {len(found_items)} embeddings matching the {taxon_rank} values")
+    # Use isin() rather than create_taxa_filter() because the GBIF list will
+    # always contain taxa not present in TOL — create_taxa_filter() raises on those.
+    keep_labels_ary = label_data[taxon_rank].str.lower().isin(taxon_keys).tolist()
+    matched = sum(keep_labels_ary)
+    print(f"Keeping {matched} of {len(keep_labels_ary)} TOL embeddings")
 
-    print("Building the filtered embedding tensor")
-    txt_feature_ary = [classifier.txt_embeddings[:, i] for i, _ in found_items]
-    new_txt_names = [txt_name for _, txt_name in found_items]
+    if matched == 0:
+        raise ValueError(
+            f"No TOL embeddings matched the {taxon_rank} values in {taxa_path}. "
+            "Check that the taxon_rank column name matches and the CSV contains valid taxa."
+        )
 
-    # Append abiotic / error labels
-    custom_labels = ["hole", "background", "wall", "floor", "blank", "sky"]
-    clc = CustomLabelsClassifier(custom_labels, device=device)
-    for i, label in enumerate(custom_labels):
-        txt_feature_ary.append(clc.txt_embeddings[:, i])
-        new_txt_names.append([[label, label, label, label, label, "", label], label])
+    classifier.apply_filter(keep_labels_ary)
 
-    classifier.txt_names = new_txt_names
-    classifier.txt_embeddings = torch.stack(txt_feature_ary, dim=1)
-    print("TOL: Updated number of labels:", len(classifier.txt_names))
-    print("TOL: Updated embeddings shape:", classifier.txt_embeddings.shape)
-
-    print(f"Saving embeddings cache to {cache_path}")
-    torch.save(
-        {
-            "txt_names": classifier.txt_names,
-            "txt_embeddings": classifier.txt_embeddings.cpu(),
-        },
-        cache_path,
-    )
+    print(f"Saving taxa filter cache to {cache_path}")
+    torch.save({"keep_labels_ary": keep_labels_ary}, cache_path)
 
     return classifier
 
@@ -622,7 +607,7 @@ def run_id_on_detection_set(matched_img_json_pairs, classifier, label):
     )
     print(f"  Running bioclip on {len(representatives)} representative images (down from {len(all_patches)})...")
 
-    batch_size = 32 if DEVICE=="cuda" else 8
+    batch_size = 32 if torch.cuda.is_available() else 8
     start_time = time.time()
 
     # Load representative images, skipping any that can't be opened
@@ -634,7 +619,7 @@ def run_id_on_detection_set(matched_img_json_pairs, classifier, label):
             valid_reps.append(rep)
             valid_members.append(members)
         except Exception as e:
-            print(f"  Could not open representative {patchfullpath}: {e}")
+            print(f"  ⚠️ Could not open representative {patchfullpath}: {e}")
 
     # Batch predict on representatives only
     predictions = get_bioclip_predictions_batch(rep_imgs, classifier, batch_size=batch_size)
@@ -643,7 +628,7 @@ def run_id_on_detection_set(matched_img_json_pairs, classifier, label):
     for (rep_path, rep_json, rep_idx), members, (pred, conf, winningdict) in zip(
         valid_reps, valid_members, predictions
     ):
-        print(f" representative: {os.path.basename(rep_path)}: {pred} ({conf:.3f}) → applied to {len(members)} detection(s) in cluster")
+        print(f"  {os.path.basename(rep_path)}: {pred} ({conf:.3f}) → applied to {len(members)} detection(s)")
         apply_id_to_cluster(
             [m[1] for m in members],
             [m[2] for m in members],
@@ -743,8 +728,8 @@ def run(
     DEVICE = get_device()
 
     # TODO: Re-enable once pybioclip CUDA performance is fixed.
-    print("Note: CUDA temporarily disabled for ID while we figure out what's going on with bioclip and CUDA")
-    DEVICE = "cpu"
+    #print("Note: CUDA temporarily disabled for ID while we figure out what's going on with bioclip and CUDA")
+    #DEVICE = "cpu"
 
     print_device_info(selected_device=DEVICE)
 

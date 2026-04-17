@@ -21,6 +21,8 @@ import tomllib
 import gradio as gr
 
 from core.common import run_in_thread
+from ui.tray import start_tray
+from ui.single_instance import ensure_single_instance
 from ui.path_picker import browse_path, browse_path_with_status
 
 # Lazy-import worker modules so heavy ML deps only load when a tab is used.
@@ -966,4 +968,6 @@ if __name__ == "__main__":
     favicon = Path(__file__).with_name("favicon.png")
     if favicon.exists():
         launch_kwargs["favicon_path"] = str(favicon)
+    ensure_single_instance(url="http://127.0.0.1:7860")
+    start_tray(url="http://127.0.0.1:7860")
     demo.launch(**launch_kwargs)

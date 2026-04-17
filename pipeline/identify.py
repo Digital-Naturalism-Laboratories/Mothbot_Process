@@ -352,14 +352,6 @@ def get_bioclip_predictions_batch(imgs, classifier, batch_size=32):
     return results
 
 
-def get_bioclip_prediction_PILimg(img, classifier):
-    """Run inference on a single PIL image. Returns (winner, winnerprob, winningdict)."""
-    results = get_bioclip_predictions_batch([img], classifier, batch_size=1)
-    winner, winnerprob, winningdict = results[0]
-    print(f"  This is the winner: {winner} with a score of {winnerprob}")
-    return winner, winnerprob, winningdict
-
-
 def read_cluster_id(json_path, shape_idx):
     """Read clusterID from a shape in a JSON file. Returns None if not present."""
     try:

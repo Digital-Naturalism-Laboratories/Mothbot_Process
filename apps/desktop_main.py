@@ -135,7 +135,7 @@ def main():
 
     url = f"http://127.0.0.1:{server_port}"
     ensure_single_instance(url=url)
-    start_tray(url=url)
+    start_tray(url=url, icon_path=favicon if favicon.exists() else None)
 
     try:
         from ui.app import get_demo

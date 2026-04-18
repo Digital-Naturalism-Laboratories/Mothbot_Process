@@ -1,9 +1,9 @@
 """
 single_instance.py – Prevent multiple Mothbot processes running at once.
 
-Uses a PID lock file in the system temp directory.  If a lock file exists
-and the recorded PID is still alive, the second launch opens the browser
-tab of the already-running instance and exits immediately.
+Stores both PID and the actual server URL in the lock file so the second
+launch can open the correct browser tab regardless of which port Gradio
+ended up on.
 
 No extra dependencies – stdlib only.
 """
@@ -23,23 +23,21 @@ def _pid_is_running(pid: int) -> bool:
     if pid <= 0:
         return False
     if sys.platform == "win32":
-        # os.kill(pid, 0) is unreliable on Windows – use the Win32 API instead.
         import ctypes
         SYNCHRONIZE = 0x00100000
         handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
         if handle == 0:
-            return False  # process doesn't exist
+            return False
         ctypes.windll.kernel32.CloseHandle(handle)
         return True
     else:
         try:
-            # os.kill(pid, 0) doesn't kill anything – it just checks existence.
             os.kill(pid, 0)
             return True
         except ProcessLookupError:
-            return False      # process is gone
+            return False
         except PermissionError:
-            return True       # exists but owned by another user
+            return True
 
 
 def _remove_lock() -> None:
@@ -49,32 +47,35 @@ def _remove_lock() -> None:
         pass
 
 
-def ensure_single_instance(url: str = "http://127.0.0.1:7860") -> None:
+def ensure_single_instance(url: str = "http://127.0.0.1:7861") -> None:
     """
-    Call this once at startup, before ``demo.launch()``.
+    Call this once at startup, BEFORE ``demo.launch()``.
 
     * If no other instance is running: writes a lock file with the current
-      PID and registers a cleanup hook so the file is removed on exit.
-    * If another instance is already running: opens *url* in the default
-      browser so the user lands on the existing UI, then exits immediately.
+      PID + URL, and registers a cleanup hook to remove it on exit.
+    * If another instance is already running: opens the URL stored in the
+      lock file (i.e. the port the first instance actually bound to),
+      then exits immediately.
     """
     if _LOCK_FILE.exists():
         try:
-            stored_pid = int(_LOCK_FILE.read_text().strip())
+            pid_str, stored_url = _LOCK_FILE.read_text().strip().splitlines()
+            stored_pid = int(pid_str)
         except (ValueError, OSError):
             stored_pid = 0
+            stored_url = url
 
         if _pid_is_running(stored_pid):
             print(
-                f"[single_instance] Mothbot is already running (PID {stored_pid}).\n"
-                f"                  Opening existing instance in browser: {url}"
+                f"[single_instance] Mothbot already running (PID {stored_pid}).\n"
+                f"                  Opening existing instance: {stored_url}"
             )
-            webbrowser.open(url)
+            webbrowser.open(stored_url)
             sys.exit(0)
         else:
-            # Stale lock left over from a previous crash – clean it up.
+            # Stale lock from a previous crash – clean up and continue.
             _remove_lock()
 
-    # We are the first instance – claim the lock.
-    _LOCK_FILE.write_text(str(os.getpid()))
+    # First instance: claim the lock with PID on line 1, URL on line 2.
+    _LOCK_FILE.write_text(f"{os.getpid()}\n{url}")
     atexit.register(_remove_lock)

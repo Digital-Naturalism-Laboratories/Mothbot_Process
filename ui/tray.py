@@ -1,9 +1,6 @@
 """
 tray.py – System tray icon for Mothbot.
 
-Adds a tray icon (Windows / macOS / Linux) so users can see the app is
-running and quit it cleanly instead of leaving orphaned processes.
-
 Dependencies (add to pyproject.toml / requirements.txt):
     pystray>=0.19
     Pillow>=10.0
@@ -23,50 +20,51 @@ except ImportError:
     _PYSTRAY_AVAILABLE = False
 
 
-# ──────────────────────────────────────────────────────────────
-#  Icon image helpers
-# ──────────────────────────────────────────────────────────────
-
-def _load_icon_image(size: int = 64) -> "Image.Image":
+def _find_favicon() -> Path | None:
     """
-    Return a PIL Image for the tray icon.
-    Prefers a favicon.png sitting next to this file; falls back to a
-    simple green moth-ish shape drawn with Pillow.
+    Locate favicon.png whether running from source or a PyInstaller bundle.
+    PyInstaller extracts bundled files to sys._MEIPASS at runtime.
     """
-    favicon = Path(__file__).with_name("favicon.png")
-    if favicon.exists():
-        img = Image.open(favicon).convert("RGBA").resize((size, size))
-        return img
+    candidates = [
+        # PyInstaller bundle: assets/ is extracted next to the exe
+        Path(getattr(sys, "_MEIPASS", "")) / "assets" / "favicon.png",
+        # Running from source: apps/assets/favicon.png (two levels up from ui/)
+        Path(__file__).resolve().parent.parent / "assets" / "favicon.png",
+        # Fallback: favicon.png sitting right next to tray.py
+        Path(__file__).with_name("favicon.png"),
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
 
-    # Fallback: draw a minimal icon
+
+def _load_icon_image(icon_path: Path | None = None, size: int = 64) -> "Image.Image":
+    """Return a PIL Image for the tray icon."""
+    path = icon_path or _find_favicon()
+    if path and path.exists():
+        return Image.open(path).convert("RGBA").resize((size, size))
+
+    # Fallback: draw a simple green moth shape
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    # Body
     cx, cy = size // 2, size // 2
     draw.ellipse([cx - 6, cy - 14, cx + 6, cy + 14], fill=(50, 180, 80, 255))
-    # Wings
     draw.ellipse([4, cy - 12, cx - 2, cy + 10], fill=(80, 200, 100, 220))
     draw.ellipse([cx + 2, cy - 12, size - 4, cy + 10], fill=(80, 200, 100, 220))
     return img
 
 
-# ──────────────────────────────────────────────────────────────
-#  Public API
-# ──────────────────────────────────────────────────────────────
-
-def start_tray(url: str = "http://127.0.0.1:7860") -> None:
+def start_tray(url: str = "http://127.0.0.1:7861", icon_path: Path | None = None) -> None:
     """
     Spawn the system-tray icon in a daemon thread.
-
-    Call this *before* ``demo.launch()`` so the icon appears as soon as
-    the app starts.  It is safe to call even if pystray is not installed –
-    it will simply log a warning and return.
 
     Parameters
     ----------
     url:
-        The local URL Gradio is listening on.  Passed to the
-        "Open Mothbot" menu item so clicking it re-opens the browser tab.
+        The local URL Gradio is listening on.
+    icon_path:
+        Optional explicit path to a PNG icon. If None, auto-detected.
     """
     if not _PYSTRAY_AVAILABLE:
         print(
@@ -75,25 +73,18 @@ def start_tray(url: str = "http://127.0.0.1:7860") -> None:
         )
         return
 
-    thread = threading.Thread(target=_run_tray, args=(url,), daemon=True)
+    thread = threading.Thread(target=_run_tray, args=(url, icon_path), daemon=True)
     thread.start()
 
 
-# ──────────────────────────────────────────────────────────────
-#  Internal
-# ──────────────────────────────────────────────────────────────
+def _run_tray(url: str, icon_path: Path | None) -> None:
+    icon_image = _load_icon_image(icon_path)
 
-def _run_tray(url: str) -> None:
-    """Build and run the tray icon (blocking – must be in its own thread)."""
-
-    icon_image = _load_icon_image()
-
-    def on_open(icon, item):          # noqa: ARG001
+    def on_open(icon, item):
         webbrowser.open(url)
 
-    def on_quit(icon, item):          # noqa: ARG001
+    def on_quit(icon, item):
         icon.stop()
-        # Give Gradio a moment to finish any in-flight requests, then exit.
         threading.Timer(0.5, lambda: os._exit(0)).start()
 
     menu = pystray.Menu(
@@ -105,7 +96,7 @@ def _run_tray(url: str) -> None:
     icon = pystray.Icon(
         name="Mothbot",
         icon=icon_image,
-        title="Mothbot (running)",   # tooltip on hover
+        title="Mothbot (running)",
         menu=menu,
     )
     icon.run()

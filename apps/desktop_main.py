@@ -24,6 +24,9 @@ import socket
 import sys
 import traceback
 
+from ui.single_instance import ensure_single_instance
+from ui.tray import start_tray
+
 
 _DEVNULL_STREAMS = []
 
@@ -129,6 +132,10 @@ def main():
     favicon = Path(__file__).resolve().parent.parent / "assets" / "favicon.png"
     if favicon.exists():
         launch_kwargs["favicon_path"] = str(favicon)
+
+    url = f"http://127.0.0.1:{server_port}"
+    ensure_single_instance(url=url)
+    start_tray(url=url)
 
     try:
         from ui.app import get_demo

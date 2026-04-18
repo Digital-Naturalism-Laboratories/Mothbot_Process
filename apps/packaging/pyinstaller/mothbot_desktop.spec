@@ -42,6 +42,10 @@ for package in [
     "fiftyone_brain",
     "open_clip",
     "bioclip",
+	"pystray",
+    "pystray._win32",   # Windows backend
+    "pystray._darwin",  # macOS backend  
+    "pystray._xorg",    # Linux backend
 ]:
     hiddenimports += collect_submodules(package)
 

@@ -85,8 +85,6 @@ for package_name in ["gradio", "safehttpx", "groovy", "open_clip", "bioclip"]:
 # Optional local files/directories that may or may not exist in every checkout.
 for src in [
     project_dir / "artifacts",
-    project_dir / "assets" / "favicon.png",
-	# dino weights gets handled below
     project_dir / "Mothbox_Main_Metadata_Field_Sheet_Example - Form responses 1.csv",
     project_dir / "SpeciesList_CountryIndonesia_TaxaInsecta_doi.org10.15468dl.8p8wua.csv",
     ai_dir / "exiftool-13.32_64",
@@ -96,6 +94,11 @@ for src in [
             datas.append((str(src), src.name))
         else:
             datas.append((str(src), "."))
+
+# Bundle favicon.png into assets/ so tray icon and browser tab can find it.
+favicon_png = project_dir / "assets" / "favicon.png"
+if favicon_png.exists():
+    datas.append((str(favicon_png), "assets"))
 			
 # Bundle DINOv2 weights into assets/ subfolder
 dino_weights = project_dir / "assets" / "dinov2_vits14_pretrain.pth"

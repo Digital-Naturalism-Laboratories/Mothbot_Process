@@ -49,6 +49,28 @@ def scan_for_images(folder_path):
     )
 
 
+def find_images_recursive(dataset_root, processed_dir_name="_processed"):
+    """Recursively find all .jpg files under *dataset_root*, skipping the
+    ``_processed`` mirror tree and any ``patches/`` sub-folders.
+
+    Returns a sorted list of absolute image paths.  This is the
+    structure-agnostic replacement for ``find_date_folders`` + ``scan_for_images``
+    and works regardless of how the user has organised their data.
+    """
+    images = []
+    for root, dirs, files in os.walk(dataset_root):
+        # Prune the _processed tree and patches folders so we never pick up
+        # output artefacts as source images.
+        dirs[:] = sorted(
+            d for d in dirs
+            if d != processed_dir_name and d.lower() != "patches"
+        )
+        for f in sorted(files):
+            if f.lower().endswith(".jpg"):
+                images.append(os.path.join(root, f))
+    return images
+
+
 def find_detection_matches(folder_path):
     """Find matching (jpg, json) pairs for human and bot detections.
 
@@ -79,6 +101,62 @@ def find_detection_matches(folder_path):
             hu_matches.append((jpg, human_json))
         if bot_json in json_set:
             bot_matches.append((jpg, bot_json))
+    return hu_matches, bot_matches
+
+
+def find_detection_matches_processed(dataset_root, source_folder=None):
+    """Find (jpg, json) pairs where source images are in *source_folder* (or
+    anywhere under *dataset_root*) and JSON outputs live in the ``_processed``
+    mirror tree.
+
+    This is the structure-agnostic replacement for ``find_detection_matches``
+    and works regardless of nightly-folder layout.
+
+    Parameters
+    ----------
+    dataset_root : str
+        Top-level folder the user chose to process.
+    source_folder : str | None
+        If provided, only return matches whose source image is directly inside
+        *source_folder*.  If None, all images under *dataset_root* (excluding
+        the ``_processed`` sub-tree) are considered.
+
+    Returns
+    -------
+    hu_matches : list[tuple[str, str]]
+        (jpg_path, human_json_path) pairs where human_json_path is in _processed.
+    bot_matches : list[tuple[str, str]]
+        (jpg_path, bot_json_path) pairs where bot_json_path is in _processed.
+    """
+    # Import here to avoid circular imports
+    from core.paths import get_json_output_path
+
+    if source_folder is not None:
+        jpg_files = [
+            os.path.join(source_folder, f)
+            for f in os.listdir(source_folder)
+            if f.lower().endswith(".jpg")
+        ]
+    else:
+        jpg_files = find_images_recursive(dataset_root)
+
+    hu_matches = []
+    bot_matches = []
+    for jpg in jpg_files:
+        human_json = get_json_output_path(jpg, "", dataset_root)
+        bot_json = get_json_output_path(jpg, "_botdetection", dataset_root)
+
+        # Also check for human ground-truth JSONs placed next to source images
+        human_json_source = jpg.replace(".jpg", ".json")
+
+        if os.path.isfile(human_json):
+            hu_matches.append((jpg, human_json))
+        elif os.path.isfile(human_json_source):
+            hu_matches.append((jpg, human_json_source))
+
+        if os.path.isfile(bot_json):
+            bot_matches.append((jpg, bot_json))
+
     return hu_matches, bot_matches
 
 

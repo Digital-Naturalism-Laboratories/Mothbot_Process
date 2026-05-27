@@ -16,10 +16,16 @@ from datetime import datetime
 
 from core.common import (
     find_date_folders,
+    find_images_recursive,
     scan_for_images,
     current_timestamp,
     get_device,
     print_device_info,
+)
+from core.paths import (
+    get_patch_folder,
+    get_json_output_path,
+    find_processed_json,
 )
 
 # ~~~~Default values (used when run from CLI without args)~~~~~~~
@@ -29,13 +35,13 @@ DEFAULT_YOLO_MODEL = r"..\trained_models\yolo11m_4500_imgsz1600_b1_2024-01-18\we
 DEFAULT_IMGSZ = 1600
 
 # Module-level globals set by run() before processing functions are called.
-# This preserves backward compatibility with existing function signatures.
 YOLO_MODEL = DEFAULT_YOLO_MODEL
 IMGSZ = DEFAULT_IMGSZ
 DEVICE = "cpu"
 GEN_BOT_DET_EVENIF_HUMAN_EXISTS = True
 OVERWRITE_PREV_BOT_DETECTIONS = True
 GEN_THUMBNAILS = True
+DATASET_ROOT = None  # Set by run(); when None, outputs go next to source images (legacy)
 
 
 # ~~~~Functions~~~~~~~
@@ -59,8 +65,6 @@ def load_yolo_model(model_path):
         if "Weights only load failed" not in message:
             raise
 
-        # PyTorch 2.6+ defaults torch.load(..., weights_only=True), which can
-        # fail for trusted Ultralytics checkpoints that include model classes.
         print(
             "Retrying model load with torch.load(weights_only=False) compatibility mode..."
         )
@@ -71,13 +75,11 @@ def load_yolo_model(model_path):
         )
 
         def _torch_load_compat(*args, **kwargs):
-            # Force unsafe-load mode for trusted local checkpoints.
             kwargs["weights_only"] = False
             return original_torch_load(*args, **kwargs)
 
         torch.load = _torch_load_compat
         try:
-            # PyTorch can force weights_only=True via env var regardless of callsite.
             os.environ["TORCH_FORCE_WEIGHTS_ONLY_LOAD"] = "0"
             os.environ["TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"] = "1"
             return YOLO(resolved_model_path)
@@ -106,50 +108,81 @@ def is_valid_image(image_path):
         return False
 
 
-def process_jpg_files(img_files, date_folder):
-    """
-    Processes all *.jpg files within the specified date folder, running YOLO
-    detection and writing a _botdetection.json file for each image.
+def _resolve_output_paths(image_path, filename_stem, source_folder):
+    """Return (human_json_path, bot_json_path, patch_folder_path).
 
-    Reads module globals: YOLO_MODEL, IMGSZ, DEVICE, GEN_THUMBNAILS,
-    GEN_BOT_DET_EVENIF_HUMAN_EXISTS, OVERWRITE_PREV_BOT_DETECTIONS.
+    When DATASET_ROOT is set the outputs go into the _processed mirror tree;
+    otherwise they fall back to sitting next to the source image (legacy
+    behaviour, kept for backward-compat when callers don't pass dataset_root).
     """
-    # Load the model
+    if DATASET_ROOT:
+        human_json_path = get_json_output_path(image_path, "", DATASET_ROOT)
+        bot_json_path = get_json_output_path(image_path, "_botdetection", DATASET_ROOT)
+        patch_folder_path = Path(get_patch_folder(source_folder, DATASET_ROOT))
+    else:
+        # Legacy: outputs next to source image
+        human_json_path = os.path.join(source_folder, filename_stem + ".json")
+        bot_json_path = os.path.join(source_folder, filename_stem + "_botdetection.json")
+        patch_folder_path = Path(source_folder) / "patches"
+        patch_folder_path.mkdir(parents=True, exist_ok=True)
+    return human_json_path, bot_json_path, patch_folder_path
+
+
+def process_image_list(img_files, dataset_root=None):
+    """Process a flat list of absolute image paths.
+
+    This is the new structure-agnostic entry point used when DATASET_ROOT is
+    set.  Each image can live anywhere under *dataset_root* and outputs are
+    written to the corresponding location in the _processed mirror.
+
+    Parameters
+    ----------
+    img_files : list[str]
+        Absolute paths to .jpg source images.
+    dataset_root : str | None
+        Top-level folder the user chose to process.  When None the function
+        falls back to per-folder legacy behaviour.
+    """
+    global DATASET_ROOT
+    DATASET_ROOT = dataset_root
+
     model = load_yolo_model(YOLO_MODEL)
-    model_name = os.path.basename(YOLO_MODEL)
-    model_name = "Mothbot_" + model_name
+    model_name = "Mothbot_" + os.path.basename(YOLO_MODEL)
 
-    total_img_files = len(img_files)
+    total = len(img_files)
+    for idx, image_path in enumerate(img_files):
+        filename = os.path.basename(image_path)
+        filename_stem = filename[:-4] if filename.lower().endswith(".jpg") else filename
+        source_folder = os.path.dirname(image_path)
 
-    patch_folder_path = Path(date_folder + "/patches")
-    patch_folder_path.mkdir(parents=True, exist_ok=True)
+        human_json_path, bot_json_path, patch_folder_path = _resolve_output_paths(
+            image_path, filename_stem, source_folder
+        )
 
-    for idx, filename in enumerate(img_files):
-
-        image_path = os.path.join(date_folder, filename)
-        human_json_path = os.path.join(date_folder, filename[:-4] + ".json")
-        bot_json_path = os.path.join(date_folder, filename[:-4] + "_botdetection.json")
+        progress = (idx / total) * 100
+        print(f"({progress:.2f}%) Processing:  {filename} ")
 
         if not is_valid_image(image_path):
             print(f"Skipping corrupt image: {image_path}")
             continue
 
-        processed_files = idx + 1
-        progress = ((processed_files - 1) / total_img_files) * 100
-        print(f"({progress:.2f}%) Processing:  {filename} ")
-
         if not os.path.isfile(image_path) or os.path.getsize(image_path) == 0:
             print(f"Skipping {filename}: Image file is missing or empty.")
             continue
 
-        # Check 1: human detection file
-        if os.path.isfile(human_json_path):
-            print(human_json_path)
-            print(
-                "Earlier Human detection file exists, check to see if we should skip it"
-            )
+        # Check 1: human detection file (look in processed tree AND next to source for
+        # ground-truth JSONs that users may have placed alongside raw images)
+        human_json_source = os.path.join(source_folder, filename_stem + ".json")
+        human_json_exists = os.path.isfile(human_json_path) or os.path.isfile(human_json_source)
+        effective_human_json = human_json_path if os.path.isfile(human_json_path) else (
+            human_json_source if os.path.isfile(human_json_source) else None
+        )
+
+        if effective_human_json:
+            print(effective_human_json)
+            print("Earlier Human detection file exists, check to see if we should skip it")
             try:
-                with open(human_json_path, "r") as json_file:
+                with open(effective_human_json, "r") as json_file:
                     json_data = json.load(json_file)
                     if GEN_THUMBNAILS:
                         json_data = generateThumbnailPatches_JSON(
@@ -168,9 +201,7 @@ def process_jpg_files(img_files, date_folder):
         # Check 2: existing bot detection file
         if os.path.isfile(bot_json_path):
             print(bot_json_path)
-            print(
-                "Earlier BOT detection file exists, check to see if we should skip it, "
-            )
+            print("Earlier BOT detection file exists, check to see if we should skip it, ")
             try:
                 with open(bot_json_path, "r") as json_file:
                     json_data = json.load(json_file)
@@ -196,9 +227,6 @@ def process_jpg_files(img_files, date_folder):
             )
         except Exception as e:
             print(f"❌ Skipping corrupt/unreadable image: {image_path} ({e})")
-            print(
-                f"Skipping {filename}: Image file is missing or empty and messed up in YOLO."
-            )
             continue
 
         # Extract OBB coordinates and crop
@@ -220,7 +248,6 @@ def process_jpg_files(img_files, date_folder):
                 pts = pts.tolist()
                 pts = [item for sublist in pts for item in sublist]  # flatten
 
-                print(confidence)
                 shape = {
                     "points": pts,
                     "direction": angle,
@@ -230,7 +257,8 @@ def process_jpg_files(img_files, date_folder):
                 thepatchpath = ""
                 if GEN_THUMBNAILS:
                     thepatchpath = generateThumbnailPatches(
-                        result.orig_img, image_path, rect, det_idx, model_name
+                        result.orig_img, image_path, rect, det_idx, model_name,
+                        patch_folder=str(patch_folder_path),
                     )
                 shape["patch_path"] = thepatchpath
                 shape["confidence_detection"] = confidence
@@ -240,8 +268,8 @@ def process_jpg_files(img_files, date_folder):
                 shape["detector_bot"] = str(model_name)
                 shapes.append(shape)
 
-        image = PIL.Image.open(image_path)
-        width, height = image.size
+        image_pil = PIL.Image.open(image_path)
+        width, height = image_pil.size
 
         data = {
             "version": model_name,
@@ -251,10 +279,8 @@ def process_jpg_files(img_files, date_folder):
             "imageWidth": width,
             "description": "",
             "imageData": None,
+            "shapes": [],
         }
-
-        if "shapes" not in data:
-            data["shapes"] = []
 
         for shape in shapes:
             shape_data = {
@@ -280,6 +306,16 @@ def process_jpg_files(img_files, date_folder):
 
         with open(bot_json_path, "w") as f:
             json.dump(data, f, indent=4)
+
+
+def process_jpg_files(img_files, date_folder):
+    """Legacy per-folder entry point.  Still used when run() is called without
+    a dataset_root (e.g. the old nightly-folder workflow).
+    """
+    process_image_list(
+        [os.path.join(date_folder, f) if not os.path.isabs(f) else f for f in img_files],
+        dataset_root=DATASET_ROOT,
+    )
 
 
 def crop_rect_old(img, rect):
@@ -314,10 +350,26 @@ def run(
     overwrite_prev_bot_detections=True,
     gen_bot_det_evenif_human_exists=True,
     gen_thumbnails=True,
+    dataset_root=None,
 ):
-    """Main entry point for detection.  Called directly by the UI or via CLI."""
+    """Main entry point for detection.  Called directly by the UI or via CLI.
+
+    Parameters
+    ----------
+    input_path : str
+        The folder the user selected to process.  This can be:
+        - A top-level dataset collection folder (contains deployment sub-folders)
+        - A single deployment folder
+        - A single nightly folder
+        Structure is discovered automatically; all .jpg files found under
+        *input_path* (excluding _processed/ and patches/ sub-trees) are processed.
+    dataset_root : str | None
+        If provided, outputs go into ``<dataset_root>/_processed/``.
+        Defaults to *input_path* itself (so ``_processed/`` is created inside
+        the chosen folder).
+    """
     global YOLO_MODEL, IMGSZ, DEVICE, GEN_THUMBNAILS
-    global GEN_BOT_DET_EVENIF_HUMAN_EXISTS, OVERWRITE_PREV_BOT_DETECTIONS
+    global GEN_BOT_DET_EVENIF_HUMAN_EXISTS, OVERWRITE_PREV_BOT_DETECTIONS, DATASET_ROOT
 
     YOLO_MODEL = yolo_model or DEFAULT_YOLO_MODEL
     IMGSZ = int(imgsz)
@@ -325,19 +377,17 @@ def run(
     GEN_THUMBNAILS = gen_thumbnails
     GEN_BOT_DET_EVENIF_HUMAN_EXISTS = gen_bot_det_evenif_human_exists
     OVERWRITE_PREV_BOT_DETECTIONS = overwrite_prev_bot_detections
+    DATASET_ROOT = dataset_root or input_path
 
     print("Starting Mothbot Detection Script")
     print_device_info(selected_device=DEVICE)
     print(f"Processing {input_path} with model {YOLO_MODEL} and image size {IMGSZ}")
+    print(f"Outputs will be written to: {DATASET_ROOT}/_processed/")
 
-    date_folders = find_date_folders(input_path)
-    print(f"{len(date_folders)}  nightly folders found to process")
+    images = find_images_recursive(input_path)
+    print(f"{len(images)} images found to process")
 
-    for date_folder_path in date_folders:
-        print(date_folder_path)
-        images = scan_for_images(date_folder_path)
-        print(f"{len(images)}  images to process in this night: {date_folder_path}")
-        process_jpg_files(images, date_folder_path)
+    process_image_list(images, dataset_root=DATASET_ROOT)
 
     print("Finished Running Detections!")
 
@@ -356,6 +406,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--overwrite_prev_bot_detections", default=True, required=False)
     parser.add_argument("--gen_thumbnails", default=True, required=False)
+    parser.add_argument(
+        "--dataset_root",
+        default=None,
+        required=False,
+        help="Root folder for _processed output tree. Defaults to input_path.",
+    )
     args = parser.parse_args()
 
     run(
@@ -369,4 +425,5 @@ if __name__ == "__main__":
             if not isinstance(args.gen_thumbnails, bool)
             else args.gen_thumbnails
         ),
+        dataset_root=args.dataset_root,
     )

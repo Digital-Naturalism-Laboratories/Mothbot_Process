@@ -90,12 +90,33 @@ def generateThumbnailPatches_JSON(
     return json_data
 
 
-def generateThumbnailPatches(img, thefilepath, rectangle, detnum, modelname):
+def generateThumbnailPatches(img, thefilepath, rectangle, detnum, modelname, patch_folder=None):
+    """Crop a detection bounding box and save it as a thumbnail patch.
 
+    Parameters
+    ----------
+    img : numpy.ndarray
+        Source image array (as returned by OpenCV / YOLO orig_img).
+    thefilepath : str
+        Absolute path to the source .jpg image.
+    rectangle : tuple
+        OpenCV minAreaRect result.
+    detnum : int
+        Detection index within this image (used in the patch filename).
+    modelname : str
+        Name of the YOLO model (used in the patch filename).
+    patch_folder : str | None
+        Absolute path to the folder where the patch should be saved.
+        When None, falls back to ``<image_dir>/patches/`` (legacy behaviour).
+    """
     filename = os.path.basename(thefilepath)
-    directory_path = os.path.dirname(thefilepath)
-    patch_folder_path = Path(directory_path + "/patches")
-    patch_folder_path.mkdir(parents=True, exist_ok=True)
+    if patch_folder is None:
+        directory_path = os.path.dirname(thefilepath)
+        patch_folder_path = Path(directory_path + "/patches")
+        patch_folder_path.mkdir(parents=True, exist_ok=True)
+    else:
+        patch_folder_path = Path(patch_folder)
+        patch_folder_path.mkdir(parents=True, exist_ok=True)
 
     patchfilename = (
         filename.split(".")[0]
@@ -106,15 +127,12 @@ def generateThumbnailPatches(img, thefilepath, rectangle, detnum, modelname):
         + "."
         + filename.split(".")[1]
     )
-    patchfullpath = Path(patch_folder_path) / f"{patchfilename}"
+    patchfullpath = patch_folder_path / patchfilename
 
     # img_crop will the cropped rectangle
     img_crop = crop_rect(img, rectangle)
 
-    cv2.imwrite(
-        patchfullpath,
-        img_crop,
-    )
+    cv2.imwrite(str(patchfullpath), img_crop)
     patchpath = f"patches/{patchfilename}"
     return patchpath
 

@@ -57,12 +57,14 @@ VERSION = "pybioclip_" + importlib.metadata.version("pybioclip")
 from core.common import (
     find_date_folders,
     find_detection_matches,
+    find_detection_matches_processed,
     update_main_list,
     current_timestamp,
     get_rotated_rect_raw_coordinates,
     get_device,
     print_device_info,
 )
+from core.paths import resolve_patch_path
 
 # ~~~~Variables to Change~~~~~~~
 
@@ -89,6 +91,7 @@ ID_BOTDETECTIONS = True
 
 # ~~~~Other Global Variables~~~~~~~
 
+DATASET_ROOT = None  # Set by run(); when set, patch paths are resolved via _processed tree
 TAXA_COLS = ["kingdom", "phylum", "class", "order", "family", "genus", "species"]
 TAXONOMIC_RANK_FILTER = Rank.ORDER
 TOL_TAXONOMIC_RANK = "species"  # Change this to "species" to target just the species in your CSV # Note i think this is actually just always needs to be set for SPECIES for this example
@@ -535,7 +538,11 @@ def collect_patches_for_detection_set(matched_img_json_pairs, label):
         for idx, coordinates in enumerate(coordinates_of_detections_list):
             if was_pre_ided_list[idx] and not OVERWRITE_EXISTING_IDs:
                 continue
-            patchfullpath = os.path.dirname(image_path) + "/" + thepatch_list[idx]
+            patchfullpath = (
+                resolve_patch_path(thepatch_list[idx], image_path, DATASET_ROOT)
+                if DATASET_ROOT
+                else os.path.dirname(image_path) + "/" + thepatch_list[idx]
+            )
             cluster_id = read_cluster_id(json_path, idx)
             all_patches.append((patchfullpath, json_path, idx, cluster_id))
 
@@ -694,14 +701,15 @@ def extract_doi_from_csv_path(csv_path: str) -> str:
 
 
 def run(
-    input_path, taxa_csv, rank=3, ID_Hum=True, ID_Bot=True, overwrite_prev_bot_ID=True
+    input_path, taxa_csv, rank=3, ID_Hum=True, ID_Bot=True, overwrite_prev_bot_ID=True,
+    dataset_root=None,
 ):
     """Run the full ID pipeline programmatically.
 
     Parameters
     ----------
     input_path : str
-        Root folder containing mothbox data (date-folders inside).
+        Root folder containing mothbox data (any sub-folder structure).
     taxa_csv : str
         Path to the GBIF species-list CSV.
     rank : int
@@ -712,15 +720,19 @@ def run(
         Whether to ID bot detections.
     overwrite_prev_bot_ID : bool
         Whether to overwrite existing bot IDs.
+    dataset_root : str | None
+        Top-level folder for the _processed output tree.  Defaults to
+        *input_path* itself.
     """
     global TAXONOMIC_RANK_FILTER, OVERWRITE_EXISTING_IDs, ID_HUMANDETECTIONS
-    global ID_BOTDETECTIONS, INPUT_PATH, DOI, DEVICE
+    global ID_BOTDETECTIONS, INPUT_PATH, DOI, DEVICE, DATASET_ROOT
 
     TAXONOMIC_RANK_FILTER = Rank(int(rank))
     OVERWRITE_EXISTING_IDs = bool(overwrite_prev_bot_ID)
     ID_HUMANDETECTIONS = bool(ID_Hum)
     ID_BOTDETECTIONS = bool(ID_Bot)
     INPUT_PATH = input_path
+    DATASET_ROOT = dataset_root or input_path
 
     DOI = extract_doi_from_csv_path(taxa_csv)
     print("using species list: " + DOI)
@@ -733,19 +745,12 @@ def run(
 
     print_device_info(selected_device=DEVICE)
 
-    # Find all the dated folders that our data lives in
     print("Looking in this folder for MothboxData: " + INPUT_PATH)
-    date_folders = find_date_folders(INPUT_PATH)
-    print(f"Found {len(date_folders)} dated folders potentially full of mothbox data")
 
-    # Look in each dated folder for .json detection files and the matching .jpgs
-    hu_matched_img_json_pairs = []
-    bot_matched_img_json_pairs = []
-
-    for folder in date_folders:
-        hu_list_of_matches, bot_list_of_matches = find_detection_matches(folder)
-        hu_matched_img_json_pairs = update_main_list(hu_matched_img_json_pairs, hu_list_of_matches)
-        bot_matched_img_json_pairs = update_main_list(bot_matched_img_json_pairs, bot_list_of_matches)
+    # Use structure-agnostic discovery: finds JSONs in the _processed tree
+    hu_matched_img_json_pairs, bot_matched_img_json_pairs = (
+        find_detection_matches_processed(DATASET_ROOT)
+    )
 
     print(f"Found {len(hu_matched_img_json_pairs)} pairs of images and HUMAN detection data to try to ID")
     if hu_matched_img_json_pairs:

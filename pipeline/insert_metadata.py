@@ -34,7 +34,9 @@ import csv
 
 from core.common import (
     find_date_folders,
+    find_images_recursive,
     find_detection_matches,
+    find_detection_matches_processed,
     update_main_list,
     current_timestamp,
     get_rotated_rect_raw_coordinates,
@@ -335,51 +337,40 @@ def find_csv_match_old_onlyparent(input_path: str, metadata_path: str) -> dict:
     return matches[0]
 
 
-def run(input_path, metadata_path):
+def run(input_path, metadata_path, dataset_root=None):
     """Run the metadata-insertion pipeline programmatically.
 
     Parameters
     ----------
     input_path : str
-        Root folder containing dated Mothbox data sub-folders.
+        Root folder containing Mothbox data (any sub-folder structure).
     metadata_path : str
         Path to the CSV field-sheet metadata file.
+    dataset_root : str | None
+        Top-level folder for the _processed output tree.  Defaults to
+        *input_path* itself.
     """
     global ID_HUMANDETECTIONS, ID_BOTDETECTIONS, INPUT_PATH
 
     INPUT_PATH = input_path
+    _dataset_root = dataset_root or input_path
 
     # ~~~~~~~~~~~~~~~~ GATHERING DATA ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    # Find all the dated folders that our data lives in
     print("Looking in this folder for MothboxData: " + input_path)
-    date_folders = find_date_folders(input_path)
-    print(
-        "Found ",
-        str(len(date_folders)) + " dated folders potentially full of mothbox data",
+
+    # Use structure-agnostic discovery: finds JSONs in the _processed tree
+    hu_matched_img_json_pairs, bot_matched_img_json_pairs = (
+        find_detection_matches_processed(_dataset_root)
     )
-
-    # Look in each dated folder for .json detection files and the matching .jpgs
-    hu_matched_img_json_pairs = []
-    bot_matched_img_json_pairs = []
-
-    for folder in date_folders:
-        hu_list_of_matches, bot_list_of_matches = find_detection_matches(folder)
-        hu_matched_img_json_pairs = update_main_list(
-            hu_matched_img_json_pairs, hu_list_of_matches
-        )
-        bot_matched_img_json_pairs = update_main_list(
-            bot_matched_img_json_pairs, bot_list_of_matches
-        )
 
     print(
         "Found ",
         str(len(hu_matched_img_json_pairs))
         + " pairs of images and HUMAN detection data to insert metadata",
     )
-    # Example Pair
-    print("example human detection and json pair:")
     if len(hu_matched_img_json_pairs) > 0:
+        print("example human detection and json pair:")
         print(hu_matched_img_json_pairs[0])
 
     print(
@@ -387,16 +378,14 @@ def run(input_path, metadata_path):
         str(len(bot_matched_img_json_pairs))
         + " pairs of images and BOT detection data to insert metadata",
     )
-    # Example Pair
-    print("example human detection and json pair:")
     if len(bot_matched_img_json_pairs) > 0:
+        print("example bot detection and json pair:")
         print(bot_matched_img_json_pairs[0])
 
     metadata = find_csv_match(input_path, metadata_path)
 
     # ~~~~~~~~~~~~~~~~ Processing Data ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    # Now that we have our data to be processed in a big list, it's time to load up the Pybioclip stuff
     connect_metadata_matched_img_json_pairs(
         hu_matched_img_json_pairs,
         bot_matched_img_json_pairs,

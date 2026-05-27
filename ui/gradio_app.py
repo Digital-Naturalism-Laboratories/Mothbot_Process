@@ -684,6 +684,7 @@ def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bo
                 yolo_model=yolo_model,
                 imgsz=int(imsz),
                 overwrite_prev_bot_detections=bool(overwrite_bot),
+                dataset_root=folder,
             ):
                 output_log += chunk
                 yield output_log, gr.update(interactive=False)
@@ -711,6 +712,7 @@ def run_ID(selected_folders, species_list, chosenrank, IDHum, IDBot, overwrite_b
             "ID_Hum": bool(IDHum),
             "ID_Bot": bool(IDBot),
             "overwrite_prev_bot_ID": bool(overwrite_bot),
+            "dataset_root": folder,
         },
     )
 
@@ -725,6 +727,7 @@ def run_metadata(selected_folders, metadata):
         kwargs_builder=lambda folder: {
             "input_path": folder,
             "metadata_path": str(metadata),
+            "dataset_root": folder,
         },
     )
 
@@ -742,7 +745,7 @@ def run_cluster_with_continue(selected_folders):
         yield output_log, gr.update(interactive=False)
 
         try:
-            for chunk in run_in_thread(Mothbot_Cluster.run, input_path=folder):
+            for chunk in run_in_thread(Mothbot_Cluster.run, input_path=folder, dataset_root=folder):
                 output_log += chunk
                 yield output_log, gr.update(interactive=False)
             output_log += f"✅ Cluster completed for {folder}\n"
@@ -762,7 +765,7 @@ def run_cluster(selected_folders):
         start_message="---🔍 Running Cluster for {folder} ---\n",
         success_message="✅  Cluster  completed for {folder}\n",
         finish_message="------  Cluster  processing finished ------",
-        kwargs_builder=lambda folder: {"input_path": folder},
+        kwargs_builder=lambda folder: {"input_path": folder, "dataset_root": folder},
     )
 
 
@@ -802,12 +805,13 @@ def run_full_process(
                 "yolo_model": yolo_model,
                 "imgsz": int(imsz),
                 "overwrite_prev_bot_detections": bool(overwrite_bot_detections),
+                "dataset_root": folder,
             },
         ),
         (
             "Cluster",
             Mothbot_Cluster.run,
-            lambda folder: {"input_path": folder},
+            lambda folder: {"input_path": folder, "dataset_root": folder},
         ),
         (
             "ID",
@@ -819,6 +823,7 @@ def run_full_process(
                 "ID_Hum": bool(id_hum),
                 "ID_Bot": bool(id_bot),
                 "overwrite_prev_bot_ID": bool(overwrite_bot_ids),
+                "dataset_root": folder,
             },
         ),
         (
@@ -827,6 +832,7 @@ def run_full_process(
             lambda folder: {
                 "input_path": folder,
                 "metadata_path": str(metadata_csv),
+                "dataset_root": folder,
             },
         ),
 

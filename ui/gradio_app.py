@@ -202,6 +202,8 @@ def app():
         selected_paths = gr.JSON(
             label="Confirmed Image Collections to be Processed", visible=False
         )
+        # Tracks which selected keys are externally-processed (no source images)
+        external_keys_state = gr.State(set())
 
         with gr.Tabs(selected="setup") as main_tabs:
             # ~~~~~~~~~~~~ Setup TAB ~~~~~~~~~~~~~~~~~~~~~~
@@ -285,6 +287,7 @@ def app():
                         continue_process_btn,
                         selected_paths,
                         toggle_all_btn,
+                        external_keys_state,
                     ],
                 )
                 deployment_path.change(
@@ -298,6 +301,7 @@ def app():
                         continue_process_btn,
                         selected_paths,
                         toggle_all_btn,
+                        external_keys_state,
                     ],
                 )
                 metadata_browse_btn.click(
@@ -322,7 +326,7 @@ def app():
                     outputs=[folder_choices, toggle_label_state],
                 ).then(
                     fn=confirm_selection,
-                    inputs=[folder_choices, mapping_state],
+                    inputs=[folder_choices, mapping_state, external_keys_state],
                     outputs=[selected_paths, continue_process_btn],
                 )
                 toggle_label_state.change(
@@ -332,7 +336,7 @@ def app():
                 )
                 folder_choices.change(
                     fn=confirm_selection,
-                    inputs=[folder_choices, mapping_state],
+                    inputs=[folder_choices, mapping_state, external_keys_state],
                     outputs=[selected_paths, continue_process_btn],
                 )
             # ~~~~~~~~~~~~ PROCESS TAB ~~~~~~~~~~~~~~~~~~~~~~
@@ -366,8 +370,9 @@ def app():
                         yolo_model_path,
                         imgsz,
                         OVERWRITE_PREV_BOT_DETECTIONS,
+                        external_keys_state,
                     ],
-                    outputs=[DET_output_box, continue_cluster_btn],  # ← use continue_cluster_btn
+                    outputs=[DET_output_box, continue_cluster_btn],
                 )
 
                 continue_cluster_btn.click(
@@ -558,84 +563,132 @@ def browse_yolo_model(current_path):
 
 
 def scan_deployment_folder(folder_path, picker_error_message=""):
-    """Scan *folder_path* for sub-folders that contain images and return UI updates."""
+    """Scan *folder_path* for image collections (raw and externally-processed)
+    and return UI updates.
+
+    Rules:
+    - Raw collections: folders under *folder_path* (outside _processed/) that
+      contain .jpg files.
+    - Externally-processed collections: folders under *folder_path*/_processed/
+      that contain .jpg patch images but whose corresponding raw folder has NO
+      source images (so the collaborator only provided patches, not originals).
+    - If a raw folder has source images, its _processed mirror is NOT shown as
+      a separate entry (the raw folder already covers it).
+    """
+    _EMPTY = (
+        gr.update(visible=True),
+        gr.update(choices=[], value=[], visible=False),
+        {},
+        "Select All",
+        gr.update(interactive=False, visible=False),
+        [],
+        gr.update(visible=False),
+        set(),
+    )
+
     if picker_error_message:
-        return (
-            gr.update(value=f"Picker error: {picker_error_message}", visible=True),
-            gr.update(choices=[], value=[], visible=False),
-            {},
-            "Select All",
-            gr.update(interactive=False, visible=False),
-            [],
-            gr.update(visible=False),
-        )
+        return (gr.update(value=f"Picker error: {picker_error_message}", visible=True),) + _EMPTY[1:]
 
     if not folder_path or not os.path.isdir(folder_path):
-        return (
-            gr.update(value="No valid folder path provided.", visible=True),
-            gr.update(choices=[], value=[]),
-            {},
-            "Select All",
-            gr.update(interactive=False, visible=False),
-            [],
-            gr.update(visible=False),
-        )
+        return (gr.update(value="No valid folder path provided.", visible=True),) + _EMPTY[1:]
 
-    matches = find_image_collections(folder_path)
-    if not matches:
+    # ── Raw collections ──────────────────────────────────────────────────────
+    raw_matches = find_image_collections(folder_path)
+
+    # Build a set of relative paths that have raw source images, so we can
+    # suppress their _processed mirror from appearing as an external entry.
+    raw_rel_paths = set()
+    for p in raw_matches:
+        try:
+            raw_rel_paths.add(os.path.relpath(p, folder_path))
+        except ValueError:
+            pass
+
+    # ── Externally-processed collections ─────────────────────────────────────
+    processed_root = os.path.join(folder_path, "_processed")
+    external_matches = []
+    if os.path.isdir(processed_root):
+        ext_collections = find_image_collections(processed_root)
+        for p in ext_collections:
+            try:
+                rel_under_processed = os.path.relpath(p, processed_root)
+            except ValueError:
+                continue
+            # Only include if the corresponding raw folder has no source images
+            if rel_under_processed not in raw_rel_paths:
+                external_matches.append(p)
+
+    if not raw_matches and not external_matches:
         return (
-            gr.update(
-                value=f"No folders containing images found in:\n{folder_path}", visible=True
-            ),
-            gr.update(choices=[], value=[]),
-            {},
-            "Select All",
-            gr.update(interactive=False, visible=False),
-            [],
-            gr.update(visible=False),
-        )
+            gr.update(value=f"No folders containing images found in:\n{folder_path}", visible=True),
+        ) + _EMPTY[1:]
 
     choices = []
     mapping = {}
+    external_keys = set()
     seen_values = set()
 
-    for p in matches:
-        # Build a readable label relative to the chosen root folder
+    def _make_entry(p, folder_root, label_prefix, is_external):
         try:
             rel = os.path.relpath(p, folder_path)
         except ValueError:
             rel = p
         value = rel if rel != "." else os.path.basename(p)
-
-        # Deduplicate in the unlikely case of identical relative paths
         i = 1
-        orig_value = value
+        orig = value
         while value in seen_values:
-            value = f"{orig_value} ({i})"
+            value = f"{orig} ({i})"
             i += 1
         seen_values.add(value)
 
         jpeg_count = _count_matching_files(p, ("*.jpg", "*.jpeg"))
 
-        # Count processed outputs from the _processed mirror if it exists
-        processed_mirror = os.path.join(
-            folder_path, "_processed", os.path.relpath(p, folder_path)
-        )
-        json_count = _count_matching_files(processed_mirror, ("*.json",)) if os.path.isdir(processed_mirror) else 0
-        patches_count = _count_matching_files(processed_mirror, ("*.jpg", "*.jpeg")) - jpeg_count if os.path.isdir(processed_mirror) else 0
-        patches_count = max(0, patches_count)
+        if is_external:
+            # For external collections the folder IS the processed mirror —
+            # count patches (all jpgs) and JSONs directly inside it.
+            json_count  = _count_matching_files(p, ("*.json",))
+            label = f"⚡ {label_prefix}  ({jpeg_count} patches"
+            if json_count:
+                label += f", {json_count} detections"
+            label += ")  [externally processed — no source images]"
+        else:
+            processed_mirror = os.path.join(folder_path, "_processed", os.path.relpath(p, folder_path))
+            json_count   = _count_matching_files(processed_mirror, ("*.json",))   if os.path.isdir(processed_mirror) else 0
+            patch_count  = _count_matching_files(processed_mirror, ("*.jpg", "*.jpeg")) if os.path.isdir(processed_mirror) else 0
+            patch_count  = max(0, patch_count)
+            label = f"{label_prefix}  ({jpeg_count} images"
+            if json_count:
+                label += f", {json_count} detections"
+            if patch_count:
+                label += f", {patch_count} patches"
+            label += ")"
 
-        decorated_label = f"{value}  ({jpeg_count} images"
-        if json_count:
-            decorated_label += f", {json_count} detections"
-        if patches_count:
-            decorated_label += f", {patches_count} patches"
-        decorated_label += ")"
-
-        choices.append((decorated_label, value))
+        choices.append((label, value))
         mapping[value] = os.path.abspath(p)
+        if is_external:
+            external_keys.add(value)
 
-    status = f"Selected folder: {folder_path}\nFound {len(choices)} image collection(s)."
+    for p in raw_matches:
+        try:
+            rel = os.path.relpath(p, folder_path)
+        except ValueError:
+            rel = str(p)
+        display = rel if rel != "." else os.path.basename(p)
+        _make_entry(p, folder_path, display, is_external=False)
+
+    for p in external_matches:
+        try:
+            rel_from_processed = os.path.relpath(p, processed_root)
+        except ValueError:
+            rel_from_processed = str(p)
+        display = f"_processed/{rel_from_processed}"
+        _make_entry(p, processed_root, display, is_external=True)
+
+    status = (
+        f"Selected folder: {folder_path}\n"
+        f"Found {len(raw_matches)} raw collection(s)"
+        + (f" + {len(external_matches)} externally-processed collection(s)." if external_matches else ".")
+    )
     return (
         gr.update(value="", visible=False),
         gr.update(choices=choices, value=[], visible=True),
@@ -644,6 +697,7 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
         gr.update(interactive=False, visible=True),
         [],
         gr.update(visible=True),
+        external_keys,
     )
 
 
@@ -658,10 +712,20 @@ def toggle_select_all(current_values, mapping, button_label):
     return gr.update(value=[]), "Select All"
 
 
-def confirm_selection(selected_labels, mapping):
+def confirm_selection(selected_labels, mapping, external_keys=None):
+    """Resolve selected checkbox labels to absolute folder paths.
+
+    Returns a list of dicts: {"path": str, "external": bool}
+    so downstream runners know which collections lack source images.
+    """
     if not selected_labels:
         return [], gr.update(interactive=False)
-    resolved = [mapping[label] for label in selected_labels if label in mapping]
+    external_keys = external_keys or set()
+    resolved = [
+        {"path": mapping[label], "external": label in external_keys}
+        for label in selected_labels
+        if label in mapping
+    ]
     return resolved, gr.update(interactive=bool(resolved))
 
 
@@ -692,15 +756,24 @@ def get_index(selected_word):
     return TAXA_COLS.index(selected_word)
 
 
-def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bot):
+def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bot, external_keys=None):
     if not selected_folders:
         yield "No image collections selected.\n", gr.update(interactive=False)
         return
 
+    external_keys = external_keys or set()
     output_log = ""
     had_error = False
 
-    for folder in selected_folders:
+    for entry in selected_folders:
+        folder  = entry["path"]   if isinstance(entry, dict) else entry
+        is_ext  = entry.get("external", False) if isinstance(entry, dict) else False
+
+        if is_ext:
+            output_log += f"⚠️  Skipping detection for externally-processed collection (no source images):\n    {folder}\n"
+            yield output_log, gr.update(interactive=False)
+            continue
+
         output_log += f"---🕵🏾‍♀️ Running detection for {folder} ---\n"
         yield output_log, gr.update(interactive=False)
 
@@ -767,11 +840,21 @@ def run_cluster_with_continue(selected_folders):
     output_log = ""
     had_error = False
 
-    for folder in selected_folders:
+    for entry in selected_folders:
+        folder  = entry["path"]             if isinstance(entry, dict) else entry
+        is_ext  = entry.get("external", False) if isinstance(entry, dict) else False
+
         output_log += f"---🔍 Running Cluster for {folder} ---\n"
+        if is_ext:
+            output_log += "  ℹ️  Externally-processed collection detected — building stub JSONs from patches before clustering...\n"
         yield output_log, gr.update(interactive=False)
 
         try:
+            if is_ext:
+                stub_log = build_stub_jsons_from_patches(folder)
+                output_log += stub_log
+                yield output_log, gr.update(interactive=False)
+
             for chunk in run_in_thread(Mothbot_Cluster.run, input_path=folder, dataset_root=folder):
                 output_log += chunk
                 yield output_log, gr.update(interactive=False)
@@ -804,6 +887,7 @@ def run_exif(selected_folders):
         success_message="✅   Insert Exif completed for {folder}\n",
         finish_message="------  Insert Exif processing finished ------",
         kwargs_builder=lambda folder: {"input_path": folder},
+        skip_external=True,
     )
 
 
@@ -818,10 +902,14 @@ def run_full_process(
     id_bot,
     overwrite_bot_ids,
     metadata_csv,
+    external_keys=None,
 ):
     if not selected_folders:
         yield "No image collections selected.\n"
         return
+
+    # Steps that cannot run on externally-processed collections (no source images)
+    source_only_steps = {"Detect", "Insert Exif"}
 
     steps = [
         (
@@ -862,7 +950,6 @@ def run_full_process(
                 "dataset_root": folder,
             },
         ),
-
         (
             "Exif",
             Mothbot_InsertExif.run,
@@ -874,7 +961,21 @@ def run_full_process(
     for step_name, runner, kwargs_builder in steps:
         output_log += f"\n===== {step_name} =====\n"
         yield output_log
-        for folder in selected_folders:
+        for entry in selected_folders:
+            folder = entry["path"]             if isinstance(entry, dict) else entry
+            is_ext = entry.get("external", False) if isinstance(entry, dict) else False
+
+            if is_ext and step_name in source_only_steps:
+                output_log += f"⚠️  Skipping {step_name} for externally-processed collection:\n    {folder}\n"
+                yield output_log
+                continue
+
+            if is_ext and step_name == "Cluster":
+                output_log += f"  ℹ️  Building stub JSONs from patches before clustering {folder}...\n"
+                yield output_log
+                output_log += build_stub_jsons_from_patches(folder)
+                yield output_log
+
             output_log += f"--- Running {step_name} for {folder} ---\n"
             yield output_log
             try:
@@ -893,6 +994,89 @@ def run_full_process(
 # ──────────────────────────────────────────────────────────────
 #  Helpers
 # ──────────────────────────────────────────────────────────────
+
+
+def build_stub_jsons_from_patches(processed_folder):
+    """For an externally-processed collection, reverse-build minimal stub JSON
+    detection files from the patch images present in *processed_folder*.
+
+    Each .jpg in *processed_folder* is treated as a patch.  The function groups
+    patches by their source image stem (the filename minus the last two
+    ``_<detidx>_<modelname>`` components) and writes one stub JSON per inferred
+    source image, listing each patch as a shape with an empty detection record.
+
+    This allows Cluster and ID to run on the collection even though no source
+    images or original JSON files exist.
+
+    Returns a log string describing what was created.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+    import re as _re
+
+    log = ""
+    processed_folder = _Path(processed_folder)
+    patch_files = sorted(processed_folder.glob("*.jpg"))
+
+    # Group patches by inferred source stem.
+    # Patch filename format: <source_stem>_<detidx>_<modelname>.jpg
+    # We strip the last two "_"-separated components to recover the source stem.
+    groups = {}
+    for pf in patch_files:
+        parts = pf.stem.rsplit("_", 2)
+        if len(parts) >= 3:
+            source_stem = "_".join(parts[:-2])
+        else:
+            source_stem = pf.stem  # can't parse — treat as its own group
+        groups.setdefault(source_stem, []).append(pf)
+
+    created = 0
+    skipped = 0
+    for source_stem, patches in groups.items():
+        json_path = processed_folder / f"{source_stem}_botdetection.json"
+        if json_path.exists():
+            skipped += 1
+            continue
+
+        shapes = []
+        for pf in sorted(patches):
+            shapes.append({
+                "label": "creature",
+                "points": [],
+                "patch_path": pf.name,
+                "confidence_detection": None,
+                "identifier_bot": "",
+                "identifier_human": "",
+                "timestamp_detection": "",
+                "detector_bot": "external",
+                "shape_type": "rotation",
+                "flags": {},
+                "attributes": {},
+                "score": None,
+                "direction": 0,
+                "group_id": None,
+                "description": "",
+                "difficult": "false",
+                "kie_linking": [],
+            })
+
+        stub = {
+            "version": "external",
+            "flags": {},
+            "imagePath": source_stem + ".jpg",
+            "imageHeight": None,
+            "imageWidth": None,
+            "description": "stub generated from external patches",
+            "imageData": None,
+            "shapes": shapes,
+        }
+
+        with open(json_path, "w") as fh:
+            _json.dump(stub, fh, indent=4)
+        created += 1
+
+    log += f"  Stub JSON creation: {created} created, {skipped} already existed.\n"
+    return log
 
 
 def find_image_collections(directory, processed_dir_name="_processed"):
@@ -958,13 +1142,22 @@ def _run_batch_pipeline(
     success_message,
     finish_message,
     kwargs_builder,
+    skip_external=False,
 ):
     if not selected_folders:
         yield "No image collections selected.\n"
         return
 
     output_log = ""
-    for folder in selected_folders:
+    for entry in selected_folders:
+        folder = entry["path"]             if isinstance(entry, dict) else entry
+        is_ext = entry.get("external", False) if isinstance(entry, dict) else False
+
+        if skip_external and is_ext:
+            output_log += f"⚠️  Skipping (not applicable for externally-processed collection):\n    {folder}\n"
+            yield output_log
+            continue
+
         output_log += start_message.format(folder=folder)
         yield output_log
 

@@ -81,12 +81,14 @@ from core.common import (
     find_date_folders,
     find_detection_matches,
     find_detection_matches_processed,
+    find_images_recursive,
     update_main_list,
     current_timestamp,
     get_rotated_rect_raw_coordinates,
     get_device,
     print_device_info,
 )
+from core.paths import resolve_patch_path, get_processed_folder
 
 
 # ~~~~Variables to Change~~~~~~~
@@ -96,6 +98,7 @@ INPUT_PATH = r"C:\Users\andre\Desktop\donald\2022-01-11"  # raw string
 # you probably always want these below as true
 ID_HUMANDETECTIONS = True
 ID_BOTDETECTIONS = True
+DATASET_ROOT = None  # Set by run(); used for patch path resolution
 
 # Paths to save filtered list of embeddings/labels
 image_embeddings_path = INPUT_PATH + "/image_embeddings.npy"
@@ -375,11 +378,16 @@ def temporal_subclusters(
                     ts = datetime.strptime(ts_str, "%Y%m%d%H%M%S")
 
             if ts is None:
-                raise ValueError(f"Could not parse timestamp from filename: {fname}")
+                print(f"⚠️  Could not parse timestamp from filename: {fname} — skipping temporal sub-clustering for this detection.")
+                timestamps.append((i, None))
+                continue
 
             timestamps.append((i, ts))
 
-        # Sort detections in this cluster by time
+        # Sort detections in this cluster by time — drop any with unparseable timestamps
+        timestamps = [(i, ts) for (i, ts) in timestamps if ts is not None]
+        if not timestamps:
+            continue
         timestamps.sort(key=lambda x: x[1])
 
         # Find temporal sequences
@@ -441,9 +449,16 @@ def Cluster_matched_img_json_pairs(
             if coordinates_of_detections_list:
                 for idx, coordinates in enumerate(coordinates_of_detections_list):
                     # add path to list of patches for perceptual processing
-                    patchfullpath = (
-                        os.path.dirname(image_path) + "/" + thepatch_list[idx]
-                    )
+                    # For external collections the patch lives in the same
+                    # folder as the JSON, not in a mirrored tree.
+                    json_dir = os.path.dirname(json_path)
+                    direct_patch = os.path.join(json_dir, os.path.basename(thepatch_list[idx]))
+                    if os.path.isfile(direct_patch):
+                        patchfullpath = direct_patch
+                    elif DATASET_ROOT:
+                        patchfullpath = resolve_patch_path(thepatch_list[idx], image_path, DATASET_ROOT)
+                    else:
+                        patchfullpath = os.path.dirname(image_path) + "/" + thepatch_list[idx]
 
                     patch_paths_hu.append(patchfullpath)
                     json_paths_hu.append(json_path)
@@ -478,9 +493,17 @@ def Cluster_matched_img_json_pairs(
             )
             if coordinates_of_detections_list:
                 for idx, coordinates in enumerate(coordinates_of_detections_list):
-                    patchfullpath = (
-                        os.path.dirname(image_path) + "/" + thepatch_list[idx]
-                    )
+                    # For external collections the patch lives flat in the same
+                    # folder as the JSON.  Check there first before trying the
+                    # _processed mirror tree.
+                    json_dir = os.path.dirname(json_path)
+                    direct_patch = os.path.join(json_dir, os.path.basename(thepatch_list[idx]))
+                    if os.path.isfile(direct_patch):
+                        patchfullpath = direct_patch
+                    elif DATASET_ROOT:
+                        patchfullpath = resolve_patch_path(thepatch_list[idx], image_path, DATASET_ROOT)
+                    else:
+                        patchfullpath = os.path.dirname(image_path) + "/" + thepatch_list[idx]
 
                     # add path to list of patches for later perceptual processing
                     patch_paths_bots.append(patchfullpath)
@@ -512,6 +535,156 @@ def Cluster_matched_img_json_pairs(
         write_cluster_to_json(patch_paths_bots, json_paths_bots, idx_paths_bots, labels)
 
 
+def _is_external_collection(input_path, dataset_root):
+    """Return True if *input_path* should be treated as an externally-processed
+    collection — i.e. it contains .jpg patch images but has no paired JSON
+    detection files in the _processed mirror (or next to the images).
+
+    This covers two cases:
+    1. The folder is inside a ``_processed`` tree (collaborator formatted their
+       data using our mirror layout).
+    2. The folder contains jpgs but none of them have a corresponding
+       ``_botdetection.json`` or ``.json`` in the expected output location.
+    """
+    from core.paths import get_json_output_path
+
+    # Case 1: folder is already inside a _processed tree
+    parts = os.path.normpath(input_path).split(os.sep)
+    if "_processed" in parts:
+        return True
+
+    # Case 2: scan all jpgs and check whether ANY have a processed JSON
+    jpgs = [
+        os.path.join(input_path, f)
+        for f in os.listdir(input_path)
+        if f.lower().endswith(".jpg")
+    ]
+    if not jpgs:
+        return False  # no jpgs at all — not an external patch folder
+
+    for jpg in jpgs:
+        # Check _processed mirror location
+        try:
+            bot_json = get_json_output_path(jpg, "_botdetection", dataset_root)
+            hu_json  = get_json_output_path(jpg, "", dataset_root)
+        except ValueError:
+            continue
+        if os.path.isfile(bot_json) or os.path.isfile(hu_json):
+            return False  # at least one processed JSON exists — normal collection
+        # Also check next to the source image (legacy human ground-truth)
+        if os.path.isfile(jpg.replace(".jpg", "_botdetection.json")) or \
+           os.path.isfile(jpg.replace(".jpg", ".json")):
+            return False
+
+    # No JPGs have any associated JSON anywhere — treat as external
+    return True
+
+
+def _build_stub_jsons(folder):
+    """Reverse-build minimal bot-detection JSON stubs from patch images in
+    *folder* so that Cluster can operate on externally-processed collections
+    that arrived without JSON files.
+
+    Patch filename format assumed:  <source_stem>_<detidx>_<modelname>.jpg
+    One stub JSON is written per inferred source image stem.
+
+    Returns the number of stubs created.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    folder = _Path(folder)
+    patch_files = sorted(folder.glob("*.jpg"))
+    groups = {}
+    for pf in patch_files:
+        parts = pf.stem.rsplit("_", 2)
+        source_stem = "_".join(parts[:-2]) if len(parts) >= 3 else pf.stem
+        groups.setdefault(source_stem, []).append(pf)
+
+    created = 0
+    for source_stem, patches in groups.items():
+        json_path = folder / f"{source_stem}_botdetection.json"
+        if json_path.exists():
+            continue
+        shapes = [
+            {
+                "label": "creature",
+                "points": [],
+                "patch_path": pf.name,
+                "confidence_detection": None,
+                "identifier_bot": "",
+                "identifier_human": "",
+                "timestamp_detection": "",
+                "detector_bot": "external",
+                "shape_type": "rotation",
+                "flags": {},
+                "attributes": {},
+                "score": None,
+                "direction": 0,
+                "group_id": None,
+                "description": "",
+                "difficult": "false",
+                "kie_linking": [],
+            }
+            for pf in sorted(patches)
+        ]
+        stub = {
+            "version": "external",
+            "flags": {},
+            "imagePath": source_stem + ".jpg",
+            "imageHeight": None,
+            "imageWidth": None,
+            "description": "stub generated from external patches",
+            "imageData": None,
+            "shapes": shapes,
+        }
+        with open(json_path, "w") as fh:
+            _json.dump(stub, fh, indent=4)
+        created += 1
+
+    return created
+
+
+def _find_pairs_in_external_folder(folder):
+    """Find (patch_placeholder, json_path) pairs directly inside *folder*.
+
+    For external collections there are no original source images — the patches
+    ARE the images.  We use the stub JSONs (or any *_botdetection.json) and
+    pair each with a synthetic image path equal to the JSON's imagePath field
+    (even if that file doesn't exist on disk — Cluster only needs the patch
+    paths stored inside the JSON, not the source image itself).
+
+    Returns (hu_pairs, bot_pairs) in the same format as
+    find_detection_matches_processed.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    folder = _Path(folder)
+    bot_pairs = []
+    hu_pairs = []
+
+    for jf in sorted(folder.glob("*_botdetection.json")):
+        try:
+            data = _json.loads(jf.read_text())
+            image_path = str(folder / data.get("imagePath", jf.stem.replace("_botdetection", "") + ".jpg"))
+            bot_pairs.append((image_path, str(jf)))
+        except Exception:
+            continue
+
+    for jf in sorted(folder.glob("*.json")):
+        if jf.name.endswith("_botdetection.json"):
+            continue
+        try:
+            data = _json.loads(jf.read_text())
+            image_path = str(folder / data.get("imagePath", jf.stem + ".jpg"))
+            hu_pairs.append((image_path, str(jf)))
+        except Exception:
+            continue
+
+    return hu_pairs, bot_pairs
+
+
 def run(input_path, ID_Hum=True, ID_Bot=True, dataset_root=None):
     """Entry point for clustering detections (callable from other modules).
 
@@ -519,6 +692,9 @@ def run(input_path, ID_Hum=True, ID_Bot=True, dataset_root=None):
     ----------
     input_path : str
         Root folder containing detection data (any sub-folder structure).
+        May be a flat folder of patch images from an external collaborator —
+        in that case stub JSON files are auto-created from the patch filenames
+        before clustering proceeds.
     ID_Hum : bool
         Process human-annotated detections.
     ID_Bot : bool
@@ -527,12 +703,12 @@ def run(input_path, ID_Hum=True, ID_Bot=True, dataset_root=None):
         Top-level folder for the _processed output tree.  Defaults to
         *input_path* itself.
     """
-    global INPUT_PATH, ID_HUMANDETECTIONS, ID_BOTDETECTIONS, DEVICE
+    global INPUT_PATH, ID_HUMANDETECTIONS, ID_BOTDETECTIONS, DEVICE, DATASET_ROOT
 
     INPUT_PATH = input_path
     ID_HUMANDETECTIONS = ID_Hum
     ID_BOTDETECTIONS = ID_Bot
-    _dataset_root = dataset_root or input_path
+    DATASET_ROOT = dataset_root or input_path
 
     print("Starting script to cluster detections into meaningful groups")
 
@@ -543,10 +719,25 @@ def run(input_path, ID_Hum=True, ID_Bot=True, dataset_root=None):
 
     print("Looking in this folder for MothboxData: " + INPUT_PATH)
 
-    # Use structure-agnostic discovery: finds JSONs in the _processed tree
-    hu_matched_img_json_pairs, bot_matched_img_json_pairs = (
-        find_detection_matches_processed(_dataset_root)
-    )
+    # Detect whether this is an externally-processed collection.
+    # Definition: input_path contains .jpg files AND none of those jpgs have a
+    # paired _botdetection.json or .json sitting in the _processed mirror (or
+    # next to them).  We check the whole folder, not just a spot-sample.
+    is_external = _is_external_collection(input_path, DATASET_ROOT)
+
+    if is_external:
+        print(f"External patch collection detected in: {input_path}")
+        created = _build_stub_jsons(input_path)
+        print(f"Built {created} stub detection JSON(s) from patch filenames.")
+        hu_matched_img_json_pairs, bot_matched_img_json_pairs = _find_pairs_in_external_folder(input_path)
+        # For external collections the patches live flat in input_path itself.
+        # Set DATASET_ROOT = input_path so that resolve_patch_path resolves
+        # patch filenames relative to that folder (not a nested _processed tree).
+        DATASET_ROOT = input_path
+    else:
+        hu_matched_img_json_pairs, bot_matched_img_json_pairs = (
+            find_detection_matches_processed(DATASET_ROOT)
+        )
 
     print(
         "Found ",

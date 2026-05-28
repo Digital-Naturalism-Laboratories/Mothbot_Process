@@ -23,7 +23,7 @@ from core.common import (
     print_device_info,
 )
 from core.paths import (
-    get_patch_folder,
+    get_processed_folder,
     get_json_output_path,
     find_processed_json,
 )
@@ -111,14 +111,16 @@ def is_valid_image(image_path):
 def _resolve_output_paths(image_path, filename_stem, source_folder):
     """Return (human_json_path, bot_json_path, patch_folder_path).
 
-    When DATASET_ROOT is set the outputs go into the _processed mirror tree;
-    otherwise they fall back to sitting next to the source image (legacy
-    behaviour, kept for backward-compat when callers don't pass dataset_root).
+    When DATASET_ROOT is set the outputs go into the _processed mirror tree
+    flat alongside the JSONs — no patches/ sub-folder.
+    When DATASET_ROOT is not set, falls back to legacy behaviour (patches/
+    sub-folder next to source images).
     """
     if DATASET_ROOT:
         human_json_path = get_json_output_path(image_path, "", DATASET_ROOT)
         bot_json_path = get_json_output_path(image_path, "_botdetection", DATASET_ROOT)
-        patch_folder_path = Path(get_patch_folder(source_folder, DATASET_ROOT))
+        # Patches go flat in the same mirrored folder as the JSONs
+        patch_folder_path = Path(get_processed_folder(source_folder, DATASET_ROOT))
     else:
         # Legacy: outputs next to source image
         human_json_path = os.path.join(source_folder, filename_stem + ".json")

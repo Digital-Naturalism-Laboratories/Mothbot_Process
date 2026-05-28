@@ -32,7 +32,6 @@ from pipeline import identify as Mothbot_ID
 from pipeline import insert_exif as Mothbot_InsertExif
 from pipeline import insert_metadata as Mothbot_InsertMetadata
 
-NIGHTLY_REGEX = re.compile(r"^(?:\d{4}-\d{2}-\d{2}|[A-Za-z0-9]+_\d{4}-\d{2}-\d{2})$")
 TAXA_COLS = ["kingdom", "phylum", "class", "order", "family", "genus", "species"]
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ARTIFACTS_DIR = Path(
@@ -201,7 +200,7 @@ def app():
         toggle_label_state = gr.State("Select All")
         picker_error_state = gr.State("")
         selected_paths = gr.JSON(
-            label="Confirmed Nightly Folders to be Processed", visible=False
+            label="Confirmed Image Collections to be Processed", visible=False
         )
 
         with gr.Tabs(selected="setup") as main_tabs:
@@ -232,7 +231,7 @@ def app():
                                 label="Error", lines=3, interactive=False, visible=False
                             )
                             folder_choices = gr.CheckboxGroup(
-                                label="Nightly Folders (Select at least one night folder)",
+                                label="Image Collections Found (select which to process)",
                                 choices=[],
                                 value=[],
                                 interactive=True,
@@ -500,15 +499,27 @@ def app():
             )
         # ── Quit button – always visible outside tabs ──
         with gr.Row():
-            quit_btn = gr.Button("Quit Mothbot", variant="stop", size="sm")
+            quit_btn = gr.Button("Quit Mothbot", variant="stop", size="sm", scale=0, min_width=160)
+            quit_confirm_row = gr.Row(visible=False)
+            with quit_confirm_row:
+                quit_yes_btn = gr.Button("Yes, quit", variant="stop",     size="sm", scale=0, min_width=120)
+                quit_no_btn  = gr.Button("Cancel",    variant="secondary", size="sm", scale=0, min_width=100)
+
+        def ask_confirm():
+            return gr.update(visible=False), gr.update(visible=True)
+
+        def cancel_quit():
+            return gr.update(visible=True), gr.update(visible=False)
 
         def quit_app():
             import signal
             import threading
             threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
-            return gr.update(value="Mothbot is shutting down — you can now close this browser tab.", interactive=False)
+            return gr.update(value="Mothbot is shutting down — you can now close this browser tab.", interactive=False), gr.update(visible=False)
 
-        quit_btn.click(fn=quit_app, inputs=[], outputs=[quit_btn])
+        quit_btn.click(fn=ask_confirm,    inputs=[], outputs=[quit_btn, quit_confirm_row])
+        quit_no_btn.click(fn=cancel_quit, inputs=[], outputs=[quit_btn, quit_confirm_row])
+        quit_yes_btn.click(fn=quit_app,   inputs=[], outputs=[quit_yes_btn, quit_confirm_row])
         with gr.Row(elem_id="app-meta-row"):
             gr.Markdown(APP_META_LABEL, elem_id="app-meta-badge")
 
@@ -547,7 +558,7 @@ def browse_yolo_model(current_path):
 
 
 def scan_deployment_folder(folder_path, picker_error_message=""):
-    """Scan *folder_path* for nightly sub-folders and return UI updates."""
+    """Scan *folder_path* for sub-folders that contain images and return UI updates."""
     if picker_error_message:
         return (
             gr.update(value=f"Picker error: {picker_error_message}", visible=True),
@@ -570,11 +581,11 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
             gr.update(visible=False),
         )
 
-    matches = find_nightly_folders_recursive(folder_path)
+    matches = find_image_collections(folder_path)
     if not matches:
         return (
             gr.update(
-                value=f"No nightly subfolders found in:\n{folder_path}", visible=True
+                value=f"No folders containing images found in:\n{folder_path}", visible=True
             ),
             gr.update(choices=[], value=[]),
             {},
@@ -589,26 +600,42 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
     seen_values = set()
 
     for p in matches:
-        base_value = os.path.basename(os.path.dirname(p)) + "/" + os.path.basename(p)
-        value = base_value
+        # Build a readable label relative to the chosen root folder
+        try:
+            rel = os.path.relpath(p, folder_path)
+        except ValueError:
+            rel = p
+        value = rel if rel != "." else os.path.basename(p)
+
+        # Deduplicate in the unlikely case of identical relative paths
         i = 1
+        orig_value = value
         while value in seen_values:
-            value = f"{base_value} ({i})"
+            value = f"{orig_value} ({i})"
             i += 1
         seen_values.add(value)
 
         jpeg_count = _count_matching_files(p, ("*.jpg", "*.jpeg"))
-        json_count = _count_matching_files(p, ("*.json",))
-        patches_folder = os.path.join(p, "patches")
-        patches_count = 0
-        if os.path.isdir(patches_folder):
-            patches_count = _count_matching_files(patches_folder, ("*.jpg", "*.jpeg"))
 
-        decorated_label = f"{value} ({jpeg_count} Images, {json_count} JSONs, {patches_count} Patches)"
+        # Count processed outputs from the _processed mirror if it exists
+        processed_mirror = os.path.join(
+            folder_path, "_processed", os.path.relpath(p, folder_path)
+        )
+        json_count = _count_matching_files(processed_mirror, ("*.json",)) if os.path.isdir(processed_mirror) else 0
+        patches_count = _count_matching_files(processed_mirror, ("*.jpg", "*.jpeg")) - jpeg_count if os.path.isdir(processed_mirror) else 0
+        patches_count = max(0, patches_count)
+
+        decorated_label = f"{value}  ({jpeg_count} images"
+        if json_count:
+            decorated_label += f", {json_count} detections"
+        if patches_count:
+            decorated_label += f", {patches_count} patches"
+        decorated_label += ")"
+
         choices.append((decorated_label, value))
         mapping[value] = os.path.abspath(p)
 
-    status = f"Selected folder: {folder_path}\nFound {len(choices)} nightly folders."
+    status = f"Selected folder: {folder_path}\nFound {len(choices)} image collection(s)."
     return (
         gr.update(value="", visible=False),
         gr.update(choices=choices, value=[], visible=True),
@@ -667,7 +694,7 @@ def get_index(selected_word):
 
 def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bot):
     if not selected_folders:
-        yield "No nightly folders selected.\n", gr.update(interactive=False)
+        yield "No image collections selected.\n", gr.update(interactive=False)
         return
 
     output_log = ""
@@ -734,7 +761,7 @@ def run_metadata(selected_folders, metadata):
 
 def run_cluster_with_continue(selected_folders):
     if not selected_folders:
-        yield "No nightly folders selected.\n", gr.update(interactive=False)
+        yield "No image collections selected.\n", gr.update(interactive=False)
         return
 
     output_log = ""
@@ -793,7 +820,7 @@ def run_full_process(
     metadata_csv,
 ):
     if not selected_folders:
-        yield "No nightly folders selected.\n"
+        yield "No image collections selected.\n"
         return
 
     steps = [
@@ -868,14 +895,23 @@ def run_full_process(
 # ──────────────────────────────────────────────────────────────
 
 
-def find_nightly_folders_recursive(directory):
+def find_image_collections(directory, processed_dir_name="_processed"):
+    """Walk *directory* and return every sub-folder (or *directory* itself)
+    that contains at least one .jpg file, skipping the _processed tree and
+    any patches/ folders.
+
+    Returns a sorted list of absolute folder paths.
+    """
+    directory = os.path.abspath(directory)
     matches = []
-    if NIGHTLY_REGEX.match(os.path.basename(directory)):
-        matches.append(os.path.abspath(directory))
-    for root, dirs, _ in os.walk(directory):
-        for folder_name in dirs:
-            if NIGHTLY_REGEX.match(folder_name):
-                matches.append(os.path.join(root, folder_name))
+    for root, dirs, files in os.walk(directory):
+        # Prune the _processed tree and patches folders from the walk
+        dirs[:] = sorted(
+            d for d in dirs
+            if d != processed_dir_name and d.lower() != "patches"
+        )
+        if any(f.lower().endswith(".jpg") for f in files):
+            matches.append(os.path.abspath(root))
     return sorted(matches)
 
 
@@ -924,7 +960,7 @@ def _run_batch_pipeline(
     kwargs_builder,
 ):
     if not selected_folders:
-        yield "No nightly folders selected.\n"
+        yield "No image collections selected.\n"
         return
 
     output_log = ""

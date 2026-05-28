@@ -17,11 +17,13 @@ The processed mirror is::
 
     /data/MyDataset/_processed/
 
-Every sub-folder that exists under the dataset root is mirrored there::
+Every sub-folder that exists under the dataset root is mirrored there.
+Patches live **flat** in the same mirrored folder as the JSON files —
+no ``patches/`` sub-folder::
 
-    /data/MyDataset/Deploy_A/2025-06-21/           ← raw images live here
-    /data/MyDataset/_processed/Deploy_A/2025-06-21/   ← JSONs + patches go here
-    /data/MyDataset/_processed/Deploy_A/2025-06-21/patches/
+    /data/MyDataset/Deploy_A/2025-06-21/CAM_img.jpg          ← raw image, untouched
+    /data/MyDataset/_processed/Deploy_A/2025-06-21/CAM_img_botdetection.json
+    /data/MyDataset/_processed/Deploy_A/2025-06-21/CAM_img_0_Mothbot_model.jpg
 
 Public API
 ----------
@@ -32,19 +34,19 @@ get_processed_folder(source_folder, dataset_root)
     Mirror *source_folder* (which must be inside *dataset_root*) into the
     ``_processed`` tree and return the mirrored path.
 
-get_patch_folder(source_folder, dataset_root)
-    Return (and create) the ``patches/`` sub-folder of the mirrored folder
-    for *source_folder*.
-
 get_json_output_path(source_image_path, suffix, dataset_root)
     Return the path where a JSON file produced from *source_image_path*
     should be written.  *suffix* is appended before ``.json``, e.g.
     ``"_botdetection"`` → ``DEVICE_..._botdetection.json``.
 
+get_patch_output_path(source_image_path, det_idx, model_name, dataset_root)
+    Return the path where a patch image for a specific detection should
+    be written.
+
 resolve_patch_path(patch_rel, source_image_path, dataset_root)
-    Given the relative ``"patches/<filename>"`` string stored inside a JSON
-    detection file and the original source image path, return the absolute
-    path to that patch file in the ``_processed`` tree.
+    Given the patch filename stored inside a JSON detection file and the
+    original source image path, return the absolute path to that patch
+    in the ``_processed`` tree.
 """
 
 import os
@@ -84,9 +86,6 @@ def get_processed_folder(source_folder: str, dataset_root: str) -> str:
     dataset_root = os.path.realpath(dataset_root)
     source_folder = os.path.realpath(source_folder)
 
-    # Compute the relative path from dataset_root to source_folder.
-    # If source_folder IS dataset_root (i.e. user pointed directly at a night)
-    # the relative path is ".".
     try:
         rel = os.path.relpath(source_folder, dataset_root)
     except ValueError:
@@ -110,20 +109,6 @@ def get_processed_folder(source_folder: str, dataset_root: str) -> str:
     processed_folder = os.path.join(dataset_root, _PROCESSED_DIR_NAME, rel)
     Path(processed_folder).mkdir(parents=True, exist_ok=True)
     return processed_folder
-
-
-def get_patch_folder(source_folder: str, dataset_root: str) -> str:
-    """Return (and create) the ``patches/`` sub-folder for *source_folder*.
-
-    Example
-    -------
-    >>> get_patch_folder("/data/D/Deploy_A/2025-06-21", "/data/D")
-    '/data/D/_processed/Deploy_A/2025-06-21/patches'
-    """
-    processed_folder = get_processed_folder(source_folder, dataset_root)
-    patch_folder = os.path.join(processed_folder, "patches")
-    Path(patch_folder).mkdir(parents=True, exist_ok=True)
-    return patch_folder
 
 
 def get_json_output_path(
@@ -157,30 +142,54 @@ def get_json_output_path(
     return os.path.join(processed_folder, stem + suffix + ".json")
 
 
+def get_patch_output_path(
+    source_image_path: str, det_idx: int, model_name: str, dataset_root: str
+) -> str:
+    """Return the output path for a detection patch image.
+
+    Patches live flat in the same mirrored folder as the JSON files — no
+    ``patches/`` sub-folder.
+
+    Example
+    -------
+    >>> get_patch_output_path(
+    ...     "/data/D/Deploy_A/2025-06-21/CAM_img.jpg",
+    ...     0,
+    ...     "Mothbot_model.pt",
+    ...     "/data/D",
+    ... )
+    '/data/D/_processed/Deploy_A/2025-06-21/CAM_img_0_Mothbot_model.pt.jpg'
+    """
+    source_folder = os.path.dirname(source_image_path)
+    processed_folder = get_processed_folder(source_folder, dataset_root)
+    basename = os.path.basename(source_image_path)
+    stem, ext = (basename.rsplit(".", 1) if "." in basename else (basename, "jpg"))
+    patch_filename = f"{stem}_{det_idx}_{model_name}.{ext}"
+    return os.path.join(processed_folder, patch_filename)
+
+
 def resolve_patch_path(
     patch_rel: str, source_image_path: str, dataset_root: str
 ) -> str:
-    """Resolve a relative patch path stored in a JSON detection file.
-
-    JSON detection files store patch paths as ``"patches/<filename>"``.
-    This function maps that relative reference to its absolute location in
-    the ``_processed`` mirror tree.
+    """Resolve a patch filename stored in a JSON detection file to its
+    absolute location in the ``_processed`` mirror tree.
 
     Parameters
     ----------
     patch_rel:
-        The ``patch_path`` value from a JSON shape, e.g.
-        ``"patches/CAM_2025-06-21-00-00-00_HDR0_0_Mothbot_model.pt.jpg"``.
+        The ``patch_path`` value from a JSON shape.  May be a bare filename
+        (``"CAM_img_0_Mothbot.jpg"``) or the legacy ``"patches/<filename>"``
+        format — both are handled.
     source_image_path:
         Absolute path to the raw source image that produced the detection.
     dataset_root:
         The top-level folder the user chose to process.
     """
     source_folder = os.path.dirname(source_image_path)
-    patch_folder = get_patch_folder(source_folder, dataset_root)
-    # patch_rel is "patches/<filename>" — strip the leading "patches/" component.
+    processed_folder = get_processed_folder(source_folder, dataset_root)
+    # Strip any leading "patches/" prefix from the legacy format
     patch_filename = os.path.basename(patch_rel)
-    return os.path.join(patch_folder, patch_filename)
+    return os.path.join(processed_folder, patch_filename)
 
 
 # ---------------------------------------------------------------------------

@@ -280,22 +280,45 @@ def extract_embeddings(image_files, batch_size=8):
 # 3. Cluster with HDBSCAN
 # --------------------------
 def cluster_embeddings(embeddings):
+    n = len(embeddings)
+
+    # --- min_cluster_size ---
+    # Should be small enough to allow many distinct clusters even in large
+    # batches.  A fixed value of 3 forces HDBSCAN to merge sparse regions
+    # aggressively when embeddings are dense (e.g. lower-res patches).
+    # Cap at 3 so we never need more than 3 similar images to form a cluster.
+    min_cluster_size = 2 if n < 100 else 3
+
+    # --- cluster_selection_epsilon ---
+    # This is the main over-generalisation culprit.  Even a small value like
+    # 0.05 can merge dozens of distinct clusters when embeddings are tightly
+    # packed (lower resolution → less variance).  Setting it to 0.0 disables
+    # the merging step entirely and lets HDBSCAN find natural density boundaries.
+    epsilon = 0.0
+
+    # --- cluster_selection_method ---
+    # "eom" (excess of mass, the default) tends to produce a few large clusters.
+    # "leaf" keeps the finest-grained clusters that HDBSCAN finds, which gives
+    # far more clusters and is much better for diverse insect collections.
+    cluster_selection_method = "leaf"
+
     clusterer = hdbscan.HDBSCAN(
-        min_cluster_size=3,  # smaller clusters allowed
-        min_samples=1,  # fewer items marked as noise
-        cluster_selection_epsilon=0.05,  # expand clusters slightly
+        min_cluster_size=min_cluster_size,
+        min_samples=1,
+        cluster_selection_epsilon=epsilon,
+        cluster_selection_method=cluster_selection_method,
         metric="euclidean",
     )
     labels = clusterer.fit_predict(embeddings)
 
-    # Count clusters (ignore -1 which means "noise")
     unique_labels = set(labels)
     if -1 in unique_labels:
         unique_labels.remove(-1)
     n_clusters = len(unique_labels)
 
     print(
-        f"✅ The clusterer (HDBSCAN() created {n_clusters} clusters of similar insect photos (and {np.sum(labels == -1)} noise points - ie insect photos that were unique)."
+        f"✅ The clusterer (HDBSCAN) created {n_clusters} clusters of similar insect photos "
+        f"(and {np.sum(labels == -1)} noise points — i.e. visually unique insects)."
     )
 
     return labels

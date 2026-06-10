@@ -1,6 +1,12 @@
+# Run locally for testing
+
+python -m ui.gradio_app
+
 # mothbot-detect
 
 `mothbot-detect` is a Gradio-based desktop workflow for moth image processing.
+
+
 
 Main pipeline steps:
 

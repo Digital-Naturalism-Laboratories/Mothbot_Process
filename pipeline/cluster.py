@@ -377,6 +377,7 @@ def temporal_subclusters(
         r"(\d{4}_\d{2}_\d{2}__\d{2}_\d{2}_\d{2})"
     )  # YYYY_MM_DD__HH_MM_SS
     pattern_B = re.compile(r"(\d{14})")  # YYYYMMDDHHMMSS
+    pattern_C = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}[+-]\d{2}-\d{2})")  # ISO 8601 filename-safe
 
     for cluster_id, indices in cluster_to_indices.items():
         timestamps = []
@@ -394,11 +395,17 @@ def temporal_subclusters(
                 ts = datetime.strptime(ts_str, "%Y_%m_%d__%H_%M_%S")
 
             # Try Scheme B
-            else:
-                match_B = pattern_B.search(fname)
-                if match_B:
-                    ts_str = match_B.group(1)
-                    ts = datetime.strptime(ts_str, "%Y%m%d%H%M%S")
+            elif match_B := pattern_B.search(fname):
+                ts_str = match_B.group(1)
+                ts = datetime.strptime(ts_str, "%Y%m%d%H%M%S")
+
+            # Try Scheme C (new ISO 8601 filename-safe format)
+            elif match_C := pattern_C.search(fname):
+                ts_str = match_C.group(1)
+                # Parse datetime portion only — strip the UTC offset for naive comparison
+                # (all devices in a single night's data share the same offset, so naive
+                # local time is still correct for temporal proximity sorting)
+                ts = datetime.strptime(ts_str[:19], "%Y-%m-%dT%H-%M-%S")
 
             if ts is None:
                 print(f"⚠️  Could not parse timestamp from filename: {fname} — skipping temporal sub-clustering for this detection.")

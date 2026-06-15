@@ -209,7 +209,7 @@ def app():
         # ── Global Action Bar (Stop + Quit) – declared before tabs to maintain scope and render order ──
         with gr.Row():
             stop_btn = gr.Button(
-                "⛔ Stop Current Run", variant="stop", size="sm", scale=0, min_width=200,
+                "Stop Current Run", variant="stop", size="sm", scale=0, min_width=200,
                 visible=False,
             )
             gr.HTML("<div style='flex:1'></div>")  # spacer
@@ -844,7 +844,7 @@ def get_index(selected_word):
 
 
 def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bot, external_keys=None):
-    SHOW_STOP = gr.update(visible=True, value="⛔ Stop Current Run", interactive=True)
+    SHOW_STOP = gr.update(visible=True, value="Stop Current Run", interactive=True)
     HIDE_STOP = gr.update(visible=False)
     if not selected_folders:
         yield "No image collections selected.\n", gr.update(interactive=False)
@@ -923,7 +923,7 @@ def run_metadata(selected_folders, metadata):
 
 
 def run_cluster_with_continue(selected_folders):
-    SHOW_STOP = gr.update(visible=True, value="⛔ Stop Current Run", interactive=True)
+    SHOW_STOP = gr.update(visible=True, value="Stop Current Run", interactive=True)
     HIDE_STOP = gr.update(visible=False)
     if not selected_folders:
         yield "No image collections selected.\n", gr.update(interactive=False), gr.update(visible=False)
@@ -997,7 +997,7 @@ def run_full_process(
     metadata_csv,
     external_keys=None,
 ):
-    SHOW_STOP = gr.update(visible=True, value="⛔ Stop Current Run", interactive=True)
+    SHOW_STOP = gr.update(visible=True, value="Stop Current Run", interactive=True)
     HIDE_STOP = gr.update(visible=False)
     if not selected_folders:
         yield "No image collections selected.\n", gr.update(visible=False)

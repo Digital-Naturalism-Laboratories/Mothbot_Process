@@ -218,15 +218,15 @@ def app():
                 with gr.Row():
                     with gr.Column():
                         gr.Markdown(
-                            "### Pick a main folder of Deployments to process: "
+                            "### Datasets Folder: Pick a folder of your datasets to process"
                         )
                         deployment_path = gr.Text(
-                            label="Deployment Folder Path (paste or type)",
+                            label="Datasets Folder Path (paste or type)",
                             placeholder="/path/to/your/deployment/folder",
                             interactive=True,
                         )
                         deployment_browse_btn = gr.Button(
-                            "Pick a Deployment Folder", size="sm", variant="primary"
+                            "Pick a Datasets Folder", size="sm", variant="primary"
                         )
                         with gr.Group():
                             status = gr.Textbox(
@@ -252,12 +252,12 @@ def app():
                     with gr.Column():
                         gr.Markdown("### Additional Processing Files:")
                         with gr.Row():
-                            with gr.Column():
-                                metadata_csv_file = gr.Text(
-                                    label="metadata field sheet:",
-                                    value=DEFAULT_METADATA_CSV,
-                                )
-                                metadata_browse_btn = gr.Button("Browse", size="sm")
+                            yolo_model_path = gr.Text(
+                                value=DEFAULT_YOLO_MODEL,
+                                label="Detection Model Path",
+                            )
+                            yolo_browse_btn = gr.Button("Browse", size="sm", scale=0, min_width=100)
+                        with gr.Row():
                             with gr.Column():
                                 species_path = gr.Text(
                                     label="Species List:",
@@ -265,11 +265,11 @@ def app():
                                 )
                                 species_browse_btn = gr.Button("Browse", size="sm")
                             with gr.Column():
-                                yolo_model_path = gr.Text(
-                                    value=DEFAULT_YOLO_MODEL,
-                                    label="YOLO Model Path",
+                                metadata_csv_file = gr.Text(
+                                    label="metadata field sheet:",
+                                    value=DEFAULT_METADATA_CSV,
                                 )
-                                yolo_browse_btn = gr.Button("Browse", size="sm")
+                                metadata_browse_btn = gr.Button("Browse", size="sm")
 
 
                 deployment_browse_btn.click(
@@ -347,6 +347,12 @@ def app():
 
             # ~~~~~~~~~~~~ DETECTION TAB ~~~~~~~~~~~~~~~~~~~~~~
             with gr.Tab("Detect", id="detect", visible=False) as detect_tab:
+                with gr.Row():
+                    det_model_path_mirror = gr.Text(
+                        label="Detection Model Path",
+                        interactive=True,
+                    )
+                    det_model_browse_mirror = gr.Button("Browse", size="sm", scale=0, min_width=100)
                 with gr.Row():
                     imgsz = gr.Number(
                         label="Yolo processing img size (should be same as yolo model) (leave default)",
@@ -431,6 +437,12 @@ def app():
                             label="OVERWRITE_PREVIOUS_BOT_IDENTIFICATIONS (Create new automated IDs)",
                         )
 
+                with gr.Row():
+                    id_species_mirror = gr.Text(
+                        label="Species List:",
+                        interactive=True,
+                    )
+                    id_species_browse_mirror = gr.Button("Browse", size="sm", scale=0, min_width=100)
                 ID_run_btn = gr.Button("Run Identification", variant="primary")
                 ID_output_box = gr.Textbox(label="Identification Output", lines=20)
 
@@ -438,7 +450,7 @@ def app():
                     fn=run_ID,
                     inputs=[
                         selected_paths,
-                        species_path,
+                        id_species_mirror,
                         taxa_output,
                         ID_HUMANDETECTIONS,
                         ID_BOTDETECTIONS,
@@ -449,6 +461,12 @@ def app():
 
             # ~~~~~~~~~~~~ Metadata Tab ~~~~~~~~~~~~~~~~~~~~~~
             with gr.Tab("Insert Metadata", id="metadata", visible=False) as metadata_tab:
+                with gr.Row():
+                    meta_csv_mirror = gr.Text(
+                        label="Metadata field sheet:",
+                        interactive=True,
+                    )
+                    meta_browse_mirror = gr.Button("Browse", size="sm", scale=0, min_width=100)
                 metadata_run_btn = gr.Button("Insert Metadata", variant="primary")
                 metadata_output_box = gr.Textbox(
                     label="Insert Metadata Output", lines=20
@@ -456,7 +474,7 @@ def app():
 
                 metadata_run_btn.click(
                     fn=run_metadata,
-                    inputs=[selected_paths, metadata_csv_file],
+                    inputs=[selected_paths, meta_csv_mirror],
                     outputs=metadata_output_box,
                 )
 
@@ -502,6 +520,53 @@ def app():
                 ],
                 outputs=process_output_box,
             )
+
+        # ── Cross-tab two-way sync (wired after all tabs so all components exist) ──
+        # Setup ↔ Detect: Detection Model Path
+        yolo_model_path.change(
+            lambda v: v, inputs=[yolo_model_path], outputs=[det_model_path_mirror]
+        )
+        det_model_path_mirror.change(
+            lambda v: v, inputs=[det_model_path_mirror], outputs=[yolo_model_path]
+        )
+        det_model_browse_mirror.click(
+            fn=browse_yolo_model,
+            inputs=[det_model_path_mirror],
+            outputs=[det_model_path_mirror],
+        ).then(
+            lambda v: v, inputs=[det_model_path_mirror], outputs=[yolo_model_path]
+        )
+
+        # Setup ↔ ID: Species List
+        species_path.change(
+            lambda v: v, inputs=[species_path], outputs=[id_species_mirror]
+        )
+        id_species_mirror.change(
+            lambda v: v, inputs=[id_species_mirror], outputs=[species_path]
+        )
+        id_species_browse_mirror.click(
+            fn=browse_species_csv,
+            inputs=[id_species_mirror],
+            outputs=[id_species_mirror],
+        ).then(
+            lambda v: v, inputs=[id_species_mirror], outputs=[species_path]
+        )
+
+        # Setup ↔ Metadata: Metadata CSV
+        metadata_csv_file.change(
+            lambda v: v, inputs=[metadata_csv_file], outputs=[meta_csv_mirror]
+        )
+        meta_csv_mirror.change(
+            lambda v: v, inputs=[meta_csv_mirror], outputs=[metadata_csv_file]
+        )
+        meta_browse_mirror.click(
+            fn=browse_metadata_csv,
+            inputs=[meta_csv_mirror],
+            outputs=[meta_csv_mirror],
+        ).then(
+            lambda v: v, inputs=[meta_csv_mirror], outputs=[metadata_csv_file]
+        )
+
         # ── Quit button – always visible outside tabs ──
         with gr.Row():
             quit_btn = gr.Button("Quit Mothbot", variant="stop", size="sm", scale=0, min_width=160)

@@ -20,7 +20,7 @@ from pathlib import Path
 import tomllib
 import gradio as gr
 
-from core.common import run_in_thread
+from core.common import run_in_thread, request_cancel
 from ui.tray import start_tray
 from ui.single_instance import ensure_single_instance
 from ui.path_picker import browse_path, browse_path_with_status
@@ -206,6 +206,19 @@ def app():
         # Tracks which selected keys are externally-processed (no source images)
         external_keys_state = gr.State(set())
 
+        # ── Global Action Bar (Stop + Quit) – declared before tabs to maintain scope and render order ──
+        with gr.Row():
+            stop_btn = gr.Button(
+                "⛔ Stop Current Run", variant="stop", size="sm", scale=0, min_width=200,
+                visible=False,
+            )
+            gr.HTML("<div style='flex:1'></div>")  # spacer
+            quit_btn = gr.Button("Quit Mothbot", variant="stop", size="sm", scale=0, min_width=160)
+            quit_confirm_row = gr.Row(visible=False)
+            with quit_confirm_row:
+                quit_yes_btn = gr.Button("Yes, quit", variant="stop",     size="sm", scale=0, min_width=120)
+                quit_no_btn  = gr.Button("Cancel",    variant="secondary", size="sm", scale=0, min_width=100)
+
         with gr.Tabs(selected="setup") as main_tabs:
             # ~~~~~~~~~~~~ Setup TAB ~~~~~~~~~~~~~~~~~~~~~~
             with gr.Tab("Setup", id="setup"):
@@ -381,7 +394,7 @@ def app():
                         OVERWRITE_PREV_BOT_DETECTIONS,
                         external_keys_state,
                     ],
-                    outputs=[DET_output_box, continue_cluster_btn],
+                    outputs=[DET_output_box, continue_cluster_btn, stop_btn],
                 )
 
                 continue_cluster_btn.click(
@@ -400,7 +413,7 @@ def app():
                 cluster_run_btn.click(
                     fn=run_cluster_with_continue,
                     inputs=[selected_paths],
-                    outputs=[cluster_output_box, continue_id_btn],
+                    outputs=[cluster_output_box, continue_id_btn, stop_btn],
                 )
 
                 continue_id_btn.click(
@@ -459,7 +472,7 @@ def app():
                         ID_BOTDETECTIONS,
                         OVERWRITE_PREV_BOT_IDENTIFICATIONS,
                     ],
-                    outputs=ID_output_box,
+                    outputs=[ID_output_box, stop_btn],
                 )
 
             # ~~~~~~~~~~~~ Metadata Tab ~~~~~~~~~~~~~~~~~~~~~~
@@ -478,7 +491,7 @@ def app():
                 metadata_run_btn.click(
                     fn=run_metadata,
                     inputs=[selected_paths, meta_csv_mirror],
-                    outputs=metadata_output_box,
+                    outputs=[metadata_output_box, stop_btn],
                 )
 
             # ~~~~~~~~~~~~ Exif Tab ~~~~~~~~~~~~~~~~~~~~~~
@@ -489,7 +502,7 @@ def app():
                 exif_run_btn.click(
                     fn=run_exif,
                     inputs=[selected_paths],
-                    outputs=exif_output_box,
+                    outputs=[exif_output_box, stop_btn],
                 )
             advanced_mode.change(
                 fn=toggle_advanced_mode,
@@ -521,8 +534,15 @@ def app():
                     OVERWRITE_PREV_BOT_IDENTIFICATIONS,
                     metadata_csv_file,
                 ],
-                outputs=process_output_box,
+                outputs=[process_output_box, stop_btn],
             )
+
+        # ── Stop button ────────────────────────────────────────────────────────
+        def do_cancel():
+            request_cancel()
+            return gr.update(value="⛔ Stopping…", interactive=False)
+
+        stop_btn.click(fn=do_cancel, inputs=[], outputs=[stop_btn])
 
         # ── Cross-tab two-way sync (wired after all tabs so all components exist) ──
         # Setup ↔ Detect: Detection Model Path
@@ -570,14 +590,6 @@ def app():
             lambda v: v, inputs=[meta_csv_mirror], outputs=[metadata_csv_file]
         )
 
-        # ── Quit button – always visible outside tabs ──
-        with gr.Row():
-            quit_btn = gr.Button("Quit Mothbot", variant="stop", size="sm", scale=0, min_width=160)
-            quit_confirm_row = gr.Row(visible=False)
-            with quit_confirm_row:
-                quit_yes_btn = gr.Button("Yes, quit", variant="stop",     size="sm", scale=0, min_width=120)
-                quit_no_btn  = gr.Button("Cancel",    variant="secondary", size="sm", scale=0, min_width=100)
-
         def ask_confirm():
             return gr.update(visible=False), gr.update(visible=True)
 
@@ -593,6 +605,7 @@ def app():
         quit_btn.click(fn=ask_confirm,    inputs=[], outputs=[quit_btn, quit_confirm_row])
         quit_no_btn.click(fn=cancel_quit, inputs=[], outputs=[quit_btn, quit_confirm_row])
         quit_yes_btn.click(fn=quit_app,   inputs=[], outputs=[quit_yes_btn, quit_confirm_row])
+        
         with gr.Row(elem_id="app-meta-row"):
             gr.Markdown(APP_META_LABEL, elem_id="app-meta-badge")
 
@@ -831,6 +844,8 @@ def get_index(selected_word):
 
 
 def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bot, external_keys=None):
+    SHOW_STOP = gr.update(visible=True, value="⛔ Stop Current Run", interactive=True)
+    HIDE_STOP = gr.update(visible=False)
     if not selected_folders:
         yield "No image collections selected.\n", gr.update(interactive=False)
         return
@@ -846,11 +861,11 @@ def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bo
 
         if is_ext:
             output_log += f"⚠️  Skipping detection for externally-processed collection (no source images):\n    {folder}\n"
-            yield output_log, gr.update(interactive=False)
+            yield output_log, gr.update(interactive=False), SHOW_STOP
             continue
 
         output_log += f"---🕵🏾‍♀️ Running detection for {folder} ---\n"
-        yield output_log, gr.update(interactive=False)
+        yield output_log, gr.update(interactive=False), SHOW_STOP
 
         try:
             for chunk in run_in_thread(
@@ -862,15 +877,15 @@ def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bo
                 dataset_root=dataset_root,
             ):
                 output_log += chunk
-                yield output_log, gr.update(interactive=False)
+                yield output_log, gr.update(interactive=False), SHOW_STOP
             output_log += f"✅ Detection completed for {folder}\n"
         except Exception as exc:
             had_error = True
             output_log += f"\n❌ Exception while processing {folder}: {exc}\n"
-        yield output_log, gr.update(interactive=False)
+        yield output_log, gr.update(interactive=False), SHOW_STOP
 
     output_log += "----------- Finished running Batch --------------"
-    yield output_log, gr.update(interactive=(not had_error))
+    yield output_log, gr.update(interactive=(not had_error)), HIDE_STOP
 
 
 def run_ID(selected_folders, species_list, chosenrank, IDHum, IDBot, overwrite_bot):
@@ -908,8 +923,10 @@ def run_metadata(selected_folders, metadata):
 
 
 def run_cluster_with_continue(selected_folders):
+    SHOW_STOP = gr.update(visible=True, value="⛔ Stop Current Run", interactive=True)
+    HIDE_STOP = gr.update(visible=False)
     if not selected_folders:
-        yield "No image collections selected.\n", gr.update(interactive=False)
+        yield "No image collections selected.\n", gr.update(interactive=False), gr.update(visible=False)
         return
 
     output_log = ""
@@ -923,25 +940,25 @@ def run_cluster_with_continue(selected_folders):
         output_log += f"---🔍 Running Cluster for {folder} ---\n"
         if is_ext:
             output_log += "  ℹ️  Externally-processed collection detected — building stub JSONs from patches before clustering...\n"
-        yield output_log, gr.update(interactive=False)
+        yield output_log, gr.update(interactive=False), SHOW_STOP
 
         try:
             if is_ext:
                 stub_log = build_stub_jsons_from_patches(folder)
                 output_log += stub_log
-                yield output_log, gr.update(interactive=False)
+                yield output_log, gr.update(interactive=False), SHOW_STOP
 
             for chunk in run_in_thread(Mothbot_Cluster.run, input_path=folder, dataset_root=dataset_root):
                 output_log += chunk
-                yield output_log, gr.update(interactive=False)
+                yield output_log, gr.update(interactive=False), SHOW_STOP
             output_log += f"✅ Cluster completed for {folder}\n"
         except Exception as exc:
             had_error = True
             output_log += f"\n❌ Exception while processing {folder}: {exc}\n"
-        yield output_log, gr.update(interactive=False)
+        yield output_log, gr.update(interactive=False), SHOW_STOP
 
     output_log += "------  Cluster  processing finished ------"
-    yield output_log, gr.update(interactive=(not had_error))
+    yield output_log, gr.update(interactive=(not had_error)), HIDE_STOP
 
 
 def run_cluster(selected_folders):
@@ -980,8 +997,10 @@ def run_full_process(
     metadata_csv,
     external_keys=None,
 ):
+    SHOW_STOP = gr.update(visible=True, value="⛔ Stop Current Run", interactive=True)
+    HIDE_STOP = gr.update(visible=False)
     if not selected_folders:
-        yield "No image collections selected.\n"
+        yield "No image collections selected.\n", gr.update(visible=False)
         return
 
     # Steps that cannot run on externally-processed collections (no source images)
@@ -1036,7 +1055,7 @@ def run_full_process(
     output_log = ""
     for step_name, runner, kwargs_builder in steps:
         output_log += f"\n===== {step_name} =====\n"
-        yield output_log
+        yield output_log, SHOW_STOP
         for entry in selected_folders:
             folder = entry["path"]             if isinstance(entry, dict) else entry
             is_ext = entry.get("external", False) if isinstance(entry, dict) else False
@@ -1064,7 +1083,7 @@ def run_full_process(
             yield output_log
 
     output_log += "\n------ Full processing finished ------"
-    yield output_log
+    yield output_log, HIDE_STOP
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1220,8 +1239,10 @@ def _run_batch_pipeline(
     kwargs_builder,
     skip_external=False,
 ):
+    SHOW_STOP = gr.update(visible=True, value="Stop Current Run", interactive=True)
+    HIDE_STOP = gr.update(visible=False)
     if not selected_folders:
-        yield "No image collections selected.\n"
+        yield "No image collections selected.\n", gr.update(visible=False)
         return
 
     output_log = ""
@@ -1232,23 +1253,23 @@ def _run_batch_pipeline(
 
         if skip_external and is_ext:
             output_log += f"⚠️  Skipping (not applicable for externally-processed collection):\n    {folder}\n"
-            yield output_log
+            yield output_log, SHOW_STOP
             continue
 
         output_log += start_message.format(folder=folder)
-        yield output_log
+        yield output_log, SHOW_STOP
 
         try:
             for chunk in run_in_thread(runner, **kwargs_builder(folder, dataset_root)):
                 output_log += chunk
-                yield output_log
+                yield output_log, SHOW_STOP
             output_log += success_message.format(folder=folder)
         except Exception as exc:
             output_log += f"\n❌ Exception while processing {folder}: {exc}\n"
-        yield output_log
+        yield output_log, SHOW_STOP
 
     output_log += finish_message
-    yield output_log
+    yield output_log, HIDE_STOP
 
 '''
 DEFAULT_METADATA_CSV = _resolve_artifact_path(

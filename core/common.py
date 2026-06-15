@@ -300,18 +300,28 @@ def _log_stream_chunk(logger, chunk):
             logger.info(line.rstrip())
 
 
+# Module-level cancel event. Set this to ask the currently-running
+# run_in_thread call to stop at the next yield boundary.
+_cancel_event = threading.Event()
+
+
+def request_cancel():
+    """Signal the currently-running pipeline step to stop."""
+    _cancel_event.set()
+
+
+def clear_cancel():
+    """Clear any pending cancel signal (called before starting a new run)."""
+    _cancel_event.clear()
+
+
 def run_in_thread(fn, *args, **kwargs):
-    """Run *fn* in a background thread and **yield** captured stdout chunks.
+    """Run *fn* in a background thread and yield captured stdout chunks.
 
-    This is the primary mechanism for streaming worker output into a Gradio
-    ``Textbox``.  Usage inside a Gradio event handler (which must be a
-    generator)::
-
-        output = ""
-        for chunk in run_in_thread(Mothbot_Detect.run, input_path=folder, ...):
-            output += chunk
-            yield output          # Gradio updates the Textbox
+    Cancellation: call request_cancel() to stop at the next yield boundary.
+    The background thread finishes its current atomic op then winds down.
     """
+    clear_cancel()
     cap = _OutputCapture()
     error_holder: list = [None]
     logger = logging.getLogger("mothbot.pipeline")
@@ -332,6 +342,17 @@ def run_in_thread(fn, *args, **kwargs):
     t.start()
 
     while True:
+        if _cancel_event.is_set():
+            yield "\n⛔ Run cancelled by user.\n"
+            try:
+                while True:
+                    cap.q.get_nowait()
+            except queue.Empty:
+                pass
+            t.join(timeout=5)
+            clear_cancel()
+            return
+
         try:
             chunk = cap.q.get(timeout=0.2)
         except queue.Empty:
@@ -339,7 +360,6 @@ def run_in_thread(fn, *args, **kwargs):
         if chunk is None:
             break
         if should_log_to_logger:
-            # Mirror streamed worker output to desktop log files when configured.
             _log_stream_chunk(logger, chunk)
         yield chunk
 

@@ -197,6 +197,7 @@ def app():
         """,
     ) as demo:
         mapping_state = gr.State({})
+        dataset_root_state = gr.State("")  # top-level chosen folder
         toggle_label_state = gr.State("Select All")
         picker_error_state = gr.State("")
         selected_paths = gr.JSON(
@@ -288,6 +289,7 @@ def app():
                         selected_paths,
                         toggle_all_btn,
                         external_keys_state,
+                        dataset_root_state,
                     ],
                 )
                 deployment_path.change(
@@ -302,6 +304,7 @@ def app():
                         selected_paths,
                         toggle_all_btn,
                         external_keys_state,
+                        dataset_root_state,
                     ],
                 )
                 metadata_browse_btn.click(
@@ -326,7 +329,7 @@ def app():
                     outputs=[folder_choices, toggle_label_state],
                 ).then(
                     fn=confirm_selection,
-                    inputs=[folder_choices, mapping_state, external_keys_state],
+                    inputs=[folder_choices, mapping_state, external_keys_state, dataset_root_state],
                     outputs=[selected_paths, continue_process_btn],
                 )
                 toggle_label_state.change(
@@ -336,7 +339,7 @@ def app():
                 )
                 folder_choices.change(
                     fn=confirm_selection,
-                    inputs=[folder_choices, mapping_state, external_keys_state],
+                    inputs=[folder_choices, mapping_state, external_keys_state, dataset_root_state],
                     outputs=[selected_paths, continue_process_btn],
                 )
             # ~~~~~~~~~~~~ PROCESS TAB ~~~~~~~~~~~~~~~~~~~~~~
@@ -649,6 +652,7 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
         [],
         gr.update(visible=False),
         set(),
+        "",  # dataset_root_state
     )
 
     if picker_error_message:
@@ -763,6 +767,7 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
         [],
         gr.update(visible=True),
         external_keys,
+        folder_path,  # dataset_root_state
     )
 
 
@@ -777,7 +782,7 @@ def toggle_select_all(current_values, mapping, button_label):
     return gr.update(value=[]), "Select All"
 
 
-def confirm_selection(selected_labels, mapping, external_keys=None):
+def confirm_selection(selected_labels, mapping, external_keys=None, dataset_root=""):
     """Resolve selected checkbox labels to absolute folder paths.
 
     Returns a list of dicts: {"path": str, "external": bool}
@@ -787,7 +792,11 @@ def confirm_selection(selected_labels, mapping, external_keys=None):
         return [], gr.update(interactive=False)
     external_keys = external_keys or set()
     resolved = [
-        {"path": mapping[label], "external": label in external_keys}
+        {
+            "path": mapping[label],
+            "external": label in external_keys,
+            "dataset_root": dataset_root or mapping[label],
+        }
         for label in selected_labels
         if label in mapping
     ]
@@ -831,8 +840,9 @@ def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bo
     had_error = False
 
     for entry in selected_folders:
-        folder  = entry["path"]   if isinstance(entry, dict) else entry
-        is_ext  = entry.get("external", False) if isinstance(entry, dict) else False
+        folder       = entry["path"]                     if isinstance(entry, dict) else entry
+        is_ext       = entry.get("external", False)       if isinstance(entry, dict) else False
+        dataset_root = entry.get("dataset_root", folder) if isinstance(entry, dict) else folder
 
         if is_ext:
             output_log += f"⚠️  Skipping detection for externally-processed collection (no source images):\n    {folder}\n"
@@ -849,7 +859,7 @@ def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bo
                 yolo_model=yolo_model,
                 imgsz=int(imsz),
                 overwrite_prev_bot_detections=bool(overwrite_bot),
-                dataset_root=folder,
+                dataset_root=dataset_root,
             ):
                 output_log += chunk
                 yield output_log, gr.update(interactive=False)
@@ -870,14 +880,14 @@ def run_ID(selected_folders, species_list, chosenrank, IDHum, IDBot, overwrite_b
         start_message="---🔍 Running IDENTIFICATION for {folder} ---\n",
         success_message="✅ Identification completed for {folder}\n",
         finish_message="------ ID processing finished ------",
-        kwargs_builder=lambda folder: {
+        kwargs_builder=lambda folder, dataset_root: {
             "input_path": folder,
             "taxa_csv": species_list,
             "rank": int(chosenrank),
             "ID_Hum": bool(IDHum),
             "ID_Bot": bool(IDBot),
             "overwrite_prev_bot_ID": bool(overwrite_bot),
-            "dataset_root": folder,
+            "dataset_root": dataset_root,
         },
     )
 
@@ -889,10 +899,10 @@ def run_metadata(selected_folders, metadata):
         start_message="---🔍 Running METADATA for {folder} ---\n",
         success_message="✅ Insert Metadata completed for {folder}\n",
         finish_message="------ Insert Metadata processing finished ------",
-        kwargs_builder=lambda folder: {
+        kwargs_builder=lambda folder, dataset_root: {
             "input_path": folder,
             "metadata_path": str(metadata),
-            "dataset_root": folder,
+            "dataset_root": dataset_root,
         },
     )
 
@@ -906,8 +916,9 @@ def run_cluster_with_continue(selected_folders):
     had_error = False
 
     for entry in selected_folders:
-        folder  = entry["path"]             if isinstance(entry, dict) else entry
-        is_ext  = entry.get("external", False) if isinstance(entry, dict) else False
+        folder       = entry["path"]                     if isinstance(entry, dict) else entry
+        is_ext       = entry.get("external", False)       if isinstance(entry, dict) else False
+        dataset_root = entry.get("dataset_root", folder) if isinstance(entry, dict) else folder
 
         output_log += f"---🔍 Running Cluster for {folder} ---\n"
         if is_ext:
@@ -920,7 +931,7 @@ def run_cluster_with_continue(selected_folders):
                 output_log += stub_log
                 yield output_log, gr.update(interactive=False)
 
-            for chunk in run_in_thread(Mothbot_Cluster.run, input_path=folder, dataset_root=folder):
+            for chunk in run_in_thread(Mothbot_Cluster.run, input_path=folder, dataset_root=dataset_root):
                 output_log += chunk
                 yield output_log, gr.update(interactive=False)
             output_log += f"✅ Cluster completed for {folder}\n"
@@ -951,7 +962,7 @@ def run_exif(selected_folders):
         start_message="---🔍 Running Insert Exif for {folder} ---\n",
         success_message="✅   Insert Exif completed for {folder}\n",
         finish_message="------  Insert Exif processing finished ------",
-        kwargs_builder=lambda folder: {"input_path": folder},
+        kwargs_builder=lambda folder, dataset_root: {"input_path": folder},
         skip_external=True,
     )
 
@@ -980,45 +991,45 @@ def run_full_process(
         (
             "Detect",
             Mothbot_Detect.run,
-            lambda folder: {
+            lambda folder, dr: {
                 "input_path": folder,
                 "yolo_model": yolo_model,
                 "imgsz": int(imsz),
                 "overwrite_prev_bot_detections": bool(overwrite_bot_detections),
-                "dataset_root": folder,
+                "dataset_root": dr,
             },
         ),
         (
             "Cluster",
             Mothbot_Cluster.run,
-            lambda folder: {"input_path": folder, "dataset_root": folder},
+            lambda folder, dr: {"input_path": folder, "dataset_root": dr},
         ),
         (
             "ID",
             Mothbot_ID.run,
-            lambda folder: {
+            lambda folder, dr: {
                 "input_path": folder,
                 "taxa_csv": species_list,
                 "rank": int(chosenrank),
                 "ID_Hum": bool(id_hum),
                 "ID_Bot": bool(id_bot),
                 "overwrite_prev_bot_ID": bool(overwrite_bot_ids),
-                "dataset_root": folder,
+                "dataset_root": dr,
             },
         ),
         (
             "Insert Metadata",
             Mothbot_InsertMetadata.run,
-            lambda folder: {
+            lambda folder, dr: {
                 "input_path": folder,
                 "metadata_path": str(metadata_csv),
-                "dataset_root": folder,
+                "dataset_root": dr,
             },
         ),
         (
             "Exif",
             Mothbot_InsertExif.run,
-            lambda folder: {"input_path": folder},
+            lambda folder, dr: {"input_path": folder},
         ),
     ]
 
@@ -1215,8 +1226,9 @@ def _run_batch_pipeline(
 
     output_log = ""
     for entry in selected_folders:
-        folder = entry["path"]             if isinstance(entry, dict) else entry
-        is_ext = entry.get("external", False) if isinstance(entry, dict) else False
+        folder       = entry["path"]                     if isinstance(entry, dict) else entry
+        is_ext       = entry.get("external", False)       if isinstance(entry, dict) else False
+        dataset_root = entry.get("dataset_root", folder) if isinstance(entry, dict) else folder
 
         if skip_external and is_ext:
             output_log += f"⚠️  Skipping (not applicable for externally-processed collection):\n    {folder}\n"
@@ -1227,7 +1239,7 @@ def _run_batch_pipeline(
         yield output_log
 
         try:
-            for chunk in run_in_thread(runner, **kwargs_builder(folder)):
+            for chunk in run_in_thread(runner, **kwargs_builder(folder, dataset_root)):
                 output_log += chunk
                 yield output_log
             output_log += success_message.format(folder=folder)

@@ -350,34 +350,58 @@ def _without_first_prefix(name: str) -> str:
     return parts[1] if len(parts) == 2 else name
 
 
-def find_csv_match(input_path: str, metadata_path: str) -> dict:
+_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _prefix_variants(name: str, max_strips: int = 4) -> set:
+    """Return a set of lowercase variants of *name* produced by repeatedly
+    stripping the first underscore-delimited prefix segment.
+
+    Pure date strings (YYYY-MM-DD) are excluded — they are too generic to
+    match on safely when multiple deployments share the same date.
+
+    e.g. 'MarburgBioBlitz_bigpole_TalkApe_2026-06-01' →
+         {'marburgbioblitz_bigpole_talkape_2026-06-01',
+          'bigpole_talkape_2026-06-01',
+          'talkape_2026-06-01'}
+         (bare '2026-06-01' is excluded)
     """
-    Finds a row in the CSV where 'deployment_name' matches either the folder name
-    or its parent folder name of input_path.
-    Tolerates the presence/absence of the first leading prefix on either side.
-    Matching is case-insensitive.
-    If multiple matches are found, prints a warning and returns only the first one.
+    variants = set()
+    current = name
+    for _ in range(max_strips + 1):
+        low = current.lower()
+        if not _DATE_ONLY_RE.match(low):
+            variants.add(low)
+        stripped = _without_first_prefix(current)
+        if stripped == current:
+            break
+        current = stripped
+    return variants
+
+
+def find_csv_match(input_path: str, metadata_path: str) -> dict:
+    """Finds a CSV row whose 'deployment_name' matches any ancestor folder of
+    input_path (up to 5 levels up).
+
+    Both sides are prefix-stripped repeatedly so that names like
+    'MarburgBioBlitz_bigpole_TalkApe_2026-06-01' match a folder called
+    'TalkApe_2026-06-01', and vice versa.  Matching is case-insensitive.
 
     Returns:
-        dict: The first matching row as a dict, or {} if no match is found.
+        dict: The first matching row, or {} if no match is found.
     """
-    parent_folder = os.path.basename(os.path.dirname(input_path)).strip()
-    current_folder = os.path.basename(input_path).strip()
-
-    # alternate versions without first prefix
-    alt_parent = _without_first_prefix(parent_folder)
-    alt_current = _without_first_prefix(current_folder)
-
-    # store variants in lowercase for case-insensitive matching
-    folder_variants = {
-        parent_folder.lower(),
-        alt_parent.lower(),
-        current_folder.lower(),
-        alt_current.lower(),
-    }
+    # Walk up up to 5 ancestor levels, collecting name variants from each level.
+    folder_variants: set = set()
+    path = os.path.realpath(input_path)
+    for _ in range(5):
+        name = os.path.basename(path).strip()
+        if not name:
+            break
+        folder_variants |= _prefix_variants(name)
+        path = os.path.dirname(path)
 
     matches = []
-    print(f"scanning for metadata matches... (folder variants: {folder_variants})")
+    print(f"scanning for metadata matches... (folder variants: {sorted(folder_variants)})")
 
     with open(metadata_path, mode="r", newline="", encoding="utf-8") as csvfile:
         reader = csv.DictReader(csvfile)
@@ -387,23 +411,20 @@ def find_csv_match(input_path: str, metadata_path: str) -> dict:
             if not dep_name:
                 continue
 
-            alt_dep = _without_first_prefix(dep_name)
-            dep_variants = {dep_name.lower(), alt_dep.lower()}
+            dep_variants = _prefix_variants(dep_name)
 
-            # if any variant intersects, it's a match
             if folder_variants & dep_variants:
                 matches.append(row)
 
     if not matches:
         print(
-            f"❌ No metadata match found for '{current_folder}' (or '{parent_folder}') in {metadata_path}\n"
-            f"   Searched for any of: {sorted(folder_variants)}\n"
+            f"❌ No metadata match found for '{os.path.basename(input_path)}' in {metadata_path}\n"
+            f"   Searched ancestor variants: {sorted(folder_variants)}\n"
             f"   Metadata fields will be empty."
         )
     elif len(matches) > 1:
-        print(
-            f"⚠️ Warning: Multiple matches found for '{parent_folder}', using the first one."
-        )
+        names = [m.get("deployment_name", "?") for m in matches]
+        print(f"⚠️ Warning: Multiple CSV matches found {names}, using the first one.")
     else:
         print(f"✅ Matched deployment_name = '{matches[0].get('deployment_name')}'")
     return matches[0] if matches else {}

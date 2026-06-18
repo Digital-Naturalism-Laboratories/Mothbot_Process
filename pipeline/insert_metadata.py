@@ -274,7 +274,7 @@ def load_anylabeling_data(json_path, image_path, metadata):
     with open(json_path, "w") as f:
         json.dump(data, f, indent=4)
 
-    print("✅ Metadata written into 'Json' field for." + str(json_path))
+    print("Metadata written into 'Json' field for." + str(json_path))
 
     return
 

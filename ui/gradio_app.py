@@ -356,7 +356,7 @@ def app():
                     outputs=[selected_paths, continue_process_btn],
                 )
             # ~~~~~~~~~~~~ PROCESS TAB ~~~~~~~~~~~~~~~~~~~~~~
-            with gr.Tab("Process", id="process"):
+            with gr.Tab("Process", id="process") as process_tab:
                 process_output_box = gr.Textbox(
                     label="Process Output", lines=20, interactive=False
                 )
@@ -513,6 +513,7 @@ def app():
                     metadata_tab,
                     cluster_tab,
                     exif_tab,
+                    process_tab,
                     main_tabs,
                 ],
             )
@@ -835,6 +836,7 @@ def toggle_advanced_mode(enabled):
         gr.update(visible=visible),
         gr.update(visible=visible),
         gr.update(visible=visible),
+        gr.update(visible=not visible),
         gr.Tabs(selected=selected_tab),
     )
 
@@ -1057,30 +1059,31 @@ def run_full_process(
         output_log += f"\n===== {step_name} =====\n"
         yield output_log, SHOW_STOP
         for entry in selected_folders:
-            folder = entry["path"]             if isinstance(entry, dict) else entry
-            is_ext = entry.get("external", False) if isinstance(entry, dict) else False
+            folder       = entry["path"]                     if isinstance(entry, dict) else entry
+            is_ext       = entry.get("external", False)       if isinstance(entry, dict) else False
+            dataset_root = entry.get("dataset_root", folder) if isinstance(entry, dict) else folder
 
             if is_ext and step_name in source_only_steps:
                 output_log += f"⚠️  Skipping {step_name} for externally-processed collection:\n    {folder}\n"
-                yield output_log
+                yield output_log, SHOW_STOP
                 continue
 
             if is_ext and step_name == "Cluster":
                 output_log += f"  ℹ️  Building stub JSONs from patches before clustering {folder}...\n"
-                yield output_log
+                yield output_log, SHOW_STOP
                 output_log += build_stub_jsons_from_patches(folder)
-                yield output_log
+                yield output_log, SHOW_STOP
 
             output_log += f"--- Running {step_name} for {folder} ---\n"
-            yield output_log
+            yield output_log, SHOW_STOP
             try:
-                for chunk in run_in_thread(runner, **kwargs_builder(folder)):
+                for chunk in run_in_thread(runner, **kwargs_builder(folder, dataset_root)):
                     output_log += chunk
-                    yield output_log
+                    yield output_log, SHOW_STOP
                 output_log += f"✅ {step_name} completed for {folder}\n"
             except Exception as exc:
                 output_log += f"\n❌ Exception while processing {folder} in {step_name}: {exc}\n"
-            yield output_log
+            yield output_log, SHOW_STOP
 
     output_log += "\n------ Full processing finished ------"
     yield output_log, HIDE_STOP

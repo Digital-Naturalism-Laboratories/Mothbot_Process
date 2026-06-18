@@ -21,6 +21,7 @@ import tomllib
 import gradio as gr
 
 from core.common import run_in_thread, request_cancel
+from core.preview import get_preview, clear_preview
 from ui.tray import start_tray
 from ui.single_instance import ensure_single_instance
 from ui.path_picker import browse_path, browse_path_with_status
@@ -379,7 +380,14 @@ def app():
                         label="Overwrite any previous Bot Detections (Create new detection files)",
                     )
                 DET_run_btn = gr.Button("Run Detection", variant="primary")
-                DET_output_box = gr.Textbox(label="Detection Output", lines=20)
+                with gr.Row():
+                    DET_output_box = gr.Textbox(label="Detection Output", lines=20, scale=2)
+                    DET_preview_img = gr.Image(
+                        label="Live Detection Preview (every 10th image)",
+                        visible=False,
+                        scale=1,
+                        show_download_button=False,
+                    )
 
                 continue_cluster_btn = gr.Button(
                     "Continue to Cluster", variant="primary", interactive=False
@@ -394,7 +402,7 @@ def app():
                         OVERWRITE_PREV_BOT_DETECTIONS,
                         external_keys_state,
                     ],
-                    outputs=[DET_output_box, continue_cluster_btn, stop_btn],
+                    outputs=[DET_output_box, continue_cluster_btn, stop_btn, DET_preview_img],
                 )
 
                 continue_cluster_btn.click(
@@ -848,13 +856,29 @@ def get_index(selected_word):
 def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bot, external_keys=None):
     SHOW_STOP = gr.update(visible=True, value="Stop Current Run", interactive=True)
     HIDE_STOP = gr.update(visible=False)
+    NO_IMG = gr.update()  # no-op update for the preview image
+
     if not selected_folders:
-        yield "No image collections selected.\n", gr.update(interactive=False)
+        yield "No image collections selected.\n", gr.update(interactive=False), gr.update(visible=False), NO_IMG
         return
 
+    clear_preview()
     external_keys = external_keys or set()
     output_log = ""
     had_error = False
+    current_preview = None
+
+    def _preview_update():
+        nonlocal current_preview
+        path = get_preview()
+        if path:
+            current_preview = path
+            try:
+                from PIL import Image as PILImage
+                return gr.update(value=PILImage.open(path), visible=True)
+            except Exception:
+                return NO_IMG
+        return NO_IMG
 
     for entry in selected_folders:
         folder       = entry["path"]                     if isinstance(entry, dict) else entry
@@ -863,11 +887,11 @@ def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bo
 
         if is_ext:
             output_log += f"⚠️  Skipping detection for externally-processed collection (no source images):\n    {folder}\n"
-            yield output_log, gr.update(interactive=False), SHOW_STOP
+            yield output_log, gr.update(interactive=False), SHOW_STOP, NO_IMG
             continue
 
         output_log += f"---🕵🏾‍♀️ Running detection for {folder} ---\n"
-        yield output_log, gr.update(interactive=False), SHOW_STOP
+        yield output_log, gr.update(interactive=False), SHOW_STOP, NO_IMG
 
         try:
             for chunk in run_in_thread(
@@ -879,15 +903,15 @@ def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bo
                 dataset_root=dataset_root,
             ):
                 output_log += chunk
-                yield output_log, gr.update(interactive=False), SHOW_STOP
+                yield output_log, gr.update(interactive=False), SHOW_STOP, _preview_update()
             output_log += f"✅ Detection completed for {folder}\n"
         except Exception as exc:
             had_error = True
             output_log += f"\n❌ Exception while processing {folder}: {exc}\n"
-        yield output_log, gr.update(interactive=False), SHOW_STOP
+        yield output_log, gr.update(interactive=False), SHOW_STOP, NO_IMG
 
     output_log += "----------- Finished running Batch --------------"
-    yield output_log, gr.update(interactive=(not had_error)), HIDE_STOP
+    yield output_log, gr.update(interactive=(not had_error)), HIDE_STOP, NO_IMG
 
 
 def run_ID(selected_folders, species_list, chosenrank, IDHum, IDBot, overwrite_bot):

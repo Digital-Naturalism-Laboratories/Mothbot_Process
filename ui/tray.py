@@ -78,25 +78,31 @@ def start_tray(url: str = "http://127.0.0.1:7861", icon_path: Path | None = None
 
 
 def _run_tray(url: str, icon_path: Path | None) -> None:
-    icon_image = _load_icon_image(icon_path)
+    try:
+        icon_image = _load_icon_image(icon_path)
 
-    def on_open(icon, item):
-        webbrowser.open(url)
+        def on_open(icon, item):
+            webbrowser.open(url)
 
-    def on_quit(icon, item):
-        icon.stop()
-        threading.Timer(0.5, lambda: os._exit(0)).start()
+        def on_quit(icon, item):
+            icon.stop()
+            threading.Timer(0.5, lambda: os._exit(0)).start()
 
-    menu = pystray.Menu(
-        pystray.MenuItem("Open Mothbot", on_open, default=True),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Quit", on_quit),
-    )
+        menu = pystray.Menu(
+            pystray.MenuItem("Open Mothbot", on_open, default=True),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Quit", on_quit),
+        )
 
-    icon = pystray.Icon(
-        name="Mothbot",
-        icon=icon_image,
-        title="Mothbot (running)",
-        menu=menu,
-    )
-    icon.run()
+        icon = pystray.Icon(
+            name="Mothbot",
+            icon=icon_image,
+            title="Mothbot (running)",
+            menu=menu,
+        )
+        icon.run()
+    except Exception as e:
+        # On macOS, AppKit requires UI elements on the main thread.
+        # When launched via CLI, Gradio owns the main thread so the tray
+        # cannot run. The app works fine without it.
+        print(f"[tray] System tray icon unavailable: {e}")

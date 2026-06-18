@@ -14,6 +14,7 @@ from pipeline.thumbnails import generateThumbnailPatches, generateThumbnailPatch
 import torch
 from datetime import datetime
 
+from core.preview import emit_preview
 from core.common import (
     find_date_folders,
     find_images_recursive,
@@ -269,6 +270,12 @@ def process_image_list(img_files, dataset_root=None):
                 shape["timestamp_detection"] = current_timestamp()
                 shape["detector_bot"] = str(model_name)
                 shapes.append(shape)
+
+        # Every 10th image with detections: push first patch to the live preview.
+        if GEN_THUMBNAILS and shapes and idx % 10 == 0:
+            first_patch = shapes[0].get("patch_path", "")
+            if first_patch:
+                emit_preview(str(patch_folder_path / os.path.basename(first_patch)))
 
         image_pil = PIL.Image.open(image_path)
         width, height = image_pil.size

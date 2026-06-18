@@ -979,7 +979,7 @@ def run_exif(selected_folders):
         start_message="---🔍 Running Insert Exif for {folder} ---\n",
         success_message="✅   Insert Exif completed for {folder}\n",
         finish_message="------  Insert Exif processing finished ------",
-        kwargs_builder=lambda folder, dataset_root: {"input_path": folder},
+        kwargs_builder=lambda folder, dataset_root: {"input_path": folder, "dataset_root": dataset_root},
         skip_external=True,
     )
 
@@ -1048,7 +1048,7 @@ def run_full_process(
         (
             "Exif",
             Mothbot_InsertExif.run,
-            lambda folder, dr: {"input_path": folder},
+            lambda folder, dr: {"input_path": folder, "dataset_root": dr},
         ),
     ]
 

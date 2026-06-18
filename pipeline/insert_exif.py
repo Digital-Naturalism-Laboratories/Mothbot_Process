@@ -6,7 +6,8 @@ from PIL import Image
 import piexif
 import argparse
 import re
-from core.common import find_date_folders, find_detection_matches, update_main_list
+from core.common import find_detection_matches_processed, update_main_list
+from core.paths import resolve_patch_path
 
 # TODO: make work for entire deployment
 INPUT_PATH = r"G:\Shared drives\Mothbox Management\Testing\ExampleDataset\Les_BeachPalm_hopeCobo_2025-06-20\2025-06-21"
@@ -71,12 +72,8 @@ def find_image_json_pairs(input_dir):
     return pairs
 
 
-def load_anylabeling_data(json_path, image_path):
-    """Loads data from an AnyLabeling JSON file.
-
-    Args:
-
-    """
+def load_anylabeling_data(json_path, image_path, dataset_root):
+    """Loads data from an AnyLabeling JSON file and writes GPS EXIF into each patch."""
 
     with open(json_path, "r") as f:
         data = json.load(f)
@@ -84,17 +81,15 @@ def load_anylabeling_data(json_path, image_path):
     long = data["longitude"]
     lat = data["latitude"]
 
-    # Extract relevant data from the detection labels
     detections = data["shapes"]
 
-    nightfolder = os.path.dirname(image_path)
     i = 0
     for label in detections:
         the_patch_path = label["patch_path"]
 
         full_patch_path = Path(
-            nightfolder + "/" + the_patch_path
-        )  # should work on mac or windows
+            resolve_patch_path(the_patch_path, image_path, dataset_root)
+        )
 
         print(str(i) + "/" + str(len(detections)) + " detection being processed")
         print("adding GPS to " + str(full_patch_path))
@@ -217,85 +212,47 @@ def add_gps_exif(input_path, output_path, lat, lng, altitude=None):
     print(f"Saved image with GPS and datetime data: {output_path}")
 
 def connect_metadata_matched_img_json_pairs(
-    hu_matched_img_json_pairs, bot_matched_img_json_pairs
+    hu_matched_img_json_pairs, bot_matched_img_json_pairs, dataset_root
 ):
 
     # Process Human Detections
     print("processing Human Detections.........")
     if ID_HUMANDETECTIONS:
-        # Next process each pair and generate temporary files for the ROI of each detection in each image
-        # Iterate through image-JSON pairs
-        index = 0
-        numofpairs = len(hu_matched_img_json_pairs)
         for pair in hu_matched_img_json_pairs:
-
-            # Load JSON file
-            image_path, json_path = pair[:2]  # Always extract the first two elements
-
-            load_anylabeling_data(json_path, image_path)
+            image_path, json_path = pair[:2]
+            load_anylabeling_data(json_path, image_path, dataset_root)
 
     print("processing BOT Detections.........")
     if ID_BOTDETECTIONS:
-        # Next process each pair and generate temporary files for the ROI of each detection in each image
-        # Iterate through image-JSON pairs
-        index = 0
-        numofpairs = len(bot_matched_img_json_pairs)
         for pair in bot_matched_img_json_pairs:
-            # Load JSON file and
-            image_path, json_path = pair[:2]  # Always extract the first two elements
-
-            load_anylabeling_data(json_path, image_path)
+            image_path, json_path = pair[:2]
+            load_anylabeling_data(json_path, image_path, dataset_root)
 
 
-def run(input_path):
+def run(input_path, dataset_root=None):
     global INPUT_PATH, ID_HUMANDETECTIONS, ID_BOTDETECTIONS
     INPUT_PATH = input_path
     ID_HUMANDETECTIONS = True
     ID_BOTDETECTIONS = True
 
+    _dataset_root = dataset_root or input_path
+
     print("adding exif info to the patches")
+    print("Looking in this folder for MothboxData: " + INPUT_PATH)
 
-    """
-    First the script takes in a INPUT_PATH
-
-    Then, (to simplify its searching) it looks through all the folders for folders that are just a single "night"
-    and follow the date format YYYY-MM-DD for their structure
-
-    in each of these folders, it looks to see if there are any .json
-
-    """
-    print("Starting script to  add metadata to raw iamges")
     # ~~~~~~~~~~~~~~~~ GATHERING DATA ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    # Find all the dated folders that our data lives in
-    print("Looking in this folder for MothboxData: " + INPUT_PATH)
-    date_folders = find_date_folders(INPUT_PATH)
-    print(
-        "Found ",
-        str(len(date_folders)) + " dated folders potentially full of mothbox data",
+    hu_matched_img_json_pairs, bot_matched_img_json_pairs = (
+        find_detection_matches_processed(_dataset_root)
     )
-
-    # Look in each dated folder for .json detection files and the matching .jpgs
-    hu_matched_img_json_pairs = []
-    bot_matched_img_json_pairs = []
-
-    for folder in date_folders:
-        hu_list_of_matches, bot_list_of_matches = find_detection_matches(folder)
-        hu_matched_img_json_pairs = update_main_list(
-            hu_matched_img_json_pairs, hu_list_of_matches
-        )
-        bot_matched_img_json_pairs = update_main_list(
-            bot_matched_img_json_pairs, bot_list_of_matches
-        )
 
     print(
         "Found ",
         str(len(hu_matched_img_json_pairs))
-        + " pairs of images and HUMAN detection data insert exif",
+        + " pairs of images and HUMAN detection data to insert exif",
     )
-    # Example Pair
-    print("example human detection and json pair:")
     if len(hu_matched_img_json_pairs) > 0:
+        print("example human detection and json pair:")
         print(hu_matched_img_json_pairs[0])
 
     print(
@@ -303,18 +260,16 @@ def run(input_path):
         str(len(bot_matched_img_json_pairs))
         + " pairs of images and BOT detection data to insert exif",
     )
-    # Example Pair
-    print("example human detection and json pair:")
     if len(bot_matched_img_json_pairs) > 0:
+        print("example bot detection and json pair:")
         print(bot_matched_img_json_pairs[0])
 
     # ~~~~~~~~~~~~~~~~ Processing Data ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    # Now that we have our data to be processed in a big list, process all
-    # detections and write non-taxonomic EXIF data (GPS and existing fields).
     connect_metadata_matched_img_json_pairs(
         hu_matched_img_json_pairs,
         bot_matched_img_json_pairs,
+        dataset_root=_dataset_root,
     )
 
     print("Finished Attaching exif info")

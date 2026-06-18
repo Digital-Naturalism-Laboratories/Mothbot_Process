@@ -12,6 +12,7 @@ import argparse
 from PIL import Image  # For image format verification
 from pipeline.thumbnails import generateThumbnailPatches, generateThumbnailPatches_JSON
 import torch
+import time
 from datetime import datetime
 
 from core.preview import emit_preview
@@ -131,20 +132,111 @@ def _resolve_output_paths(image_path, filename_stem, source_folder):
     return human_json_path, bot_json_path, patch_folder_path
 
 
+BATCH_SIZE = 8
+
+
+def _format_eta(seconds: float) -> str:
+    """Return a human-readable ETA string, e.g. '2h 4m', '3m 12s', '45s'."""
+    seconds = int(seconds)
+    h, remainder = divmod(seconds, 3600)
+    m, s = divmod(remainder, 60)
+    if h:
+        return f"{h}h {m}m"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
+def _save_result(result, image_path, bot_json_path, patch_folder_path, model_name):
+    """Extract OBBs from one YOLO result, save patches, and write the JSON.
+
+    Returns the list of shape dicts (may be empty if no detections).
+    """
+    shapes = []
+    if result.obb is None:
+        pass
+    else:
+        for det_idx, obb in enumerate(result.obb.xyxyxyxy):
+            points = obb.cpu().numpy().reshape((-1, 1, 2)).astype(int)
+            rect = cv2.minAreaRect(points)
+            confidence = result.obb.conf[det_idx].item()
+
+            print("rect: {}".format(rect) + "   conf: " + str(confidence))
+
+            center, size, angle = rect[0], rect[1], rect[2]
+            pts = obb.cpu().numpy().reshape((-1, 1, 2)).astype(float)
+            pts = pts.tolist()
+            pts = [item for sublist in pts for item in sublist]
+
+            thepatchpath = ""
+            if GEN_THUMBNAILS:
+                thepatchpath = generateThumbnailPatches(
+                    result.orig_img, image_path, rect, det_idx, model_name,
+                    patch_folder=str(patch_folder_path),
+                )
+
+            shapes.append({
+                "points": pts,
+                "direction": angle,
+                "score": float(confidence),
+                "patch_path": thepatchpath,
+                "confidence_detection": confidence,
+                "identifier_bot": "",
+                "identifier_human": "",
+                "timestamp_detection": current_timestamp(),
+                "detector_bot": str(model_name),
+            })
+
+    # Use orig_img shape for width/height — avoids a redundant PIL disk read.
+    height, width = result.orig_img.shape[:2]
+
+    data = {
+        "version": model_name,
+        "flags": {},
+        "imagePath": image_path,
+        "imageHeight": height,
+        "imageWidth": width,
+        "description": "",
+        "imageData": None,
+        "shapes": [
+            {
+                "kie_linking": [],
+                "direction": s["direction"],
+                "label": "creature",
+                "score": s["score"],
+                "group_id": None,
+                "description": "",
+                "difficult": "false",
+                "shape_type": "rotation",
+                "flags": {},
+                "attributes": {},
+                "points": s["points"],
+                "patch_path": s["patch_path"],
+                "confidence_detection": s["confidence_detection"],
+                "identifier_bot": s["identifier_bot"],
+                "identifier_human": s["identifier_human"],
+                "timestamp_detection": s["timestamp_detection"],
+                "detector_bot": s["detector_bot"],
+            }
+            for s in shapes
+        ],
+    }
+    with open(bot_json_path, "w") as f:
+        json.dump(data, f, indent=4)
+
+    return shapes
+
+
 def process_image_list(img_files, dataset_root=None):
     """Process a flat list of absolute image paths.
 
-    This is the new structure-agnostic entry point used when DATASET_ROOT is
-    set.  Each image can live anywhere under *dataset_root* and outputs are
-    written to the corresponding location in the _processed mirror.
+    Phase 1 — pre-screening: validate each image and handle existing JSON files
+    (skip or regenerate thumbnails as needed).  Builds a list of images that
+    actually need YOLO inference.
 
-    Parameters
-    ----------
-    img_files : list[str]
-        Absolute paths to .jpg source images.
-    dataset_root : str | None
-        Top-level folder the user chose to process.  When None the function
-        falls back to per-folder legacy behaviour.
+    Phase 2 — batch inference: run YOLO on groups of BATCH_SIZE images at once
+    for better GPU utilisation.  Falls back to single-image mode automatically
+    if a batch fails (e.g. GPU OOM).
     """
     global DATASET_ROOT
     DATASET_ROOT = dataset_root
@@ -153,6 +245,11 @@ def process_image_list(img_files, dataset_root=None):
     model_name = "Mothbot_" + os.path.basename(YOLO_MODEL)
 
     total = len(img_files)
+
+    # ── Phase 1: pre-screening ────────────────────────────────────────────────
+    # pending = list of (image_path, bot_json_path, patch_folder_path)
+    pending = []
+
     for idx, image_path in enumerate(img_files):
         filename = os.path.basename(image_path)
         filename_stem = filename[:-4] if filename.lower().endswith(".jpg") else filename
@@ -162,42 +259,33 @@ def process_image_list(img_files, dataset_root=None):
             image_path, filename_stem, source_folder
         )
 
-        progress = (idx / total) * 100
-        print(f"({progress:.2f}%) Processing:  {filename} ")
+        print(f"({(idx / total) * 100:.1f}%) Screening: {filename}")
 
         if not is_valid_image(image_path):
             print(f"Skipping corrupt image: {image_path}")
             continue
-
         if not os.path.isfile(image_path) or os.path.getsize(image_path) == 0:
             print(f"Skipping {filename}: Image file is missing or empty.")
             continue
 
-        # Check 1: human detection file (look in processed tree AND next to source for
-        # ground-truth JSONs that users may have placed alongside raw images)
+        # Check 1: human detection file
         human_json_source = os.path.join(source_folder, filename_stem + ".json")
-        human_json_exists = os.path.isfile(human_json_path) or os.path.isfile(human_json_source)
         effective_human_json = human_json_path if os.path.isfile(human_json_path) else (
             human_json_source if os.path.isfile(human_json_source) else None
         )
-
         if effective_human_json:
             print(effective_human_json)
             print("Earlier Human detection file exists, check to see if we should skip it")
             try:
-                with open(effective_human_json, "r") as json_file:
-                    json_data = json.load(json_file)
-                    if GEN_THUMBNAILS:
-                        json_data = generateThumbnailPatches_JSON(
-                            image_path, json_data, patch_folder_path
-                        )
-                        with open(human_json_path, "w") as json_file_write:
-                            json.dump(json_data, json_file_write, indent=4)
-                    if not GEN_BOT_DET_EVENIF_HUMAN_EXISTS:
-                        print(
-                            "skipping-will not create bot detections in parallel with human detections"
-                        )
-                        continue
+                with open(effective_human_json, "r") as f:
+                    json_data = json.load(f)
+                if GEN_THUMBNAILS:
+                    json_data = generateThumbnailPatches_JSON(image_path, json_data, patch_folder_path)
+                    with open(human_json_path, "w") as f:
+                        json.dump(json_data, f, indent=4)
+                if not GEN_BOT_DET_EVENIF_HUMAN_EXISTS:
+                    print("skipping-will not create bot detections in parallel with human detections")
+                    continue
             except json.JSONDecodeError:
                 print(f"error with HUMAN made {filename}: Corrupted JSON file.")
 
@@ -206,115 +294,78 @@ def process_image_list(img_files, dataset_root=None):
             print(bot_json_path)
             print("Earlier BOT detection file exists, check to see if we should skip it, ")
             try:
-                with open(bot_json_path, "r") as json_file:
-                    json_data = json.load(json_file)
-                    if not OVERWRITE_PREV_BOT_DETECTIONS:
-                        if GEN_THUMBNAILS:
-                            json_data = generateThumbnailPatches_JSON(
-                                image_path, json_data, patch_folder_path
-                            )
-                            with open(bot_json_path, "w") as json_file_write:
-                                json.dump(json_data, json_file_write, indent=4)
-                        print(
-                            "skipping previously generated detection files that were able to be opened"
-                        )
-                        continue
+                with open(bot_json_path, "r") as f:
+                    json_data = json.load(f)
+                if not OVERWRITE_PREV_BOT_DETECTIONS:
+                    if GEN_THUMBNAILS:
+                        json_data = generateThumbnailPatches_JSON(image_path, json_data, patch_folder_path)
+                        with open(bot_json_path, "w") as f:
+                            json.dump(json_data, f, indent=4)
+                    print("skipping previously generated detection files that were able to be opened")
+                    continue
             except json.JSONDecodeError:
                 print(f"error with {filename}: Corrupted JSON file.")
 
-        # ~~~~~~~~ Run YOLO detection ~~~~~~~~~~~~~
+        pending.append((image_path, bot_json_path, patch_folder_path))
+
+    if not pending:
+        print("No images need YOLO inference.")
+        return
+
+    print(f"\nRunning YOLO on {len(pending)} image(s) in batches of up to {BATCH_SIZE}...")
+
+    # ── Phase 2: batch inference ──────────────────────────────────────────────
+    preview_counter = 0  # counts images processed; emit preview every 10th
+    images_done = 0
+    total_pending = len(pending)
+    infer_start = time.monotonic()
+
+    for batch_start in range(0, len(pending), BATCH_SIZE):
+        batch = pending[batch_start: batch_start + BATCH_SIZE]
+        batch_paths = [item[0] for item in batch]
+
+        print(f"  Batch {batch_start // BATCH_SIZE + 1}: predicting {len(batch)} image(s)...")
         try:
-            print("Predict where insects are on a new image :", image_path)
-            results = model.predict(
-                source=image_path, imgsz=IMGSZ, device=DEVICE, verbose=False
+            batch_results = model.predict(
+                source=batch_paths, imgsz=IMGSZ, device=DEVICE, verbose=False
             )
         except Exception as e:
-            print(f"❌ Skipping corrupt/unreadable image: {image_path} ({e})")
-            continue
+            print(f"⚠️  Batch failed ({e}), retrying one image at a time.")
+            batch_results = []
+            for image_path, _, _ in batch:
+                try:
+                    res = model.predict(source=image_path, imgsz=IMGSZ, device=DEVICE, verbose=False)
+                    batch_results.append(res[0])
+                except Exception as e2:
+                    print(f"❌ Skipping {os.path.basename(image_path)}: {e2}")
+                    batch_results.append(None)
 
-        # Extract OBB coordinates and crop
-        shapes = []
-        for result in results:
-            for det_idx, obb in enumerate(result.obb.xyxyxyxy):
-                points = obb.cpu().numpy().reshape((-1, 1, 2)).astype(int)
-                cnt = points
-                rect = cv2.minAreaRect(cnt)
-                confidence = result.obb.conf[det_idx].item()
+        for result, (image_path, bot_json_path, patch_folder_path) in zip(batch_results, batch):
+            if result is None:
+                images_done += 1
+                continue
+            filename = os.path.basename(image_path)
+            try:
+                shapes = _save_result(result, image_path, bot_json_path, patch_folder_path, model_name)
+            except Exception as e:
+                print(f"❌ Error saving results for {filename}: {e}")
+                images_done += 1
+                continue
 
-                print("rect: {}".format(rect) + "   conf: " + str(confidence))
+            images_done += 1
+            elapsed = time.monotonic() - infer_start
+            avg = elapsed / images_done
+            eta_secs = avg * (total_pending - images_done)
+            eta_str = _format_eta(eta_secs) if images_done < total_pending else "done"
+            print(f"  ✓ {filename}: {len(shapes)} detection(s) — "
+                  f"{images_done}/{total_pending} images — ETA {eta_str}")
 
-                box = cv2.boxPoints(rect)
-                box = np.intp(box)
-
-                center, size, angle = rect[0], rect[1], rect[2]
-                pts = obb.cpu().numpy().reshape((-1, 1, 2)).astype(float)
-                pts = pts.tolist()
-                pts = [item for sublist in pts for item in sublist]  # flatten
-
-                shape = {
-                    "points": pts,
-                    "direction": angle,
-                    "score": float(confidence),
-                }
-
-                thepatchpath = ""
-                if GEN_THUMBNAILS:
-                    thepatchpath = generateThumbnailPatches(
-                        result.orig_img, image_path, rect, det_idx, model_name,
-                        patch_folder=str(patch_folder_path),
-                    )
-                shape["patch_path"] = thepatchpath
-                shape["confidence_detection"] = confidence
-                shape["identifier_bot"] = ""
-                shape["identifier_human"] = ""
-                shape["timestamp_detection"] = current_timestamp()
-                shape["detector_bot"] = str(model_name)
-                shapes.append(shape)
-
-        # Every 10th image with detections: push first patch to the live preview.
-        if GEN_THUMBNAILS and shapes and idx % 10 == 0:
-            first_patch = shapes[0].get("patch_path", "")
-            if first_patch:
-                emit_preview(str(patch_folder_path / os.path.basename(first_patch)))
-
-        image_pil = PIL.Image.open(image_path)
-        width, height = image_pil.size
-
-        data = {
-            "version": model_name,
-            "flags": {},
-            "imagePath": image_path,
-            "imageHeight": height,
-            "imageWidth": width,
-            "description": "",
-            "imageData": None,
-            "shapes": [],
-        }
-
-        for shape in shapes:
-            shape_data = {
-                "kie_linking": [],
-                "direction": shape["direction"],
-                "label": "creature",
-                "score": shape["score"],
-                "group_id": None,
-                "description": "",
-                "difficult": "false",
-                "shape_type": "rotation",
-                "flags": {},
-                "attributes": {},
-                "points": shape["points"],
-                "patch_path": shape["patch_path"],
-                "confidence_detection": shape["confidence_detection"],
-                "identifier_bot": shape["identifier_bot"],
-                "identifier_human": shape["identifier_human"],
-                "timestamp_detection": shape["timestamp_detection"],
-                "detector_bot": shape["detector_bot"],
-            }
-            data["shapes"].append(shape_data)
-
-        with open(bot_json_path, "w") as f:
-            json.dump(data, f, indent=4)
+            # Live preview: emit first patch of every 10th processed image.
+            preview_counter += 1
+            if GEN_THUMBNAILS and shapes and preview_counter % 10 == 0:
+                first_patch = shapes[0].get("patch_path", "")
+                if first_patch:
+                    emit_preview(str(patch_folder_path / os.path.basename(first_patch)))
 
 
 def process_jpg_files(img_files, date_folder):

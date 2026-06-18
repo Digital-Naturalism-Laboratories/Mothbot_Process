@@ -358,9 +358,16 @@ def app():
                 )
             # ~~~~~~~~~~~~ PROCESS TAB ~~~~~~~~~~~~~~~~~~~~~~
             with gr.Tab("Process", id="process") as process_tab:
-                process_output_box = gr.Textbox(
-                    label="Process Output", lines=20, interactive=False
-                )
+                with gr.Row():
+                    process_output_box = gr.Textbox(
+                        label="Process Output", lines=20, interactive=False, scale=2
+                    )
+                    process_preview_img = gr.Image(
+                        label="Live Detection Preview (every 10th image)",
+                        visible=False,
+                        scale=1,
+                        show_download_button=False,
+                    )
 
             # ~~~~~~~~~~~~ DETECTION TAB ~~~~~~~~~~~~~~~~~~~~~~
             with gr.Tab("Detect", id="detect", visible=False) as detect_tab:
@@ -543,7 +550,7 @@ def app():
                     OVERWRITE_PREV_BOT_IDENTIFICATIONS,
                     metadata_csv_file,
                 ],
-                outputs=[process_output_box, stop_btn],
+                outputs=[process_output_box, stop_btn, process_preview_img],
             )
 
         # ── Stop button ────────────────────────────────────────────────────────
@@ -1078,10 +1085,23 @@ def run_full_process(
         ),
     ]
 
+    clear_preview()
     output_log = ""
+    NO_IMG = gr.update()
+
+    def _poll_preview():
+        path = get_preview()
+        if path:
+            try:
+                from PIL import Image as PILImage
+                return gr.update(value=PILImage.open(path), visible=True)
+            except Exception:
+                pass
+        return NO_IMG
+
     for step_name, runner, kwargs_builder in steps:
         output_log += f"\n===== {step_name} =====\n"
-        yield output_log, SHOW_STOP
+        yield output_log, SHOW_STOP, NO_IMG
         for entry in selected_folders:
             folder       = entry["path"]                     if isinstance(entry, dict) else entry
             is_ext       = entry.get("external", False)       if isinstance(entry, dict) else False
@@ -1089,28 +1109,29 @@ def run_full_process(
 
             if is_ext and step_name in source_only_steps:
                 output_log += f"⚠️  Skipping {step_name} for externally-processed collection:\n    {folder}\n"
-                yield output_log, SHOW_STOP
+                yield output_log, SHOW_STOP, NO_IMG
                 continue
 
             if is_ext and step_name == "Cluster":
                 output_log += f"  ℹ️  Building stub JSONs from patches before clustering {folder}...\n"
-                yield output_log, SHOW_STOP
+                yield output_log, SHOW_STOP, NO_IMG
                 output_log += build_stub_jsons_from_patches(folder)
-                yield output_log, SHOW_STOP
+                yield output_log, SHOW_STOP, NO_IMG
 
             output_log += f"--- Running {step_name} for {folder} ---\n"
-            yield output_log, SHOW_STOP
+            yield output_log, SHOW_STOP, NO_IMG
             try:
                 for chunk in run_in_thread(runner, **kwargs_builder(folder, dataset_root)):
                     output_log += chunk
-                    yield output_log, SHOW_STOP
+                    img = _poll_preview() if step_name == "Detect" else NO_IMG
+                    yield output_log, SHOW_STOP, img
                 output_log += f"✅ {step_name} completed for {folder}\n"
             except Exception as exc:
                 output_log += f"\n❌ Exception while processing {folder} in {step_name}: {exc}\n"
-            yield output_log, SHOW_STOP
+            yield output_log, SHOW_STOP, NO_IMG
 
     output_log += "\n------ Full processing finished ------"
-    yield output_log, HIDE_STOP
+    yield output_log, HIDE_STOP, NO_IMG
 
 
 # ──────────────────────────────────────────────────────────────

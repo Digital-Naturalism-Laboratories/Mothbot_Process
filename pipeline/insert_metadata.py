@@ -60,6 +60,57 @@ TAXA_LIST_PATH = r"..\SpeciesList_CountryIndonesia_TaxaInsecta.csv"  # downloade
 ID_HUMANDETECTIONS = True
 ID_BOTDETECTIONS = True
 
+# ~~~~Flexible Field Sheet Support~~~~~~~
+#
+# Different scientists customize their field sheets (extra columns like
+# "timelapse_interval", multiple attractors, "country" instead of "dataset",
+# etc.). Two things make that flexible instead of breaking the script:
+#
+# 1) Every column that exists in a field sheet's CSV gets copied onto the
+#    output JSON automatically (see "field_sheet_metadata" in
+#    load_anylabeling_data below), under whatever name the scientist used
+#    for it. New/unexpected columns are never dropped.
+#
+# 2) A handful of "canonical" fields are ALSO copied to fixed keys
+#    (data["device"], data["latitude"], etc.) because other scripts in this
+#    pipeline (e.g. export_csv.py) expect those exact keys to exist on every
+#    sample. FIELD_ALIASES lets a canonical field be filled in from whichever
+#    of several possible column names a given sheet actually used. If you
+#    see a field sheet that calls something by yet another name, just add it
+#    to the list here -- no other code needs to change.
+#
+# Column name matching is case/whitespace-insensitive and treats spaces the
+# same as underscores (e.g. "Deploy Date", "deploy_date", and "DEPLOY_DATE"
+# are all treated as the same column).
+FIELD_ALIASES = {
+    "device": ["device"],
+    "device_name": ["device_name"],
+    "firmware": ["firmware"],
+    "sheet": ["sheet"],
+    "dataset": ["dataset"],
+    "project": ["project"],
+    "site": ["site"],
+    "latitude": ["latitude"],
+    "longitude": ["longitude"],
+    "height_above_ground": ["height_above_ground"],
+    "deployment_name": ["deployment_name"],
+    "UTC": ["UTC"],
+    "deployment_date": ["deployment_date", "deploy_date"],
+    "collect_date": ["collect_date"],
+    "data_storage_location": ["data_storage_location"],
+    "crew": ["crew"],
+    "notes": ["notes"],
+    "schedule": ["schedule"],
+    "habitat": ["habitat"],
+    # Sheets supporting multiple attractors use attractor1/2/3 instead of a
+    # single "attractor" column. Fall back to attractor1 so the legacy
+    # "attractor" field (used by export_csv.py) still gets a sensible value;
+    # attractor1/2/3 and their *_settings columns are also preserved in full
+    # via field_sheet_metadata regardless of this fallback.
+    "attractor": ["attractor", "attractor1"],
+    "attractor_location": ["attractor_location"],
+}
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -106,8 +157,10 @@ def extract_number(raw_height):
       The numerical value of the height as a float, or None if no numerical value
       could be extracted.
     """
+    if not raw_height:
+        return None
     # Use regular expression to find the first floating-point or integer number
-    match = re.search(r"[-+]?\d+\.?\d*|\d+", raw_height)
+    match = re.search(r"[-+]?\d+\.?\d*|\d+", str(raw_height))
     if match:
         return float(match.group(0))
     else:
@@ -147,18 +200,45 @@ def handle_rotation_annotation(points):
 # PUt everything in the JSON
 
 
-def load_anylabeling_data(json_path, image_path, metadata):
-    """Loads data from an AnyLabeling JSON file.
+def get_aliased(metadata, canonical_name, default=""):
+    """Look up a canonical field's value in a (normalized) metadata row,
+    trying each of its known aliases (see FIELD_ALIASES) in order and
+    returning the first one that's actually present and non-empty.
 
-    Args:
-      json_path: The path to the JSON file.
-
-    Returns:
-      A dictionary containing the loaded data.
+    `metadata` is expected to already have normalized (lowercase,
+    whitespace/space-vs-underscore insensitive) keys -- see _normalize_row.
     """
-    latitude = metadata.get("latitude", "0.00000")
-    longitude = metadata.get("longitude", "0.00000")
-    therawgroundheight = metadata.get("height_above_ground", "-1")
+    for alias in FIELD_ALIASES.get(canonical_name, [canonical_name]):
+        key = _normalize_key(alias)
+        value = metadata.get(key)
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def load_anylabeling_data(json_path, image_path, metadata):
+    """Writes field-sheet metadata into an AnyLabeling-style detection JSON.
+
+    `metadata` is one normalized row from the field sheet CSV (see
+    _normalize_row/find_csv_match) -- a dict that may contain any columns a
+    given scientist's sheet happens to have, not just the ones this script
+    knows about.
+
+    Two things happen here so the script stays flexible:
+      1. A fixed set of "well known" fields get copied onto flat keys
+         (data["device"], data["latitude"], ...) using FIELD_ALIASES to
+         tolerate sheets that name them slightly differently. Other scripts
+         in this pipeline (export_csv.py) depend on these exact keys
+         existing, so they're always written, defaulting to "" / "0.00000"
+         etc. when a sheet doesn't have that column at all.
+      2. EVERY column actually present in the sheet -- known or not (e.g.
+         timelapse_interval, attractor2, attractor3, attractor1_settings,
+         target_material, nearby_vegetation, country, device_name...) -- is
+         also written wholesale into data["field_sheet_metadata"], so
+         nothing a scientist adds to their sheet is ever silently dropped,
+         even if no other part of the pipeline knows what to do with it yet.
+    """
+    therawgroundheight = get_aliased(metadata, "height_above_ground", "-1")
 
     with open(json_path, "r") as f:
         data = json.load(f)
@@ -166,26 +246,30 @@ def load_anylabeling_data(json_path, image_path, metadata):
         data["filepath"] = image_path
         data["uploaded"] = metadata.get("uploaded", "")
         data["sd"] = metadata.get("sd_card", "")
-        data["device"] = metadata.get("device", "")
-        data["firmware"] = str(metadata.get("firmware", ""))
-        data["sheet"] = metadata.get("sheet", "")
-        data["datasetcollection"] = metadata.get("dataset", "")
-        data["project"] = metadata.get("project", "")
-        data["site"] = metadata.get("site", "")
-        data["longitude"] = longitude
-        data["latitude"] = latitude
+        data["device"] = get_aliased(metadata, "device")
+        data["firmware"] = str(get_aliased(metadata, "firmware"))
+        data["sheet"] = get_aliased(metadata, "sheet")
+        data["datasetcollection"] = get_aliased(metadata, "dataset")
+        data["project"] = get_aliased(metadata, "project")
+        data["site"] = get_aliased(metadata, "site")
+        data["longitude"] = get_aliased(metadata, "longitude", "0.00000")
+        data["latitude"] = get_aliased(metadata, "latitude", "0.00000")
         data["ground_height"] = extract_number(therawgroundheight)
-        data["deployment_name"] = metadata.get("deployment_name", "")
-        data["UTC"] = metadata.get("UTC", "0")
-        data["deployment_date"] = metadata.get("deployment_date", "")
-        data["collect_date"] = metadata.get("collect_date", "")
-        data["data_storage_location"] = metadata.get("data_storage_location", "")
-        data["crew"] = metadata.get("crew", "")
-        data["notes"] = metadata.get("notes", "")
-        data["schedule"] = metadata.get("schedule", "")
-        data["habitat"] = metadata.get("habitat", "")
-        data["attractor"] = metadata.get("attractor", "")
-        data["attractor_location"] = metadata.get("attractor_location", "")
+        data["deployment_name"] = get_aliased(metadata, "deployment_name")
+        data["UTC"] = get_aliased(metadata, "UTC", "0")
+        data["deployment_date"] = get_aliased(metadata, "deployment_date")
+        data["collect_date"] = get_aliased(metadata, "collect_date")
+        data["data_storage_location"] = get_aliased(metadata, "data_storage_location")
+        data["crew"] = get_aliased(metadata, "crew")
+        data["notes"] = get_aliased(metadata, "notes")
+        data["schedule"] = get_aliased(metadata, "schedule")
+        data["habitat"] = get_aliased(metadata, "habitat")
+        data["attractor"] = get_aliased(metadata, "attractor")
+        data["attractor_location"] = get_aliased(metadata, "attractor_location")
+
+        # Flexible passthrough: keep every column from the field sheet,
+        # whatever it's called, so extra/custom info is never lost.
+        data["field_sheet_metadata"] = dict(metadata)
 
     with open(json_path, "w") as f:
         json.dump(data, f, indent=4)
@@ -225,6 +309,35 @@ def connect_metadata_matched_img_json_pairs(
             image_path, json_path = pair[:2]  # Always extract the first two elements
 
             load_anylabeling_data(json_path, image_path, metadata)
+
+
+def _normalize_key(key: str) -> str:
+    """Normalize a CSV column header so field sheets with different
+    capitalization or spacing for the same field (e.g. 'Deploy Date',
+    'deploy_date', 'DEPLOY_DATE') are all treated as the same column.
+    """
+    if key is None:
+        return key
+    return key.strip().lower().replace(" ", "_")
+
+
+def _normalize_row(row: dict) -> dict:
+    """Returns a copy of a csv.DictReader row with normalized keys (see
+    _normalize_key) and whitespace-stripped string values. This is what
+    lets the rest of the script -- and any extra/custom columns a
+    scientist's sheet happens to have -- be looked up reliably regardless
+    of exactly how the sheet's headers were typed.
+    """
+    normalized = {}
+    for key, value in row.items():
+        if key is None:
+            # csv.DictReader puts any "extra" unnamed columns under the
+            # None key as a list; there's nothing meaningful to normalize.
+            continue
+        norm_key = _normalize_key(key)
+        norm_value = value.strip() if isinstance(value, str) else value
+        normalized[norm_key] = norm_value
+    return normalized
 
 
 def _without_first_prefix(name: str) -> str:
@@ -269,6 +382,7 @@ def find_csv_match(input_path: str, metadata_path: str) -> dict:
     with open(metadata_path, mode="r", newline="", encoding="utf-8") as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
+            row = _normalize_row(row)
             dep_name = (row.get("deployment_name") or "").strip()
             if not dep_name:
                 continue
@@ -311,6 +425,7 @@ def find_csv_match_old_onlyparent(input_path: str, metadata_path: str) -> dict:
     with open(metadata_path, mode="r", newline="", encoding="utf-8") as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
+            row = _normalize_row(row)
             dep_name = (row.get("deployment_name") or "").strip()
             if not dep_name:
                 continue

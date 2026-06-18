@@ -129,13 +129,25 @@ def main():
         "server_port": server_port,
     }
     logger.info("Using server port: %s", server_port)
-    favicon = Path(__file__).resolve().parent.parent / "assets" / "favicon.png"
+
+    # In a PyInstaller frozen bundle sys._MEIPASS is the extracted resource root.
+    # When running from source, fall back to the project root (two levels up from
+    # apps/desktop_main.py).
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        assets_dir = Path(sys._MEIPASS) / "assets"
+    else:
+        assets_dir = Path(__file__).resolve().parent.parent / "assets"
+
+    favicon = assets_dir / "favicon.png"
     if favicon.exists():
         launch_kwargs["favicon_path"] = str(favicon)
+    else:
+        logger.warning("favicon.png not found at %s", favicon)
 
     url = f"http://127.0.0.1:{server_port}"
     ensure_single_instance(url=url)
     start_tray(url=url, icon_path=favicon if favicon.exists() else None)
+
 
     try:
         from ui.app import get_demo

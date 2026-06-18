@@ -829,7 +829,7 @@ def go_to_cluster_tab():
 
 def toggle_advanced_mode(enabled):
     visible = bool(enabled)
-    selected_tab = "setup" if visible else "process"
+    selected_tab = "setup"
     return (
         gr.update(visible=visible),
         gr.update(visible=visible),

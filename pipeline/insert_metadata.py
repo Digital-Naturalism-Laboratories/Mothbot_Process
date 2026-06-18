@@ -394,12 +394,18 @@ def find_csv_match(input_path: str, metadata_path: str) -> dict:
             if folder_variants & dep_variants:
                 matches.append(row)
 
-    if len(matches) > 1:
+    if not matches:
+        print(
+            f"❌ No metadata match found for '{current_folder}' (or '{parent_folder}') in {metadata_path}\n"
+            f"   Searched for any of: {sorted(folder_variants)}\n"
+            f"   Metadata fields will be empty."
+        )
+    elif len(matches) > 1:
         print(
             f"⚠️ Warning: Multiple matches found for '{parent_folder}', using the first one."
         )
-    if len(matches) == 1:
-        print(f"✅ Matched deployment.name = '{matches[0].get('deployment_name')}'")
+    else:
+        print(f"✅ Matched deployment_name = '{matches[0].get('deployment_name')}'")
     return matches[0] if matches else {}
 
 
@@ -474,9 +480,10 @@ def run(input_path, metadata_path, dataset_root=None):
 
     print("Looking in this folder for MothboxData: " + input_path)
 
-    # Use structure-agnostic discovery: finds JSONs in the _processed tree
+    # Use structure-agnostic discovery: finds JSONs in the _processed tree,
+    # scoped to input_path so only the selected deployment is processed.
     hu_matched_img_json_pairs, bot_matched_img_json_pairs = (
-        find_detection_matches_processed(_dataset_root)
+        find_detection_matches_processed(_dataset_root, source_folder=input_path)
     )
 
     print(
@@ -498,6 +505,10 @@ def run(input_path, metadata_path, dataset_root=None):
         print(bot_matched_img_json_pairs[0])
 
     metadata = find_csv_match(input_path, metadata_path)
+
+    if not metadata:
+        print("⚠️  Skipping metadata insertion — no matching row found in the CSV.")
+        return
 
     # ~~~~~~~~~~~~~~~~ Processing Data ~~~~~~~~~~~~~~~~~~~~~~~~~~
 

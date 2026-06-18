@@ -749,7 +749,7 @@ def run(
 
     # Use structure-agnostic discovery: finds JSONs in the _processed tree
     hu_matched_img_json_pairs, bot_matched_img_json_pairs = (
-        find_detection_matches_processed(DATASET_ROOT)
+        find_detection_matches_processed(DATASET_ROOT, source_folder=input_path)
     )
 
     print(f"Found {len(hu_matched_img_json_pairs)} pairs of images and HUMAN detection data to try to ID")

@@ -131,14 +131,7 @@ def find_detection_matches_processed(dataset_root, source_folder=None):
     # Import here to avoid circular imports
     from core.paths import get_json_output_path
 
-    if source_folder is not None:
-        jpg_files = [
-            os.path.join(source_folder, f)
-            for f in os.listdir(source_folder)
-            if f.lower().endswith(".jpg")
-        ]
-    else:
-        jpg_files = find_images_recursive(dataset_root)
+    jpg_files = find_images_recursive(source_folder if source_folder is not None else dataset_root)
 
     hu_matches = []
     bot_matches = []

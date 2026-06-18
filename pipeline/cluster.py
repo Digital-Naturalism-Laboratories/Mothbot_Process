@@ -766,7 +766,7 @@ def run(input_path, ID_Hum=True, ID_Bot=True, dataset_root=None):
         DATASET_ROOT = input_path
     else:
         hu_matched_img_json_pairs, bot_matched_img_json_pairs = (
-            find_detection_matches_processed(DATASET_ROOT)
+            find_detection_matches_processed(DATASET_ROOT, source_folder=input_path)
         )
 
     print(

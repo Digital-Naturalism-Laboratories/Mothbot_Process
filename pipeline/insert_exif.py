@@ -243,7 +243,7 @@ def run(input_path, dataset_root=None):
     # ~~~~~~~~~~~~~~~~ GATHERING DATA ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
     hu_matched_img_json_pairs, bot_matched_img_json_pairs = (
-        find_detection_matches_processed(_dataset_root)
+        find_detection_matches_processed(_dataset_root, source_folder=input_path)
     )
 
     print(

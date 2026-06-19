@@ -9,6 +9,7 @@ Key changes from the subprocess-based original:
   * Path fields support both paste/type and optional native browse dialogs.
 """
 
+import json
 import os
 import re
 import glob
@@ -659,6 +660,68 @@ def browse_yolo_model(current_path):
     )
 
 
+def _check_pipeline_status(processed_mirror: str) -> dict:
+    """Sample one JSON from *processed_mirror* and return booleans for each
+    pipeline stage that has already been run on this collection."""
+    status = {"clustered": False, "identified": False, "metadata": False, "exif": False}
+    if not os.path.isdir(processed_mirror):
+        return status
+
+    # Find first JSON; prefer one with shapes so cluster/ID checks are meaningful.
+    first_json_path = None
+    shaped_json_data = None
+    for root, _dirs, files in os.walk(processed_mirror):
+        for f in files:
+            if not f.endswith(".json"):
+                continue
+            path = os.path.join(root, f)
+            if first_json_path is None:
+                first_json_path = path
+            if shaped_json_data is None:
+                try:
+                    with open(path) as fh:
+                        d = json.load(fh)
+                    if d.get("shapes"):
+                        shaped_json_data = d
+                        break
+                except Exception:
+                    pass
+        if shaped_json_data:
+            break
+
+    # Metadata: detect.py never writes "latitude", so its mere presence means
+    # insert_metadata.py has been run.
+    if first_json_path:
+        try:
+            with open(first_json_path) as fh:
+                d = json.load(fh)
+            status["metadata"] = "latitude" in d
+        except Exception:
+            pass
+
+    if shaped_json_data:
+        shapes = shaped_json_data.get("shapes", [])
+        status["clustered"] = any(s.get("clusterID") is not None for s in shapes)
+        # detect.py writes identifier_bot="" (empty); identify.py sets it to the
+        # version string, so a non-empty value means identification has been run.
+        status["identified"] = any(s.get("identifier_bot", "") not in ("", None) for s in shapes)
+
+    # Exif: check whether the first patch JPG in the mirror has GPS EXIF data.
+    for root, _dirs, files in os.walk(processed_mirror):
+        for f in files:
+            if f.lower().endswith(".jpg"):
+                try:
+                    import piexif
+                    exif_dict = piexif.load(os.path.join(root, f))
+                    status["exif"] = bool(exif_dict.get("GPS"))
+                except Exception:
+                    pass
+                return status
+        break  # only peek one level deep for speed
+
+    return status
+
+
 def scan_deployment_folder(folder_path, picker_error_message=""):
     """Scan *folder_path* for image collections (raw and externally-processed)
     and return UI updates.
@@ -742,24 +805,34 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
         jpeg_count = _count_matching_files(p, ("*.jpg", "*.jpeg"))
 
         if is_external:
-            # For external collections the folder IS the processed mirror —
-            # count patches (all jpgs) and JSONs directly inside it.
-            json_count  = _count_matching_files(p, ("*.json",))
-            label = f"⚡ {label_prefix}  ({jpeg_count} patches"
-            if json_count:
-                label += f", {json_count} detections"
-            label += ")  [externally processed — no source images]"
+            # For external collections the folder IS the processed mirror.
+            json_count   = _count_matching_files(p, ("*.json",))
+            patch_count  = jpeg_count
+            ps = _check_pipeline_status(p)
+            counts = f"📄 {json_count}  🦋 {patch_count}"
         else:
             processed_mirror = os.path.join(folder_path, "_processed", os.path.relpath(p, folder_path))
-            json_count   = _count_matching_files(processed_mirror, ("*.json",))   if os.path.isdir(processed_mirror) else 0
-            patch_count  = _count_matching_files(processed_mirror, ("*.jpg", "*.jpeg")) if os.path.isdir(processed_mirror) else 0
-            patch_count  = max(0, patch_count)
-            label = f"{label_prefix}  ({jpeg_count} images"
-            if json_count:
-                label += f", {json_count} detections"
-            if patch_count:
-                label += f", {patch_count} patches"
-            label += ")"
+            json_count  = _count_matching_files(processed_mirror, ("*.json",))  if os.path.isdir(processed_mirror) else 0
+            patch_count = _count_matching_files(processed_mirror, ("*.jpg", "*.jpeg")) if os.path.isdir(processed_mirror) else 0
+            ps = _check_pipeline_status(processed_mirror)
+            counts = f"📷 {jpeg_count}  📄 {json_count}  🦋 {patch_count}"
+
+        pipeline_tags = "  ".join(
+            tag for flag, tag in [
+                (ps["clustered"],   "✓ Cluster"),
+                (ps["identified"],  "✓ ID"),
+                (ps["metadata"],    "✓ Meta"),
+                (ps["exif"],        "✓ Exif"),
+            ]
+            if flag
+        )
+
+        if is_external:
+            label = f"⚡ {label_prefix}  {counts}  [ext]"
+        else:
+            label = f"{label_prefix}  {counts}"
+        if pipeline_tags:
+            label += f"  |  {pipeline_tags}"
 
         choices.append((label, value))
         mapping[value] = os.path.abspath(p)

@@ -21,7 +21,7 @@ from pathlib import Path
 import tomllib
 import gradio as gr
 
-from core.common import run_in_thread, request_cancel
+from core.common import run_in_thread, request_cancel, find_images_recursive
 from core.preview import get_preview, clear_preview
 from ui.tray import start_tray
 from ui.single_instance import ensure_single_instance
@@ -33,6 +33,7 @@ from pipeline import detect as Mothbot_Detect
 from pipeline import identify as Mothbot_ID
 from pipeline import insert_exif as Mothbot_InsertExif
 from pipeline import insert_metadata as Mothbot_InsertMetadata
+from pipeline import pixel_mass as Mothbot_PixelMass
 
 TAXA_COLS = ["kingdom", "phylum", "class", "order", "family", "genus", "species"]
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -520,6 +521,90 @@ def app():
                     inputs=[selected_paths],
                     outputs=[exif_output_box, stop_btn],
                 )
+
+            # ~~~~~~~~~~~~ Pixel Mass Tab ~~~~~~~~~~~~~~~~~~~~~~
+            with gr.Tab("Pixel Mass", id="pixel_mass", visible=False) as pixel_mass_tab:
+                pm_source_img_state = gr.State(None)   # clean original PIL for redrawing
+                pm_point1_state     = gr.State(None)   # [x, y] of first calibration click
+                pm_point2_state     = gr.State(None)   # [x, y] of second calibration click
+
+                gr.Markdown("### Step 1: Set Scale Calibration")
+                gr.Markdown(
+                    "Click two points on a ruler or known object in the source image below. "
+                    "Enter the real-world distance and click **Apply Calibration**. "
+                    "Or type a known **pixels per mm** value directly and apply."
+                )
+                with gr.Row():
+                    pm_calib_img = gr.Image(
+                        label="Source image — click two points to mark a known distance",
+                        interactive=False,
+                        scale=2,
+                    )
+                    with gr.Column(scale=1):
+                        pm_load_img_btn = gr.Button("Load Different Image", size="sm")
+                        pm_point1_label = gr.Textbox(
+                            label="Point 1", value="–", interactive=False, lines=1, max_lines=1
+                        )
+                        pm_point2_label = gr.Textbox(
+                            label="Point 2", value="–", interactive=False, lines=1, max_lines=1
+                        )
+                        pm_pixel_dist_label = gr.Textbox(
+                            label="Pixel distance", value="–", interactive=False, lines=1, max_lines=1
+                        )
+                        pm_real_dist = gr.Number(label="Real-world distance (mm)", value=10.0, minimum=0.001)
+                        pm_pixels_per_mm = gr.Number(label="Pixels per mm (auto-computed or enter manually)")
+                        pm_calibrate_btn = gr.Button("Apply Calibration", variant="primary")
+                        pm_calib_status = gr.Textbox(
+                            label="Calibration status", value="", interactive=False, lines=1, max_lines=1
+                        )
+
+                gr.Markdown("### Step 2: Calculate Pixel Mass")
+                pm_overwrite = gr.Checkbox(
+                    label="Overwrite previous pixel mass results", value=True
+                )
+                pm_run_btn = gr.Button("Run Pixel Mass", variant="primary")
+                pm_output_box = gr.Textbox(
+                    label="Pixel Mass Output", lines=15, interactive=False
+                )
+
+                # ── Calibration event handlers ──────────────────────────────
+                # Auto-load source image when this tab is opened.
+                pixel_mass_tab.select(
+                    fn=load_image_for_calibration,
+                    inputs=[selected_paths],
+                    outputs=[pm_calib_img, pm_source_img_state, pm_calib_status,
+                             pm_point1_state, pm_point2_state,
+                             pm_point1_label, pm_point2_label, pm_pixel_dist_label],
+                )
+
+                pm_load_img_btn.click(
+                    fn=load_image_for_calibration,
+                    inputs=[selected_paths],
+                    outputs=[pm_calib_img, pm_source_img_state, pm_calib_status,
+                             pm_point1_state, pm_point2_state,
+                             pm_point1_label, pm_point2_label, pm_pixel_dist_label],
+                )
+
+                pm_calib_img.select(
+                    fn=mark_calibration_point,
+                    inputs=[pm_point1_state, pm_point2_state, pm_source_img_state],
+                    outputs=[pm_point1_state, pm_point2_state, pm_calib_img,
+                             pm_point1_label, pm_point2_label, pm_pixel_dist_label],
+                )
+
+                pm_calibrate_btn.click(
+                    fn=apply_calibration,
+                    inputs=[selected_paths, pm_point1_state, pm_point2_state,
+                            pm_real_dist, pm_pixels_per_mm],
+                    outputs=[pm_pixels_per_mm, pm_calib_status],
+                )
+
+                pm_run_btn.click(
+                    fn=run_pixel_mass_ui,
+                    inputs=[selected_paths, pm_pixels_per_mm, pm_overwrite],
+                    outputs=[pm_output_box, stop_btn],
+                )
+
             advanced_mode.change(
                 fn=toggle_advanced_mode,
                 inputs=[advanced_mode],
@@ -529,6 +614,7 @@ def app():
                     metadata_tab,
                     cluster_tab,
                     exif_tab,
+                    pixel_mass_tab,
                     process_tab,
                     main_tabs,
                 ],
@@ -663,7 +749,7 @@ def browse_yolo_model(current_path):
 def _check_pipeline_status(processed_mirror: str) -> dict:
     """Sample one JSON from *processed_mirror* and return booleans for each
     pipeline stage that has already been run on this collection."""
-    status = {"clustered": False, "identified": False, "metadata": False, "exif": False}
+    status = {"clustered": False, "identified": False, "metadata": False, "exif": False, "pixel_mass": False}
     if not os.path.isdir(processed_mirror):
         return status
 
@@ -705,6 +791,7 @@ def _check_pipeline_status(processed_mirror: str) -> dict:
         # detect.py writes identifier_bot="" (empty); identify.py sets it to the
         # version string, so a non-empty value means identification has been run.
         status["identified"] = any(s.get("identifier_bot", "") not in ("", None) for s in shapes)
+        status["pixel_mass"] = any("pixel_mass_pixels" in s for s in shapes)
 
     # Exif: check whether the first patch JPG in the mirror has GPS EXIF data.
     for root, _dirs, files in os.walk(processed_mirror):
@@ -823,6 +910,7 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
                 (ps["identified"],  "✓ ID"),
                 (ps["metadata"],    "✓ Meta"),
                 (ps["exif"],        "✓ Exif"),
+                (ps["pixel_mass"],  "✓ PixMass"),
             ]
             if flag
         )
@@ -915,16 +1003,145 @@ def go_to_id_tab():
 def go_to_cluster_tab():
     return gr.Tabs(selected="cluster")
 
+def load_image_for_calibration(selected_folders):
+    """Load the first source image from the selected collection for calibration."""
+    _RESET = ("–", "–", "–")
+    if not selected_folders:
+        return None, None, "No collection selected.", None, None, *_RESET
+    entry = selected_folders[0]
+    folder = entry["path"] if isinstance(entry, dict) else entry
+    images = find_images_recursive(folder)
+    if not images:
+        return None, None, "No source images found in collection.", None, None, *_RESET
+    from PIL import Image as PILImage
+    img = PILImage.open(images[0]).convert("RGB")
+    status = f"Loaded: {os.path.basename(images[0])}"
+    return img, img.copy(), status, None, None, *_RESET
+
+
+def mark_calibration_point(evt: gr.SelectData, p1, p2, orig_pil):
+    """Cycle through first-click → second-click → reset on the calibration image."""
+    import math
+    from PIL import ImageDraw, Image as PILImage
+
+    if orig_pil is None:
+        return p1, p2, None, "–", "–", "–"
+
+    x, y = int(evt.index[0]), int(evt.index[1])
+
+    if p1 is None:
+        new_p1, new_p2 = [x, y], None
+    elif p2 is None:
+        new_p1, new_p2 = p1, [x, y]
+    else:
+        new_p1, new_p2 = [x, y], None   # third click resets
+
+    annotated = orig_pil.copy()
+    draw = ImageDraw.Draw(annotated)
+    r = max(8, min(annotated.width, annotated.height) // 80)
+    lw = max(2, r // 3)
+
+    if new_p1:
+        px1, py1 = new_p1
+        draw.ellipse([px1 - r, py1 - r, px1 + r, py1 + r], fill="red", outline="white", width=lw)
+
+    px_dist_str = "–"
+    if new_p2:
+        px2, py2 = new_p2
+        draw.line([new_p1[0], new_p1[1], px2, py2], fill="yellow", width=lw)
+        draw.ellipse([px2 - r, py2 - r, px2 + r, py2 + r], fill="blue", outline="white", width=lw)
+        dist = math.sqrt((new_p1[0] - px2) ** 2 + (new_p1[1] - py2) ** 2)
+        px_dist_str = f"{dist:.1f} px"
+
+    p1_str = f"({new_p1[0]}, {new_p1[1]})" if new_p1 else "–"
+    p2_str = f"({new_p2[0]}, {new_p2[1]})" if new_p2 else "–"
+
+    return new_p1, new_p2, annotated, p1_str, p2_str, px_dist_str
+
+
+def apply_calibration(selected_folders, p1, p2, real_dist_mm, manual_ppm):
+    """Compute pixels_per_mm from the marked line (or use manual value) and save calibration.json."""
+    import math
+    from core.paths import get_processed_folder
+    from core.common import current_timestamp
+    from pipeline.pixel_mass import save_calibration
+
+    ppm = None
+    if p1 and p2 and real_dist_mm and real_dist_mm > 0:
+        px_dist = math.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
+        ppm = px_dist / real_dist_mm
+    elif manual_ppm and manual_ppm > 0:
+        ppm = float(manual_ppm)
+
+    if ppm is None:
+        return manual_ppm, "⚠️  Mark two points + enter distance, or type px/mm directly."
+
+    if not selected_folders:
+        return ppm, f"Computed {ppm:.4f} px/mm (no collection selected — not saved)"
+
+    saved = 0
+    for entry in selected_folders:
+        folder = entry["path"] if isinstance(entry, dict) else entry
+        dr = entry.get("dataset_root", folder) if isinstance(entry, dict) else folder
+        processed_folder = get_processed_folder(folder, dr)
+        save_calibration(processed_folder, {
+            "pixels_per_mm": ppm,
+            "point1": p1,
+            "point2": p2,
+            "real_distance_mm": real_dist_mm,
+            "calibration_date": current_timestamp(),
+        })
+        saved += 1
+
+    return ppm, f"✅ {ppm:.4f} px/mm saved to {saved} collection(s)"
+
+
+def run_pixel_mass_ui(selected_folders, pixels_per_mm, overwrite):
+    """Gradio generator that runs pixel_mass.run() for each selected collection."""
+    SHOW_STOP = gr.update(visible=True, value="Stop Current Run", interactive=True)
+    HIDE_STOP = gr.update(visible=False)
+
+    if not selected_folders:
+        yield "No image collections selected.\n", HIDE_STOP
+        return
+
+    output_log = ""
+    for entry in selected_folders:
+        folder = entry["path"] if isinstance(entry, dict) else entry
+        dataset_root = entry.get("dataset_root", folder) if isinstance(entry, dict) else folder
+
+        output_log += f"--- Pixel Mass for {folder} ---\n"
+        yield output_log, SHOW_STOP
+        try:
+            for chunk in run_in_thread(
+                Mothbot_PixelMass.run,
+                input_path=folder,
+                dataset_root=dataset_root,
+                pixels_per_mm=float(pixels_per_mm) if pixels_per_mm else None,
+                overwrite=bool(overwrite),
+            ):
+                output_log += chunk
+                yield output_log, SHOW_STOP
+            output_log += f"✅ Pixel Mass completed for {folder}\n"
+        except Exception as exc:
+            output_log += f"\n❌ Exception: {exc}\n"
+        yield output_log, SHOW_STOP
+
+    output_log += "\n--- Pixel Mass finished ---"
+    yield output_log, HIDE_STOP
+
+
 def toggle_advanced_mode(enabled):
     visible = bool(enabled)
     selected_tab = "setup"
     return (
-        gr.update(visible=visible),
-        gr.update(visible=visible),
-        gr.update(visible=visible),
-        gr.update(visible=visible),
-        gr.update(visible=visible),
-        gr.update(visible=not visible),
+        gr.update(visible=visible),      # detect_tab
+        gr.update(visible=visible),      # id_tab
+        gr.update(visible=visible),      # metadata_tab
+        gr.update(visible=visible),      # cluster_tab
+        gr.update(visible=visible),      # exif_tab
+        gr.update(visible=visible),      # pixel_mass_tab
+        gr.update(visible=not visible),  # process_tab (inverted — basic mode only)
         gr.Tabs(selected=selected_tab),
     )
 
@@ -1155,6 +1372,16 @@ def run_full_process(
             "Exif",
             Mothbot_InsertExif.run,
             lambda folder, dr: {"input_path": folder, "dataset_root": dr},
+        ),
+        (
+            "Pixel Mass",
+            Mothbot_PixelMass.run,
+            lambda folder, dr: {
+                "input_path": folder,
+                "dataset_root": dr,
+                "pixels_per_mm": None,   # reads calibration.json automatically
+                "overwrite": False,
+            },
         ),
     ]
 

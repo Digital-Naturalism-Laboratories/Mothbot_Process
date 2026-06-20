@@ -30,6 +30,7 @@ dependencies = [
     "tqdm==4.67.1",
     "typing-extensions",
     "tzdata==2025.2",
+    "rembg>=2.0.57",
     "ultralytics==8.3.175",
     "ultralytics-thop==2.0.15",
 ]

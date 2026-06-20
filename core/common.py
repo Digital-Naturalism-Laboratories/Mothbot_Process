@@ -287,6 +287,56 @@ class _OutputCapture(io.TextIOBase):
         pass
 
 
+# ---------------------------------------------------------------------------
+# Thread-local stdout routing
+#
+# Replacing sys.stdout globally (the old approach) is not thread-safe: a
+# second run_in_thread call overwrites the capture set by the first, causing
+# output from both threads to be mixed into whichever cap was set last.
+#
+# Instead we install a single proxy object once.  The proxy checks a
+# thread-local slot for a per-thread _OutputCapture; if one is set the write
+# goes there, otherwise it falls through to the real original stdout.  This
+# means each worker thread captures only its own prints with no interference.
+# ---------------------------------------------------------------------------
+
+_thread_local = threading.local()
+_real_stdout = sys.stdout   # saved before any replacement
+
+
+class _RoutingWriter(io.TextIOBase):
+    """sys.stdout proxy that routes writes to per-thread capture queues."""
+
+    def write(self, s: str) -> int:
+        cap = getattr(_thread_local, "capture", None)
+        if cap is not None:
+            return cap.write(s)
+        return _real_stdout.write(s)
+
+    def flush(self) -> None:
+        cap = getattr(_thread_local, "capture", None)
+        if cap is not None:
+            cap.flush()
+        else:
+            _real_stdout.flush()
+
+    def isatty(self) -> bool:
+        return getattr(_real_stdout, "isatty", lambda: False)()
+
+    @property
+    def encoding(self) -> str:
+        return getattr(_real_stdout, "encoding", "utf-8")
+
+    @property
+    def errors(self) -> str:
+        return getattr(_real_stdout, "errors", "replace")
+
+
+# Install once at import time; subsequent imports are no-ops.
+if not isinstance(sys.stdout, _RoutingWriter):
+    sys.stdout = _RoutingWriter()
+
+
 def _log_stream_chunk(logger, chunk):
     for line in chunk.splitlines():
         if line.strip():
@@ -321,14 +371,13 @@ def run_in_thread(fn, *args, **kwargs):
     should_log_to_logger = logger.hasHandlers()
 
     def _worker():
-        _orig = sys.stdout
-        sys.stdout = cap
+        _thread_local.capture = cap   # thread-local: no race with other workers
         try:
             fn(*args, **kwargs)
         except Exception as exc:
             error_holder[0] = exc
         finally:
-            sys.stdout = _orig
+            _thread_local.capture = None
             cap.q.put(None)  # sentinel
 
     t = threading.Thread(target=_worker, daemon=True)

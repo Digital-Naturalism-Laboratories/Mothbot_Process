@@ -1145,6 +1145,24 @@ def apply_calibration(selected_folders, p1, p2, real_dist_mm, manual_ppm, scale=
     return ppm, f"✅ {ppm:.4f} px/mm saved to {saved} collection(s)"
 
 
+def _nobg_preview(path: str):
+    """Composite a transparent _nobg.png onto a hot-pink/white checkerboard."""
+    from PIL import Image as PILImage
+    img = PILImage.open(path).convert("RGBA")
+    w, h = img.size
+    tile = 16
+    bg = PILImage.new("RGBA", (w, h))
+    c1 = (255, 20, 147, 255)   # deep pink
+    c2 = (255, 255, 255, 255)  # white
+    for y in range(0, h, tile):
+        for x in range(0, w, tile):
+            col = c1 if ((x // tile) + (y // tile)) % 2 == 0 else c2
+            bw, bh = min(tile, w - x), min(tile, h - y)
+            bg.paste(PILImage.new("RGBA", (bw, bh), col), (x, y))
+    bg.paste(img, mask=img)
+    return bg.convert("RGB")
+
+
 def run_pixel_mass_ui(selected_folders, pixels_per_mm, overwrite_nobg, overwrite_pixmass):
     """Gradio generator that runs pixel_mass.run() for each selected collection."""
     SHOW_STOP  = gr.update(visible=True, value="Stop Current Run", interactive=True)
@@ -1179,8 +1197,7 @@ def run_pixel_mass_ui(selected_folders, pixels_per_mm, overwrite_nobg, overwrite
                 preview_path = get_preview()
                 if preview_path:
                     try:
-                        from PIL import Image as PILImage
-                        preview_update = gr.update(value=PILImage.open(preview_path))
+                        preview_update = gr.update(value=_nobg_preview(preview_path))
                     except Exception:
                         preview_update = NO_PREVIEW
                 else:

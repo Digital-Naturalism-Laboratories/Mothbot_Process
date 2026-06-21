@@ -593,6 +593,16 @@ def app():
                     pm_overwrite_pixmass = gr.Checkbox(
                         label="Overwrite previous pixel mass", value=True
                     )
+                pm_model_dropdown = gr.Dropdown(
+                    label="Background removal model",
+                    choices=[
+                        ("birefnet-general — best quality, slowest", "birefnet-general"),
+                        ("birefnet-general-lite — good quality, faster", "birefnet-general-lite"),
+                        ("isnet-general-use — medium quality, faster", "isnet-general-use"),
+                        ("u2netp — lowest quality, fastest", "u2netp"),
+                    ],
+                    value="birefnet-general-lite",
+                )
                 pm_run_btn = gr.Button("Run Pixel Mass", variant="primary")
                 with gr.Row():
                     pm_output_box = gr.Textbox(
@@ -638,7 +648,7 @@ def app():
 
                 pm_run_btn.click(
                     fn=run_pixel_mass_ui,
-                    inputs=[selected_paths, pm_pixels_per_mm, pm_overwrite_nobg, pm_overwrite_pixmass],
+                    inputs=[selected_paths, pm_pixels_per_mm, pm_overwrite_nobg, pm_overwrite_pixmass, pm_model_dropdown],
                     outputs=[pm_output_box, stop_btn, pm_step1_accordion, pm_preview_img],
                 )
 
@@ -1163,7 +1173,7 @@ def _nobg_preview(path: str):
     return bg.convert("RGB")
 
 
-def run_pixel_mass_ui(selected_folders, pixels_per_mm, overwrite_nobg, overwrite_pixmass):
+def run_pixel_mass_ui(selected_folders, pixels_per_mm, overwrite_nobg, overwrite_pixmass, model_name="birefnet-general"):
     """Gradio generator that runs pixel_mass.run() for each selected collection."""
     SHOW_STOP  = gr.update(visible=True, value="Stop Current Run", interactive=True)
     HIDE_STOP  = gr.update(visible=False)
@@ -1192,6 +1202,7 @@ def run_pixel_mass_ui(selected_folders, pixels_per_mm, overwrite_nobg, overwrite
                 pixels_per_mm=float(pixels_per_mm) if pixels_per_mm else None,
                 overwrite_nobg=bool(overwrite_nobg),
                 overwrite_pixmass=bool(overwrite_pixmass),
+                model_name=model_name or "birefnet-general",
             ):
                 output_log += chunk
                 preview_path = get_preview()

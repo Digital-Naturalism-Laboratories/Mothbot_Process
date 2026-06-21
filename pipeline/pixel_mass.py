@@ -28,17 +28,38 @@ from core.paths import get_processed_folder, resolve_patch_path
 from core.preview import emit_preview, clear_preview
 
 _CALIB_FILENAME = "calibration.json"
+_ALPHA_THRESHOLD = 50  # pixels with alpha below this (0–255) are treated as background
 
 _rembg_session = None
+_rembg_model_name: str | None = None
 
 
-def _get_session():
-    global _rembg_session
-    if _rembg_session is None:
-        print("Loading BiRefNet background-removal model (first use — may download ~175 MB)...")
-        from rembg import new_session
-        _rembg_session = new_session("birefnet-general")
-        print("BiRefNet model ready.")
+def _get_session(model_name: str = "birefnet-general-lite"):
+    global _rembg_session, _rembg_model_name
+    if _rembg_session is not None and _rembg_model_name == model_name:
+        return _rembg_session
+
+    print(f"Loading {model_name} background-removal model (first use may download weights)...")
+    from rembg import new_session
+    import onnxruntime as _ort
+
+    available = _ort.get_available_providers()
+    if "CUDAExecutionProvider" in available:
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        print("  ⚡ CUDA acceleration active (NVIDIA GPU)")
+    elif "DmlExecutionProvider" in available:
+        providers = ["DmlExecutionProvider", "CPUExecutionProvider"]
+        print("  ⚡ DirectML acceleration active (Windows GPU)")
+    else:
+        providers = ["CPUExecutionProvider"]
+
+    try:
+        _rembg_session = new_session(model_name, providers=providers)
+    except TypeError:
+        _rembg_session = new_session(model_name)
+
+    _rembg_model_name = model_name
+    print(f"  {model_name} model ready.")
     return _rembg_session
 
 
@@ -84,17 +105,17 @@ def _nobg_path(patch_path: str) -> str:
     return str(p.parent / f"{p.stem}_nobg.png")
 
 
-def _remove_background(patch_path: str) -> Image.Image:
+def _remove_background(patch_path: str, model_name: str = "birefnet-general-lite") -> Image.Image:
     from rembg import remove as rembg_remove
     with Image.open(patch_path) as img:
         img_rgb = img.convert("RGB")
-    return rembg_remove(img_rgb, session=_get_session())
+    return rembg_remove(img_rgb, session=_get_session(model_name))
 
 
 def _count_foreground_pixels(nobg_path: str) -> int:
     with Image.open(nobg_path) as img:
         arr = np.asarray(img.convert("RGBA"))
-    return int(np.sum(arr[:, :, 3] > 0))
+    return int(np.sum(arr[:, :, 3] >= _ALPHA_THRESHOLD))
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +128,7 @@ def run(
     pixels_per_mm: float | None = None,
     overwrite_nobg: bool = False,
     overwrite_pixmass: bool = True,
+    model_name: str = "birefnet-general-lite",
 ) -> None:
     """Calculate pixel mass for all patches in *input_path*.
 
@@ -181,7 +203,7 @@ def run(
 
     # ── Phase 1: Background Removal ───────────────────────────────────────────
     clear_preview()
-    _get_session()   # load model upfront so ETA reflects only inference time
+    _get_session(model_name)   # load model upfront so ETA reflects only inference time
 
     to_process = [p for p in all_patches if overwrite_nobg or not os.path.isfile(_nobg_path(p))]
     total_bg = len(to_process)
@@ -199,7 +221,7 @@ def run(
     for patch_abs in to_process:
         nobg = _nobg_path(patch_abs)
         try:
-            rgba = _remove_background(patch_abs)
+            rgba = _remove_background(patch_abs, model_name=model_name)
             rgba.save(nobg)
             emit_preview(nobg)
             bg_done += 1

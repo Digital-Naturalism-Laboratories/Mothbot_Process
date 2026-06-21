@@ -22,7 +22,7 @@ import tomllib
 import gradio as gr
 
 from core.common import run_in_thread, request_cancel, find_images_recursive
-from core.preview import get_preview, clear_preview
+from core.preview import get_preview, clear_preview, emit_preview
 from ui.tray import start_tray
 from ui.single_instance import ensure_single_instance
 from ui.path_picker import browse_path, browse_path_with_status
@@ -135,6 +135,23 @@ APP_META_LABEL = f"v{_get_app_version()} | {_get_platform_label()}"
 def app():
     with gr.Blocks(
         title="Mothbot",
+        js="""
+        function() {
+            // Tag the Pixel Mass tab button with a data attribute so CSS can color
+            // it without relying on nth-child counts (which shift when tabs are
+            // shown/hidden).  Re-run on DOM mutations so it survives Gradio re-renders.
+            function tagPixelMassTab() {
+                var tabs = document.querySelectorAll('#mothbot-tabs button');
+                tabs.forEach(function(btn) {
+                    if (btn.textContent.trim() === 'Pixel Mass') {
+                        btn.setAttribute('data-tab', 'pixel-mass');
+                    }
+                });
+            }
+            tagPixelMassTab();
+            new MutationObserver(tagPixelMassTab).observe(document.body, { childList: true, subtree: true });
+        }
+        """,
         css="""
             /* Setup - neutral white */
             button.svelte-1tcem6n:nth-child(1).selected {
@@ -183,6 +200,15 @@ def app():
             button.svelte-1tcem6n:nth-child(7):not(.selected) {
                 border-bottom: 3px solid #44ff44 !important;
             }
+            /* Pixel Mass tab - orange. Targeted by data attribute set via JS below
+               so the color is immune to nth-child counting shifts. */
+            #mothbot-tabs button[data-tab="pixel-mass"]:not(.selected) {
+                border-bottom: 3px solid #ff8c00 !important;
+            }
+            #mothbot-tabs button[data-tab="pixel-mass"].selected {
+                background-color: #ff8c00 !important;
+                color: #ffffff !important;
+            }
             #app-meta-row {
                 justify-content: flex-end;
                 margin-top: 10px;
@@ -222,7 +248,7 @@ def app():
                 quit_yes_btn = gr.Button("Yes, quit", variant="stop",     size="sm", scale=0, min_width=120)
                 quit_no_btn  = gr.Button("Cancel",    variant="secondary", size="sm", scale=0, min_width=100)
 
-        with gr.Tabs(selected="setup") as main_tabs:
+        with gr.Tabs(selected="setup", elem_id="mothbot-tabs") as main_tabs:
             # ~~~~~~~~~~~~ Setup TAB ~~~~~~~~~~~~~~~~~~~~~~
             with gr.Tab("Setup", id="setup"):
                 advanced_mode = gr.Checkbox(
@@ -529,35 +555,35 @@ def app():
                 pm_point2_state     = gr.State(None)   # [x, y] of second click (thumbnail space)
                 pm_scale_state      = gr.State(1.0)    # thumbnail / original ratio (for px/mm conversion)
 
-                gr.Markdown("### Step 1: Set Scale Calibration")
-                gr.Markdown(
-                    "Click two points on a ruler or known object in the source image below. "
-                    "Enter the real-world distance and click **Apply Calibration**. "
-                    "Or type a known **pixels per mm** value directly and apply."
-                )
-                with gr.Row():
-                    pm_calib_img = gr.Image(
-                        label="Source image — click two points to mark a known distance",
-                        interactive=False,
-                        scale=2,
+                with gr.Accordion("Step 1: Set Scale Calibration", open=True) as pm_step1_accordion:
+                    gr.Markdown(
+                        "Click two points on a ruler or known object in the source image below. "
+                        "Enter the real-world distance and click **Apply Calibration**. "
+                        "Or type a known **pixels per mm** value directly and apply."
                     )
-                    with gr.Column(scale=1):
-                        pm_load_img_btn = gr.Button("Load Different Image", size="sm")
-                        pm_point1_label = gr.Textbox(
-                            label="Point 1", value="–", interactive=False, lines=1, max_lines=1
+                    with gr.Row():
+                        pm_calib_img = gr.Image(
+                            label="Source image — click two points to mark a known distance",
+                            interactive=False,
+                            scale=2,
                         )
-                        pm_point2_label = gr.Textbox(
-                            label="Point 2", value="–", interactive=False, lines=1, max_lines=1
-                        )
-                        pm_pixel_dist_label = gr.Textbox(
-                            label="Pixel distance", value="–", interactive=False, lines=1, max_lines=1
-                        )
-                        pm_real_dist = gr.Number(label="Real-world distance (mm)", value=10.0, minimum=0.001)
-                        pm_pixels_per_mm = gr.Number(label="Pixels per mm (auto-computed or enter manually)")
-                        pm_calibrate_btn = gr.Button("Apply Calibration", variant="primary")
-                        pm_calib_status = gr.Textbox(
-                            label="Calibration status", value="", interactive=False, lines=1, max_lines=1
-                        )
+                        with gr.Column(scale=1):
+                            pm_load_img_btn = gr.Button("Load Different Image", size="sm")
+                            pm_point1_label = gr.Textbox(
+                                label="Point 1", value="–", interactive=False, lines=1, max_lines=1
+                            )
+                            pm_point2_label = gr.Textbox(
+                                label="Point 2", value="–", interactive=False, lines=1, max_lines=1
+                            )
+                            pm_pixel_dist_label = gr.Textbox(
+                                label="Pixel distance", value="–", interactive=False, lines=1, max_lines=1
+                            )
+                            pm_real_dist = gr.Number(label="Real-world distance (mm)", value=10.0, minimum=0.001)
+                            pm_pixels_per_mm = gr.Number(label="Pixels per mm (auto-computed or enter manually)")
+                            pm_calibrate_btn = gr.Button("Apply Calibration", variant="primary")
+                            pm_calib_status = gr.Textbox(
+                                label="Calibration status", value="", interactive=False, lines=1, max_lines=1
+                            )
 
                 gr.Markdown("### Step 2: Calculate Pixel Mass")
                 with gr.Row():
@@ -568,9 +594,13 @@ def app():
                         label="Overwrite previous pixel mass", value=True
                     )
                 pm_run_btn = gr.Button("Run Pixel Mass", variant="primary")
-                pm_output_box = gr.Textbox(
-                    label="Pixel Mass Output", lines=15, interactive=False
-                )
+                with gr.Row():
+                    pm_output_box = gr.Textbox(
+                        label="Pixel Mass Output", lines=15, interactive=False, scale=2
+                    )
+                    pm_preview_img = gr.Image(
+                        label="Latest patch (bg removed)", interactive=False, scale=1
+                    )
 
                 # ── Calibration event handlers ──────────────────────────────
                 # Auto-load source image when this tab is opened.
@@ -609,7 +639,7 @@ def app():
                 pm_run_btn.click(
                     fn=run_pixel_mass_ui,
                     inputs=[selected_paths, pm_pixels_per_mm, pm_overwrite_nobg, pm_overwrite_pixmass],
-                    outputs=[pm_output_box, stop_btn],
+                    outputs=[pm_output_box, stop_btn, pm_step1_accordion, pm_preview_img],
                 )
 
             advanced_mode.change(
@@ -1117,20 +1147,25 @@ def apply_calibration(selected_folders, p1, p2, real_dist_mm, manual_ppm, scale=
 
 def run_pixel_mass_ui(selected_folders, pixels_per_mm, overwrite_nobg, overwrite_pixmass):
     """Gradio generator that runs pixel_mass.run() for each selected collection."""
-    SHOW_STOP = gr.update(visible=True, value="Stop Current Run", interactive=True)
-    HIDE_STOP = gr.update(visible=False)
+    SHOW_STOP  = gr.update(visible=True, value="Stop Current Run", interactive=True)
+    HIDE_STOP  = gr.update(visible=False)
+    COLLAPSE   = gr.update(open=False)
+    EXPAND     = gr.update(open=True)
+    NO_PREVIEW = gr.update()
 
     if not selected_folders:
-        yield "No image collections selected.\n", HIDE_STOP
+        yield "No image collections selected.\n", HIDE_STOP, EXPAND, NO_PREVIEW
         return
 
     output_log = ""
+    yield output_log, SHOW_STOP, COLLAPSE, NO_PREVIEW   # collapse Step 1 at start
+
     for entry in selected_folders:
         folder = entry["path"] if isinstance(entry, dict) else entry
         dataset_root = entry.get("dataset_root", folder) if isinstance(entry, dict) else folder
 
         output_log += f"--- Pixel Mass for {folder} ---\n"
-        yield output_log, SHOW_STOP
+        yield output_log, SHOW_STOP, COLLAPSE, NO_PREVIEW
         try:
             for chunk in run_in_thread(
                 Mothbot_PixelMass.run,
@@ -1141,14 +1176,23 @@ def run_pixel_mass_ui(selected_folders, pixels_per_mm, overwrite_nobg, overwrite
                 overwrite_pixmass=bool(overwrite_pixmass),
             ):
                 output_log += chunk
-                yield output_log, SHOW_STOP
+                preview_path = get_preview()
+                if preview_path:
+                    try:
+                        from PIL import Image as PILImage
+                        preview_update = gr.update(value=PILImage.open(preview_path))
+                    except Exception:
+                        preview_update = NO_PREVIEW
+                else:
+                    preview_update = NO_PREVIEW
+                yield output_log, SHOW_STOP, COLLAPSE, preview_update
             output_log += f"✅ Pixel Mass completed for {folder}\n"
         except Exception as exc:
             output_log += f"\n❌ Exception: {exc}\n"
-        yield output_log, SHOW_STOP
+        yield output_log, SHOW_STOP, COLLAPSE, NO_PREVIEW
 
     output_log += "\n--- Pixel Mass finished ---"
-    yield output_log, HIDE_STOP
+    yield output_log, HIDE_STOP, EXPAND, NO_PREVIEW   # re-expand Step 1 when done
 
 
 def toggle_advanced_mode(enabled):
@@ -1392,16 +1436,6 @@ def run_full_process(
             "Exif",
             Mothbot_InsertExif.run,
             lambda folder, dr: {"input_path": folder, "dataset_root": dr},
-        ),
-        (
-            "Pixel Mass",
-            Mothbot_PixelMass.run,
-            lambda folder, dr: {
-                "input_path": folder,
-                "dataset_root": dr,
-                "pixels_per_mm": None,   # reads calibration.json automatically
-                "overwrite": False,
-            },
         ),
     ]
 

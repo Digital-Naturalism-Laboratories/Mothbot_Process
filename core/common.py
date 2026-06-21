@@ -361,6 +361,9 @@ def clear_cancel():
 def run_in_thread(fn, *args, **kwargs):
     """Run *fn* in a background thread and yield captured stdout chunks.
 
+    On macOS, holds a ``caffeinate -s`` process for the duration so that
+    screen-lock / idle power management cannot suspend the run mid-flight.
+
     Cancellation: call request_cancel() to stop at the next yield boundary.
     The background thread finishes its current atomic op then winds down.
     """
@@ -383,28 +386,42 @@ def run_in_thread(fn, *args, **kwargs):
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
 
-    while True:
-        if _cancel_event.is_set():
-            yield "\n⛔ Run cancelled by user.\n"
-            try:
-                while True:
-                    cap.q.get_nowait()
-            except queue.Empty:
-                pass
-            t.join(timeout=5)
-            clear_cancel()
-            return
-
+    # Prevent macOS from suspending CPU-heavy background work when the screen locks.
+    _caffeinate = None
+    if sys.platform == "darwin":
         try:
-            chunk = cap.q.get(timeout=0.2)
-        except queue.Empty:
-            continue
-        if chunk is None:
-            break
-        if should_log_to_logger:
-            _log_stream_chunk(logger, chunk)
-        yield chunk
+            import subprocess as _sp
+            _caffeinate = _sp.Popen(["caffeinate", "-s"])
+        except Exception:
+            pass  # non-fatal if caffeinate is somehow unavailable
 
-    t.join(timeout=10)
-    if error_holder[0]:
-        raise error_holder[0]
+    try:
+        while True:
+            if _cancel_event.is_set():
+                yield "\n⛔ Run cancelled by user.\n"
+                try:
+                    while True:
+                        cap.q.get_nowait()
+                except queue.Empty:
+                    pass
+                t.join(timeout=5)
+                clear_cancel()
+                return
+
+            try:
+                chunk = cap.q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if chunk is None:
+                break
+            if should_log_to_logger:
+                _log_stream_chunk(logger, chunk)
+            yield chunk
+
+        t.join(timeout=10)
+        if error_holder[0]:
+            raise error_holder[0]
+    finally:
+        if _caffeinate is not None:
+            _caffeinate.terminate()
+            _caffeinate.wait(timeout=3)

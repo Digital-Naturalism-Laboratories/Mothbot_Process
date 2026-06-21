@@ -25,6 +25,7 @@ from PIL import Image
 
 from core.common import find_detection_matches_processed, current_timestamp
 from core.paths import get_processed_folder, resolve_patch_path
+from core.preview import emit_preview, clear_preview
 
 _CALIB_FILENAME = "calibration.json"
 
@@ -179,6 +180,7 @@ def run(
         return
 
     # ── Phase 1: Background Removal ───────────────────────────────────────────
+    clear_preview()
     _get_session()   # load model upfront so ETA reflects only inference time
 
     to_process = [p for p in all_patches if overwrite_nobg or not os.path.isfile(_nobg_path(p))]
@@ -199,6 +201,7 @@ def run(
         try:
             rgba = _remove_background(patch_abs)
             rgba.save(nobg)
+            emit_preview(nobg)
             bg_done += 1
             elapsed = time.monotonic() - t_start
             avg = elapsed / bg_done

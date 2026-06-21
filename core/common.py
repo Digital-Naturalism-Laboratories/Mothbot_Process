@@ -391,7 +391,7 @@ def run_in_thread(fn, *args, **kwargs):
     if sys.platform == "darwin":
         try:
             import subprocess as _sp
-            _caffeinate = _sp.Popen(["caffeinate", "-s"])
+            _caffeinate = _sp.Popen(["caffeinate", "-dis"])
         except Exception:
             pass  # non-fatal if caffeinate is somehow unavailable
 

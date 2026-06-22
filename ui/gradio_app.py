@@ -33,6 +33,7 @@ from pipeline import detect as Mothbot_Detect
 from pipeline import identify as Mothbot_ID
 from pipeline import insert_exif as Mothbot_InsertExif
 from pipeline import insert_metadata as Mothbot_InsertMetadata
+from pipeline import legacy_converter as Mothbot_LegacyConverter
 from pipeline import pixel_mass as Mothbot_PixelMass
 
 TAXA_COLS = ["kingdom", "phylum", "class", "order", "family", "genus", "species"]
@@ -315,40 +316,9 @@ def app():
                                 metadata_browse_btn = gr.Button("Browse", size="sm")
 
 
-                deployment_browse_btn.click(
-                    fn=browse_deployment_folder,
-                    inputs=[deployment_path],
-                    outputs=[deployment_path, picker_error_state],
-                ).then(
-                    fn=scan_deployment_folder,
-                    inputs=[deployment_path, picker_error_state],
-                    outputs=[
-                        status,
-                        folder_choices,
-                        mapping_state,
-                        toggle_label_state,
-                        continue_process_btn,
-                        selected_paths,
-                        toggle_all_btn,
-                        external_keys_state,
-                        dataset_root_state,
-                    ],
-                )
-                deployment_path.change(
-                    fn=scan_deployment_folder_on_change,
-                    inputs=[deployment_path],
-                    outputs=[
-                        status,
-                        folder_choices,
-                        mapping_state,
-                        toggle_label_state,
-                        continue_process_btn,
-                        selected_paths,
-                        toggle_all_btn,
-                        external_keys_state,
-                        dataset_root_state,
-                    ],
-                )
+                # NOTE: deployment_browse_btn.click and deployment_path.change are
+                # wired after all tabs are defined (see below) because they reference
+                # legacy_converter_tab which is defined later in the tab list.
                 metadata_browse_btn.click(
                     fn=browse_metadata_csv,
                     inputs=[metadata_csv_file],
@@ -652,6 +622,46 @@ def app():
                     outputs=[pm_output_box, stop_btn, pm_step1_accordion, pm_preview_img],
                 )
 
+            # ~~~~~~~~~~~~ Legacy Converter Tab ~~~~~~~~~~~~~~~~~~~~~~
+            with gr.Tab("Legacy Converter", id="legacy_converter", visible=False) as legacy_converter_tab:
+                gr.Markdown(
+                    "**Convert legacy-format datasets** to the current `_processed/` layout.\n\n"
+                    "Old Mothbot versions stored patches in a `patches/` subfolder and wrote "
+                    "`_botdetection.json` files next to source images. "
+                    "This tool moves those outputs into the `_processed/` mirror tree so the "
+                    "dataset works with current Mothbot Process and Mothbot Classify."
+                )
+                lc_scan_btn = gr.Button("Scan for Legacy Collections", variant="secondary")
+                lc_folder_choices = gr.CheckboxGroup(
+                    label="Legacy collections found (select which to convert)",
+                    choices=[],
+                    value=[],
+                    visible=False,
+                )
+                lc_delete_originals = gr.Checkbox(
+                    label="Delete original files after converting (⚠️ irreversible — back up first)",
+                    value=False,
+                )
+                with gr.Row():
+                    lc_run_btn = gr.Button("Convert Selected", variant="primary", interactive=False)
+                lc_output_box = gr.Textbox(label="Conversion Output", lines=20, interactive=False)
+
+                lc_scan_btn.click(
+                    fn=scan_legacy_collections_ui,
+                    inputs=[dataset_root_state],
+                    outputs=[lc_folder_choices, lc_run_btn, lc_output_box],
+                )
+                lc_folder_choices.change(
+                    fn=lambda v: gr.update(interactive=bool(v)),
+                    inputs=[lc_folder_choices],
+                    outputs=[lc_run_btn],
+                )
+                lc_run_btn.click(
+                    fn=run_legacy_converter_ui,
+                    inputs=[lc_folder_choices, dataset_root_state, lc_delete_originals],
+                    outputs=[lc_output_box, stop_btn],
+                )
+
             advanced_mode.change(
                 fn=toggle_advanced_mode,
                 inputs=[advanced_mode],
@@ -693,6 +703,34 @@ def app():
             return gr.update(value="⛔ Stopping…", interactive=False)
 
         stop_btn.click(fn=do_cancel, inputs=[], outputs=[stop_btn])
+
+        # ── Deployment folder scan (wired here so legacy_converter_tab is in scope) ──
+        _scan_outputs = [
+            status,
+            folder_choices,
+            mapping_state,
+            toggle_label_state,
+            continue_process_btn,
+            selected_paths,
+            toggle_all_btn,
+            external_keys_state,
+            dataset_root_state,
+            legacy_converter_tab,
+        ]
+        deployment_browse_btn.click(
+            fn=browse_deployment_folder,
+            inputs=[deployment_path],
+            outputs=[deployment_path, picker_error_state],
+        ).then(
+            fn=scan_deployment_folder,
+            inputs=[deployment_path, picker_error_state],
+            outputs=_scan_outputs,
+        )
+        deployment_path.change(
+            fn=scan_deployment_folder_on_change,
+            inputs=[deployment_path],
+            outputs=_scan_outputs,
+        )
 
         # ── Cross-tab two-way sync (wired after all tabs so all components exist) ──
         # Setup ↔ Detect: Detection Model Path
@@ -879,6 +917,7 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
         gr.update(visible=False),
         set(),
         "",  # dataset_root_state
+        gr.update(visible=False),  # legacy_converter_tab
     )
 
     if picker_error_message:
@@ -965,7 +1004,8 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
         if is_external:
             label = f"⚡ {label_prefix}  {counts}  [ext]"
         else:
-            label = f"{label_prefix}  {counts}"
+            legacy_flag = "⚠️ legacy  " if Mothbot_LegacyConverter.is_legacy_collection(p) else ""
+            label = f"{legacy_flag}{label_prefix}  {counts}"
         if pipeline_tags:
             label += f"  |  {pipeline_tags}"
 
@@ -990,10 +1030,16 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
         display = f"_processed/{rel_from_processed}"
         _make_entry(p, processed_root, display, is_external=True)
 
+    any_legacy = any(
+        Mothbot_LegacyConverter.is_legacy_collection(mapping[v])
+        for v in mapping
+        if v not in external_keys
+    )
     status = (
         f"Selected folder: {folder_path}\n"
         f"Found {len(raw_matches)} raw collection(s)"
         + (f" + {len(external_matches)} externally-processed collection(s)." if external_matches else ".")
+        + ("\n⚠️  Legacy-format collections detected — see the Legacy Converter tab." if any_legacy else "")
     )
     return (
         gr.update(value="", visible=False),
@@ -1005,6 +1051,7 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
         gr.update(visible=True),
         external_keys,
         folder_path,  # dataset_root_state
+        gr.update(visible=any_legacy),  # legacy_converter_tab
     )
 
 
@@ -1171,6 +1218,71 @@ def _nobg_preview(path: str):
             bg.paste(PILImage.new("RGBA", (bw, bh), col), (x, y))
     bg.paste(img, mask=img)
     return bg.convert("RGB")
+
+
+def scan_legacy_collections_ui(dataset_root):
+    """Scan *dataset_root* for legacy-format collections and populate the checkbox group."""
+    if not dataset_root or not os.path.isdir(dataset_root):
+        return (
+            gr.update(choices=[], value=[], visible=False),
+            gr.update(interactive=False),
+            "No dataset folder selected. Pick a folder in the Setup tab first.\n",
+        )
+
+    results = Mothbot_LegacyConverter.scan_dataset_for_legacy(dataset_root)
+    if not results:
+        return (
+            gr.update(choices=[], value=[], visible=False),
+            gr.update(interactive=False),
+            "✅ No legacy-format collections found — this dataset is already up to date.\n",
+        )
+
+    choices = []
+    for info in results:
+        label = (
+            f"{info['rel_path']}  "
+            f"({info['json_count']} JSON, {info['patch_count']} patches)"
+        )
+        choices.append((label, info["source_folder"]))
+
+    return (
+        gr.update(choices=choices, value=[c[1] for c in choices], visible=True),
+        gr.update(interactive=True),
+        f"Found {len(results)} legacy collection(s). Select which to convert and click Convert Selected.\n",
+    )
+
+
+def run_legacy_converter_ui(selected_folders, dataset_root, delete_originals):
+    """Gradio generator that converts selected legacy collections."""
+    SHOW_STOP = gr.update(visible=True, value="Stop Current Run", interactive=True)
+    HIDE_STOP = gr.update(visible=False)
+
+    if not selected_folders:
+        yield "No collections selected.\n", HIDE_STOP
+        return
+
+    if not dataset_root or not os.path.isdir(dataset_root):
+        yield "Dataset root not set — pick a folder in the Setup tab first.\n", HIDE_STOP
+        return
+
+    output_log = ""
+    yield output_log, SHOW_STOP
+
+    for folder in selected_folders:
+        output_log += f"\n=== Converting: {folder} ===\n"
+        yield output_log, SHOW_STOP
+        try:
+            for line in Mothbot_LegacyConverter.convert_collection(
+                folder, dataset_root, delete_originals=bool(delete_originals)
+            ):
+                output_log += line
+                yield output_log, SHOW_STOP
+        except Exception as exc:
+            output_log += f"❌ Exception: {exc}\n"
+            yield output_log, SHOW_STOP
+
+    output_log += "\n--- Conversion finished ---\n"
+    yield output_log, HIDE_STOP
 
 
 def run_pixel_mass_ui(selected_folders, pixels_per_mm, overwrite_nobg, overwrite_pixmass, model_name="birefnet-general"):

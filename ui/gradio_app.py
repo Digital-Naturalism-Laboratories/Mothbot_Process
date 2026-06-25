@@ -269,9 +269,13 @@ def app():
                             placeholder="/path/to/your/deployment/folder",
                             interactive=True,
                         )
-                        deployment_browse_btn = gr.Button(
-                            "Pick a Datasets Folder", size="sm", variant="primary"
-                        )
+                        with gr.Row():
+                            deployment_browse_btn = gr.Button(
+                                "Pick a Datasets Folder", size="sm", variant="primary", scale=3,
+                            )
+                            refresh_btn = gr.Button(
+                                "↻ Refresh", size="sm", variant="secondary", scale=1, min_width=100,
+                            )
                         with gr.Group():
                             status = gr.Textbox(
                                 label="Error", lines=3, interactive=False, visible=False
@@ -629,9 +633,10 @@ def app():
                     "Old Mothbot versions stored patches in a `patches/` subfolder and wrote "
                     "`_botdetection.json` files next to source images. "
                     "This tool moves those outputs into the `_processed/` mirror tree so the "
-                    "dataset works with current Mothbot Process and Mothbot Classify."
+                    "dataset works with current Mothbot Process and Mothbot Classify.\n\n"
+                    "Legacy collections are detected automatically when you scan a folder in the "
+                    "**Setup** tab. Use **↻ Refresh** there to re-scan after making changes."
                 )
-                lc_scan_btn = gr.Button("Scan for Legacy Collections", variant="secondary")
                 lc_folder_choices = gr.CheckboxGroup(
                     label="Legacy collections found (select which to convert)",
                     choices=[],
@@ -646,11 +651,6 @@ def app():
                     lc_run_btn = gr.Button("Convert Selected", variant="primary", interactive=False)
                 lc_output_box = gr.Textbox(label="Conversion Output", lines=20, interactive=False)
 
-                lc_scan_btn.click(
-                    fn=scan_legacy_collections_ui,
-                    inputs=[dataset_root_state],
-                    outputs=[lc_folder_choices, lc_run_btn, lc_output_box],
-                )
                 lc_folder_choices.change(
                     fn=lambda v: gr.update(interactive=bool(v)),
                     inputs=[lc_folder_choices],
@@ -716,6 +716,8 @@ def app():
             external_keys_state,
             dataset_root_state,
             legacy_converter_tab,
+            lc_folder_choices,
+            lc_run_btn,
         ]
         deployment_browse_btn.click(
             fn=browse_deployment_folder,
@@ -727,6 +729,11 @@ def app():
             outputs=_scan_outputs,
         )
         deployment_path.change(
+            fn=scan_deployment_folder_on_change,
+            inputs=[deployment_path],
+            outputs=_scan_outputs,
+        )
+        refresh_btn.click(
             fn=scan_deployment_folder_on_change,
             inputs=[deployment_path],
             outputs=_scan_outputs,
@@ -918,6 +925,8 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
         set(),
         "",  # dataset_root_state
         gr.update(visible=False),  # legacy_converter_tab
+        gr.update(choices=[], value=[], visible=False),  # lc_folder_choices
+        gr.update(interactive=False),  # lc_run_btn
     )
 
     if picker_error_message:
@@ -961,6 +970,7 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
     mapping = {}
     external_keys = set()
     seen_values = set()
+    lc_choices = []
 
     def _make_entry(p, folder_root, label_prefix, is_external):
         try:
@@ -1003,8 +1013,10 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
 
         if is_external:
             label = f"⚡ {label_prefix}  {counts}  [ext]"
+            is_legacy = False
         else:
-            legacy_flag = "⚠️ legacy  " if Mothbot_LegacyConverter.is_legacy_collection(p) else ""
+            is_legacy = Mothbot_LegacyConverter.is_legacy_collection(p)
+            legacy_flag = "⚠️ legacy  " if is_legacy else ""
             label = f"{legacy_flag}{label_prefix}  {counts}"
         if pipeline_tags:
             label += f"  |  {pipeline_tags}"
@@ -1013,6 +1025,14 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
         mapping[value] = os.path.abspath(p)
         if is_external:
             external_keys.add(value)
+        elif is_legacy:
+            patches_dir_lc = os.path.join(p, "patches")
+            json_count_lc = len(glob.glob(os.path.join(glob.escape(p), "*_botdetection.json")))
+            patch_count_lc = _count_matching_files(patches_dir_lc, ("*.jpg", "*.jpeg")) if os.path.isdir(patches_dir_lc) else 0
+            lc_choices.append((
+                f"{rel}  ({json_count_lc} JSON, {patch_count_lc} patches)",
+                os.path.abspath(p),
+            ))
 
     for p in raw_matches:
         try:
@@ -1030,11 +1050,7 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
         display = f"_processed/{rel_from_processed}"
         _make_entry(p, processed_root, display, is_external=True)
 
-    any_legacy = any(
-        Mothbot_LegacyConverter.is_legacy_collection(mapping[v])
-        for v in mapping
-        if v not in external_keys
-    )
+    any_legacy = bool(lc_choices)
     status = (
         f"Selected folder: {folder_path}\n"
         f"Found {len(raw_matches)} raw collection(s)"
@@ -1052,6 +1068,8 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
         external_keys,
         folder_path,  # dataset_root_state
         gr.update(visible=any_legacy),  # legacy_converter_tab
+        gr.update(choices=lc_choices, value=[c[1] for c in lc_choices], visible=any_legacy),  # lc_folder_choices
+        gr.update(interactive=any_legacy),  # lc_run_btn
     )
 
 

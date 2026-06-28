@@ -16,7 +16,11 @@ import queue
 import re
 import sys
 import threading
+import time
 from datetime import datetime
+
+# Sentinel yielded by run_in_thread on each tick when tick_interval is set.
+TICK = object()
 
 # ---------------------------------------------------------------------------
 # Folder / file discovery
@@ -358,8 +362,12 @@ def clear_cancel():
     _cancel_event.clear()
 
 
-def run_in_thread(fn, *args, **kwargs):
+def run_in_thread(fn, *args, tick_interval: float | None = None, **kwargs):
     """Run *fn* in a background thread and yield captured stdout chunks.
+
+    If *tick_interval* is set (seconds), yields the TICK sentinel at that
+    cadence whenever the worker produces no output — useful for driving
+    periodic UI updates (e.g. a preview slideshow) between text chunks.
 
     On macOS, holds a ``caffeinate -s`` process for the duration so that
     screen-lock / idle power management cannot suspend the run mid-flight.
@@ -395,6 +403,9 @@ def run_in_thread(fn, *args, **kwargs):
         except Exception:
             pass  # non-fatal if caffeinate is somehow unavailable
 
+    poll = 0.05 if tick_interval else 0.2
+    last_tick = time.monotonic()
+
     try:
         while True:
             if _cancel_event.is_set():
@@ -409,8 +420,13 @@ def run_in_thread(fn, *args, **kwargs):
                 return
 
             try:
-                chunk = cap.q.get(timeout=0.2)
+                chunk = cap.q.get(timeout=poll)
             except queue.Empty:
+                if tick_interval is not None:
+                    now = time.monotonic()
+                    if now - last_tick >= tick_interval:
+                        last_tick = now
+                        yield TICK
                 continue
             if chunk is None:
                 break

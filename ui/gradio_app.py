@@ -21,7 +21,7 @@ from pathlib import Path
 import tomllib
 import gradio as gr
 
-from core.common import run_in_thread, request_cancel, find_images_recursive
+from core.common import run_in_thread, request_cancel, find_images_recursive, TICK
 from core.preview import get_preview, clear_preview, emit_preview
 from ui.tray import start_tray
 from ui.single_instance import ensure_single_instance
@@ -365,7 +365,7 @@ def app():
                         label="Process Output", lines=20, interactive=False, scale=2
                     )
                     process_preview_img = gr.Image(
-                        label="Live Detection Preview (every 10th image)",
+                        label="Live Detection Preview",
                         visible=False,
                         scale=1,
                         show_download_button=False,
@@ -392,7 +392,7 @@ def app():
                 with gr.Row():
                     DET_output_box = gr.Textbox(label="Detection Output", lines=20, scale=2)
                     DET_preview_img = gr.Image(
-                        label="Live Detection Preview (every 10th image)",
+                        label="Live Detection Preview",
                         visible=False,
                         scale=1,
                         show_download_button=False,
@@ -1385,19 +1385,17 @@ def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bo
     external_keys = external_keys or set()
     output_log = ""
     had_error = False
-    current_preview = None
+    from PIL import Image as PILImage
 
-    def _preview_update():
-        nonlocal current_preview
-        path = get_preview()
-        if path:
-            current_preview = path
-            try:
-                from PIL import Image as PILImage
-                return gr.update(value=PILImage.open(path), visible=True)
-            except Exception:
-                return NO_IMG
-        return NO_IMG
+    # Slideshow state: cycle through patches from the last completed source image.
+    slide_patches: list[str] = []
+    slide_idx = 0
+
+    def _open_slide(idx: int):
+        try:
+            return gr.update(value=PILImage.open(slide_patches[idx]), visible=True)
+        except Exception:
+            return NO_IMG
 
     for entry in selected_folders:
         folder       = entry["path"]                     if isinstance(entry, dict) else entry
@@ -1420,9 +1418,28 @@ def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bo
                 imgsz=int(imsz),
                 overwrite_prev_bot_detections=bool(overwrite_bot),
                 dataset_root=dataset_root,
+                tick_interval=0.3,
             ):
-                output_log += chunk
-                yield output_log, gr.update(interactive=False), SHOW_STOP, _preview_update()
+                if chunk is TICK:
+                    # Advance slideshow while the next source image is being processed.
+                    if slide_patches:
+                        slide_idx = (slide_idx + 1) % len(slide_patches)
+                        yield output_log, gr.update(interactive=False), SHOW_STOP, _open_slide(slide_idx)
+                else:
+                    output_log += chunk
+                    # Collect patches emitted for the just-finished source image.
+                    new_patches: list[str] = []
+                    while True:
+                        p = get_preview()
+                        if p is None:
+                            break
+                        new_patches.append(p)
+                    if new_patches:
+                        slide_patches = new_patches
+                        slide_idx = 0
+                    yield output_log, gr.update(interactive=False), SHOW_STOP, (
+                        _open_slide(slide_idx) if slide_patches else NO_IMG
+                    )
             output_log += f"✅ Detection completed for {folder}\n"
         except Exception as exc:
             had_error = True

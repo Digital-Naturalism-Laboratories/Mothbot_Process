@@ -315,7 +315,6 @@ def process_image_list(img_files, dataset_root=None):
     print(f"\nRunning YOLO on {len(pending)} image(s) in batches of up to {BATCH_SIZE}...")
 
     # ── Phase 2: batch inference ──────────────────────────────────────────────
-    preview_counter = 0  # counts images processed; emit preview every 10th
     images_done = 0
     total_pending = len(pending)
     infer_start = time.monotonic()
@@ -357,15 +356,15 @@ def process_image_list(img_files, dataset_root=None):
             avg = elapsed / images_done
             eta_secs = avg * (total_pending - images_done)
             eta_str = _format_eta(eta_secs) if images_done < total_pending else "done"
+            # Emit previews before printing so they're queued when Gradio yields on the print.
+            if GEN_THUMBNAILS and shapes:
+                for shape in shapes:
+                    patch_path = shape.get("patch_path", "")
+                    if patch_path:
+                        emit_preview(str(patch_folder_path / os.path.basename(patch_path)))
+
             print(f"  ✓ {filename}: {len(shapes)} detection(s) — "
                   f"{images_done}/{total_pending} images — ETA {eta_str}")
-
-            # Live preview: emit first patch of every 10th processed image.
-            preview_counter += 1
-            if GEN_THUMBNAILS and shapes and preview_counter % 10 == 0:
-                first_patch = shapes[0].get("patch_path", "")
-                if first_patch:
-                    emit_preview(str(patch_folder_path / os.path.basename(first_patch)))
 
 
 def process_jpg_files(img_files, date_folder):

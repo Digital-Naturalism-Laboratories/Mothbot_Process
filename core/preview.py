@@ -8,19 +8,12 @@ calls get_preview() at each yield boundary to update the image component.
 
 import queue
 
-_q: queue.Queue = queue.Queue(maxsize=1)
+_q: queue.Queue = queue.Queue()
 
 
 def emit_preview(path: str) -> None:
-    """Push a preview image path. Replaces any unseen previous value."""
-    try:
-        _q.put_nowait(path)
-    except queue.Full:
-        try:
-            _q.get_nowait()
-        except queue.Empty:
-            pass
-        _q.put_nowait(path)
+    """Push a preview image path onto the queue."""
+    _q.put_nowait(path)
 
 
 def get_preview() -> str | None:

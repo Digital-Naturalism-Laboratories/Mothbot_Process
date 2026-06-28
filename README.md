@@ -7,8 +7,24 @@ python -m ui.gradio_app
 `mothbot-detect` is a Gradio-based desktop workflow for moth image processing.
 
 
+# Detection Models (trained yolo)
 
-Main pipeline steps:
+Interim Model: Mothbot Detect v0.1 (MBD_0-1.pt)
+- June 28, 2026
+- Yolo 26 obb M
+- trained on 7000 insects
+- imgsz: 1600
+- Insects from Panama, Mexico, Croatia, Germany, Poland, Hawaii, North Carolina, Netherlands, indonesia, Canada, Seattle, 
+
+Original Model:  yolo11m_4500_imgsz1600_b1_2024-01-18.pt
+- 2025-01-18
+- yolo 11 OBB M
+- trained on 4500
+- imgsz: 1600
+- Mostly from Panama
+
+
+# Main pipeline steps:
 
 - detection (`pipeline/detect.py`)
 - identification (`pipeline/identify.py`)

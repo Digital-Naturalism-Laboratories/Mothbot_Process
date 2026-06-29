@@ -394,6 +394,16 @@ def update_json_labels_and_scores(json_path, index, pred, conf, winningdict):
     if 0 <= index < len(data["shapes"]):
         shape = data["shapes"][index]
 
+        # Archive previous bot ID if it was from a different model or species list.
+        old_identifier = shape.get("identifier_bot", "")
+        old_doi = shape.get("species_list", "")
+        if old_identifier and (old_identifier != VERSION or old_doi != DOI):
+            BOT_ID_FIELDS = ["identifier_bot", "species_list", "timestamp_ID_bot",
+                             "confidence_ID", "label",
+                             "kingdom", "phylum", "class", "order", "family", "genus", "species"]
+            snapshot = {k: shape[k] for k in BOT_ID_FIELDS if k in shape}
+            shape.setdefault("bot_id_history", []).append(snapshot)
+
         shape["identifier_bot"] = VERSION
         shape["species_list"] = DOI
         shape["timestamp_ID_bot"] = current_timestamp()

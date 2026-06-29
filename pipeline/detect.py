@@ -43,6 +43,7 @@ DEVICE = "cpu"
 GEN_BOT_DET_EVENIF_HUMAN_EXISTS = True
 OVERWRITE_PREV_BOT_DETECTIONS = True
 GEN_THUMBNAILS = True
+DELETE_OLD_MODEL_PATCHES = False  # When True, deletes patch images from the old model when switching models
 DATASET_ROOT = None  # Set by run(); when None, outputs go next to source images (legacy)
 
 
@@ -133,6 +134,32 @@ def _resolve_output_paths(image_path, filename_stem, source_folder):
 
 
 BATCH_SIZE = 8
+
+
+def _delete_model_patches(json_data: dict, patch_folder_path) -> int:
+    """Delete patch image files referenced by json_data. Returns number of files deleted."""
+    deleted = 0
+    for shape in json_data.get("shapes", []):
+        patch_path = shape.get("patch_path", "")
+        if not patch_path:
+            continue
+        patch_filename = os.path.basename(patch_path)
+        full_path = os.path.join(str(patch_folder_path), patch_filename)
+        if os.path.isfile(full_path):
+            os.remove(full_path)
+            deleted += 1
+    return deleted
+
+
+def _model_archive_path(bot_json_path: str, model_name: str) -> str:
+    """Return the deterministic archive path for a given model's botdetection JSON.
+
+    Strips the .pt extension from model_name to avoid double extensions like .pt.json.
+    Example: img_botdetection.json + "Mothbot_yolo11m_v1.pt" → img_botdetection_Mothbot_yolo11m_v1.json
+    """
+    slug = model_name.removesuffix(".pt").replace(" ", "_")
+    stem = bot_json_path[: -len("_botdetection.json")]
+    return f"{stem}_botdetection_{slug}.json"
 
 
 def _format_eta(seconds: float) -> str:
@@ -303,6 +330,32 @@ def process_image_list(img_files, dataset_root=None):
                             json.dump(json_data, f, indent=4)
                     print("skipping previously generated detection files that were able to be opened")
                     continue
+
+                # Overwrite is enabled — check if the existing JSON was made with a different model.
+                old_version = json_data.get("version", "")
+                if old_version and old_version != model_name:
+                    current_model_archive = _model_archive_path(bot_json_path, model_name)
+                    old_model_archive = _model_archive_path(bot_json_path, old_version)
+                    if os.path.isfile(current_model_archive):
+                        # We've run this model before — restore it instead of re-inferring.
+                        os.rename(bot_json_path, old_model_archive)
+                        os.rename(current_model_archive, bot_json_path)
+                        print(f"Restored archived detections for {model_name} (archived current → {os.path.basename(old_model_archive)})")
+                        if GEN_THUMBNAILS:
+                            with open(bot_json_path, "r") as f:
+                                restored_data = json.load(f)
+                            restored_data = generateThumbnailPatches_JSON(image_path, restored_data, patch_folder_path)
+                            with open(bot_json_path, "w") as f:
+                                json.dump(restored_data, f, indent=4)
+                        continue  # skip YOLO inference
+                    else:
+                        # Genuinely new model — archive the old run and proceed to inference.
+                        if DELETE_OLD_MODEL_PATCHES:
+                            n = _delete_model_patches(json_data, patch_folder_path)
+                            print(f"Deleted {n} patch file(s) from old model ({old_version})")
+                        os.rename(bot_json_path, old_model_archive)
+                        print(f"Archived old detections ({old_version}) → {os.path.basename(old_model_archive)}")
+
             except json.JSONDecodeError:
                 print(f"error with {filename}: Corrupted JSON file.")
 
@@ -409,6 +462,7 @@ def run(
     overwrite_prev_bot_detections=True,
     gen_bot_det_evenif_human_exists=True,
     gen_thumbnails=True,
+    delete_old_model_patches=False,
     dataset_root=None,
 ):
     """Main entry point for detection.  Called directly by the UI or via CLI.
@@ -428,7 +482,8 @@ def run(
         the chosen folder).
     """
     global YOLO_MODEL, IMGSZ, DEVICE, GEN_THUMBNAILS
-    global GEN_BOT_DET_EVENIF_HUMAN_EXISTS, OVERWRITE_PREV_BOT_DETECTIONS, DATASET_ROOT
+    global GEN_BOT_DET_EVENIF_HUMAN_EXISTS, OVERWRITE_PREV_BOT_DETECTIONS
+    global DELETE_OLD_MODEL_PATCHES, DATASET_ROOT
 
     YOLO_MODEL = yolo_model or DEFAULT_YOLO_MODEL
     IMGSZ = int(imgsz)
@@ -436,6 +491,7 @@ def run(
     GEN_THUMBNAILS = gen_thumbnails
     GEN_BOT_DET_EVENIF_HUMAN_EXISTS = gen_bot_det_evenif_human_exists
     OVERWRITE_PREV_BOT_DETECTIONS = overwrite_prev_bot_detections
+    DELETE_OLD_MODEL_PATCHES = delete_old_model_patches
     DATASET_ROOT = dataset_root or input_path
 
     print("Starting Mothbot Detection Script")

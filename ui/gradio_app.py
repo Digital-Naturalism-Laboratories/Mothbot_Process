@@ -388,6 +388,10 @@ def app():
                         value=True,
                         label="Overwrite any previous Bot Detections (Create new detection files)",
                     )
+                    DELETE_OLD_MODEL_PATCHES = gr.Checkbox(
+                        value=False,
+                        label="Delete old detection patches if using new model",
+                    )
                 DET_run_btn = gr.Button("Run Detection", variant="primary")
                 with gr.Row():
                     DET_output_box = gr.Textbox(label="Detection Output", lines=20, scale=2)
@@ -409,6 +413,7 @@ def app():
                         yolo_model_path,
                         imgsz,
                         OVERWRITE_PREV_BOT_DETECTIONS,
+                        DELETE_OLD_MODEL_PATCHES,
                         external_keys_state,
                     ],
                     outputs=[DET_output_box, continue_cluster_btn, stop_btn, DET_preview_img],
@@ -687,6 +692,7 @@ def app():
                     yolo_model_path,
                     imgsz,
                     OVERWRITE_PREV_BOT_DETECTIONS,
+                    DELETE_OLD_MODEL_PATCHES,
                     species_path,
                     taxa_output,
                     ID_HUMANDETECTIONS,
@@ -1372,7 +1378,7 @@ def get_index(selected_word):
     return TAXA_COLS.index(selected_word)
 
 
-def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bot, external_keys=None):
+def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bot, delete_old_patches=False, external_keys=None):
     SHOW_STOP = gr.update(visible=True, value="Stop Current Run", interactive=True)
     HIDE_STOP = gr.update(visible=False)
     NO_IMG = gr.update()  # no-op update for the preview image
@@ -1417,6 +1423,7 @@ def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bo
                 yolo_model=yolo_model,
                 imgsz=int(imsz),
                 overwrite_prev_bot_detections=bool(overwrite_bot),
+                delete_old_model_patches=bool(delete_old_patches),
                 dataset_root=dataset_root,
                 tick_interval=0.3,
             ):
@@ -1551,12 +1558,13 @@ def run_full_process(
     yolo_model,
     imsz,
     overwrite_bot_detections,
-    species_list,
-    chosenrank,
-    id_hum,
-    id_bot,
-    overwrite_bot_ids,
-    metadata_csv,
+    delete_old_patches=False,
+    species_list=None,
+    chosenrank=None,
+    id_hum=None,
+    id_bot=None,
+    overwrite_bot_ids=False,
+    metadata_csv=None,
     external_keys=None,
 ):
     SHOW_STOP = gr.update(visible=True, value="Stop Current Run", interactive=True)
@@ -1577,6 +1585,7 @@ def run_full_process(
                 "yolo_model": yolo_model,
                 "imgsz": int(imsz),
                 "overwrite_prev_bot_detections": bool(overwrite_bot_detections),
+                "delete_old_model_patches": bool(delete_old_patches),
                 "dataset_root": dr,
             },
         ),

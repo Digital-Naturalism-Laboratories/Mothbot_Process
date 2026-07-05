@@ -10,10 +10,11 @@ import PIL.Image
 from pathlib import Path
 import argparse
 from PIL import Image  # For image format verification
-from pipeline.thumbnails import generateThumbnailPatches, generateThumbnailPatches_JSON
+from pipeline.thumbnails import generateThumbnailPatches_JSON
 import torch
 import time
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 from core.preview import emit_preview
 from core.common import (
@@ -51,16 +52,69 @@ DATASET_ROOT = None  # Set by run(); when None, outputs go next to source images
 
 
 def load_yolo_model(model_path):
-    """Load YOLO model with a PyTorch 2.6 compatibility fallback."""
+    """Load a YOLO model from a .pt or .onnx file.
+
+    .onnx models run through ONNX Runtime, which is 2-4x faster than PyTorch
+    on CPU with no other changes required. Just point the model path at the
+    .onnx file — imgsz is read from the model itself and IMGSZ is updated.
+
+    .pt models use the standard PyTorch path with a weights_only compatibility
+    fallback for PyTorch 2.6+.
+    """
     resolved_model_path = str(Path(model_path).expanduser().resolve())
     if not Path(resolved_model_path).is_file():
         raise FileNotFoundError(
-            "YOLO model file not found at "
-            f"{resolved_model_path}. "
-            "Pick a valid local .pt file in Setup > YOLO Model Path. "
+            f"YOLO model file not found at {resolved_model_path}. "
+            "Pick a valid local .pt or .onnx file in Setup > YOLO Model Path. "
             "Mothbot does not auto-download model weights during detection."
         )
 
+    if resolved_model_path.lower().endswith(".onnx"):
+        return _load_onnx_model(resolved_model_path)
+
+    return _load_pt_model(resolved_model_path)
+
+
+def _load_onnx_model(resolved_model_path):
+    """Load an ONNX model directly via ONNX Runtime (bypasses ultralytics predict).
+
+    Why bypass ultralytics? When ultralytics loads an ONNX model it must detect
+    the task type (obb vs detect) from embedded metadata. If that metadata is
+    absent or misread, it applies the wrong output decoder and produces 0
+    detections — even though the model is perfectly healthy in other tools
+    (e.g. x-anylabeling). Running ONNX Runtime directly avoids this entirely.
+
+    The session and input metadata are stored in module globals so the inference
+    helpers (_letterbox_image, _infer_onnx_single) can use them without passing
+    extra arguments through every call site.
+    """
+    import onnxruntime as ort
+    global _EFFECTIVE_BATCH_SIZE, _IS_ONNX_MODEL
+    global _onnx_session, _onnx_input_name, _onnx_imgsz, _onnx_task
+
+    session = ort.InferenceSession(resolved_model_path, providers=["CPUExecutionProvider"])
+
+    inp = session.get_inputs()[0]
+    _onnx_input_name = inp.name
+    shape = inp.shape  # [batch, channels, H, W]
+    _onnx_imgsz = (int(shape[2]), int(shape[3]))
+
+    meta = session.get_modelmeta().custom_metadata_map
+    _onnx_task = meta.get("task", "obb")  # default obb; correct for this project
+
+    _onnx_session = session
+    _IS_ONNX_MODEL = True
+    _EFFECTIVE_BATCH_SIZE = 1
+
+    print(f"  ℹ️  ONNX model (task={_onnx_task}, imgsz={_onnx_imgsz}) — "
+          f"running via ONNX Runtime directly (UI imgsz setting ignored).")
+    print(f"  ℹ️  Batch size forced to 1 for ONNX.")
+    print(f"  ✓ Loaded ONNX model (ONNX Runtime — faster CPU inference)")
+    return None  # ONNX path does not use the YOLO wrapper
+
+
+def _load_pt_model(resolved_model_path):
+    """Load a PyTorch .pt model with a weights_only compatibility fallback."""
     try:
         return YOLO(resolved_model_path)
     except Exception as err:
@@ -102,6 +156,146 @@ def load_yolo_model(model_path):
                 )
 
 
+# ── ONNX Runtime inference helpers ───────────────────────────────────────────
+
+
+def _letterbox_image(img, target_hw):
+    """Resize + pad BGR image to (H, W) with grey fill.
+
+    Returns (rgb_padded, scale, (pad_left, pad_top)) so the caller can map
+    detection coordinates back to the original image.
+    """
+    h, w = img.shape[:2]
+    th, tw = target_hw
+    scale = min(th / h, tw / w)
+    nh, nw = int(round(h * scale)), int(round(w * scale))
+    pad_top = (th - nh) // 2
+    pad_left = (tw - nw) // 2
+    resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    canvas = np.full((th, tw, 3), 114, dtype=np.uint8)
+    canvas[pad_top:pad_top + nh, pad_left:pad_left + nw] = resized
+    return cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB), scale, (pad_left, pad_top)
+
+
+def _write_bot_json_data(orig_img, shapes, image_path, bot_json_path, model_name):
+    """Write the bot-detection JSON for one image."""
+    height, width = orig_img.shape[:2]
+    data = {
+        "version": model_name,
+        "flags": {},
+        "imagePath": image_path,
+        "imageHeight": height,
+        "imageWidth": width,
+        "description": "",
+        "imageData": None,
+        "shapes": shapes,
+    }
+    with open(bot_json_path, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def _infer_onnx_single(image_path, bot_json_path, model_name, conf_thresh=0.25, iou_thresh=0.7):
+    """Run ONNX Runtime on one image, write the detection JSON, return (shapes, orig_img).
+
+    Replicates the preprocessing / postprocessing that ultralytics would do,
+    but without relying on ultralytics' task-type detection (which can silently
+    pick the wrong output decoder for OBB models and produce 0 detections).
+
+    Angle unit: ultralytics OBB ONNX exports store angles in radians.
+    cv2.boxPoints expects degrees, so we convert.
+    """
+    orig_img = cv2.imread(image_path)
+    if orig_img is None:
+        return [], None
+
+    img_rgb, scale, (pad_left, pad_top) = _letterbox_image(orig_img, _onnx_imgsz)
+
+    # NCHW float32, normalised 0–1
+    x = img_rgb.transpose(2, 0, 1).astype(np.float32) / 255.0
+    x = np.expand_dims(x, 0)
+
+    raw = _onnx_session.run(None, {_onnx_input_name: x})[0]  # [1, feats, anchors]
+    pred = raw[0].T  # [anchors, feats]
+
+    is_obb = (_onnx_task == "obb")
+    cx_all = pred[:, 0]
+    cy_all = pred[:, 1]
+    w_all  = pred[:, 2]
+    h_all  = pred[:, 3]
+    if is_obb:
+        angle_all   = pred[:, 4]   # radians
+        class_scores = pred[:, 5:]
+    else:
+        angle_all   = np.zeros(len(pred), dtype=np.float32)
+        class_scores = pred[:, 4:]
+
+    confs = class_scores.max(axis=1)
+    keep = confs >= conf_thresh
+    if not keep.any():
+        _write_bot_json_data(orig_img, [], image_path, bot_json_path, model_name)
+        return [], orig_img
+
+    cx_all    = cx_all[keep]
+    cy_all    = cy_all[keep]
+    w_all     = w_all[keep]
+    h_all     = h_all[keep]
+    angle_all = angle_all[keep]
+    confs     = confs[keep]
+
+    # NMS uses top-left x,y,w,h format
+    nms_rects = [
+        [float(cx_all[i] - w_all[i] / 2), float(cy_all[i] - h_all[i] / 2),
+         float(w_all[i]), float(h_all[i])]
+        for i in range(len(cx_all))
+    ]
+    indices = cv2.dnn.NMSBoxes(nms_rects, confs.tolist(), conf_thresh, iou_thresh)
+    if len(indices) == 0:
+        _write_bot_json_data(orig_img, [], image_path, bot_json_path, model_name)
+        return [], orig_img
+
+    indices = np.array(indices).flatten()
+
+    filename = os.path.basename(image_path)
+    stem, _, ext = filename.rpartition(".")
+    shapes = []
+
+    for det_idx, i in enumerate(indices):
+        # Undo letterbox to get coords in original image pixels
+        ox = (float(cx_all[i]) - pad_left) / scale
+        oy = (float(cy_all[i]) - pad_top)  / scale
+        ow = float(w_all[i])  / scale
+        oh = float(h_all[i])  / scale
+        angle_deg = float(np.degrees(float(angle_all[i])))
+        conf = float(confs[i])
+
+        pts = cv2.boxPoints(((ox, oy), (ow, oh), angle_deg))
+        points = pts.tolist()
+        patch_filename = f"{stem}_{det_idx}_{model_name}.{ext}" if GEN_THUMBNAILS else ""
+
+        shapes.append({
+            "kie_linking": [],
+            "direction": angle_deg,
+            "label": "creature",
+            "score": conf,
+            "group_id": None,
+            "description": "",
+            "difficult": "false",
+            "shape_type": "rotation",
+            "flags": {},
+            "attributes": {},
+            "points": points,
+            "patch_path": patch_filename,
+            "confidence_detection": conf,
+            "identifier_bot": "",
+            "identifier_human": "",
+            "timestamp_detection": current_timestamp(),
+            "detector_bot": str(model_name),
+        })
+
+    _write_bot_json_data(orig_img, shapes, image_path, bot_json_path, model_name)
+    return shapes, orig_img
+
+
 def is_valid_image(image_path):
     """Checks if an image file is valid using Pillow."""
     try:
@@ -134,6 +328,18 @@ def _resolve_output_paths(image_path, filename_stem, source_folder):
 
 
 BATCH_SIZE = 8
+# Set to 1 automatically when an ONNX model is loaded (ONNX models are typically
+# exported with a fixed batch size of 1 and reject larger batches).
+_EFFECTIVE_BATCH_SIZE = BATCH_SIZE
+# True when the loaded model is ONNX — inference bypasses ultralytics predict()
+# and runs ONNX Runtime directly (avoids task-type misdetection and wrong decoders).
+_IS_ONNX_MODEL = False
+
+# ONNX Runtime session and metadata (set by _load_onnx_model).
+_onnx_session = None
+_onnx_input_name = "images"
+_onnx_imgsz = (640, 640)   # (H, W) read from model input shape
+_onnx_task = "obb"         # read from model metadata; defaults to 'obb'
 
 
 def _delete_model_patches(json_data: dict, patch_folder_path) -> int:
@@ -174,39 +380,102 @@ def _format_eta(seconds: float) -> str:
     return f"{s}s"
 
 
-def _save_result(result, image_path, bot_json_path, patch_folder_path, model_name):
-    """Extract OBBs from one YOLO result, save patches, and write the JSON.
+def _crop_obb_fast(img, points):
+    """Crop an OBB detection using only the local image region.
 
-    Returns the list of shape dicts (may be empty if no detections).
+    Rotating the full 1600px image for every detection is very slow.
+    This extracts a small padded ROI around the bounding box first,
+    rotates only that region, then crops the patch — roughly 100x less work.
+    """
+    pts = np.array(points, dtype=np.float32).reshape(-1, 2)
+    rect = cv2.minAreaRect(pts)
+    center, size, angle = rect
+    w, h = max(1, int(size[0])), max(1, int(size[1]))
+
+    # Padding large enough to avoid clipping after rotation
+    pad = int(max(w, h) * 0.6) + 4
+    ih, iw = img.shape[:2]
+    x1 = max(0, int(center[0]) - w // 2 - pad)
+    y1 = max(0, int(center[1]) - h // 2 - pad)
+    x2 = min(iw, int(center[0]) + w // 2 + pad)
+    y2 = min(ih, int(center[1]) + h // 2 + pad)
+
+    roi = img[y1:y2, x1:x2]
+    local_center = (center[0] - x1, center[1] - y1)
+    rh, rw = roi.shape[:2]
+    M = cv2.getRotationMatrix2D(local_center, angle, 1)
+    roi_rot = cv2.warpAffine(roi, M, (rw, rh), flags=cv2.INTER_LINEAR)
+    patch = cv2.getRectSubPix(roi_rot, (w, h), local_center)
+    return patch
+
+
+def _write_patches_for_image(orig_img, shapes, patch_folder_path):
+    """Extract and write patch images for all detections in one photo.
+
+    Designed to run in a worker thread while the main thread runs the next
+    YOLO batch. Returns list of written paths for preview emission.
+    """
+    written = []
+    patch_folder_path = Path(patch_folder_path)
+    for shape in shapes:
+        patch_filename = shape.get("patch_path", "")
+        if not patch_filename:
+            continue
+        try:
+            patch = _crop_obb_fast(orig_img, shape["points"])
+            if patch is not None and patch.size > 0:
+                out_path = patch_folder_path / patch_filename
+                cv2.imwrite(str(out_path), patch)
+                written.append(str(out_path))
+        except Exception as e:
+            print(f"  ⚠️  patch crop failed for {patch_filename}: {e}")
+    return written
+
+
+# Number of worker threads for concurrent patch writing.
+# IO-bound work — 4 threads is a good default for SSD + CPU crop.
+PATCH_WORKERS = min(4, os.cpu_count() or 2)
+
+
+def _save_result(result, image_path, bot_json_path, model_name):
+    """Extract OBBs, write the detection JSON, and return shape data.
+
+    Patch images are NOT written here — the caller submits
+    _write_patches_for_image() to a thread pool so patch IO overlaps
+    with the next YOLO batch. Patch filenames are pre-computed and stored
+    in the JSON so the file is immediately complete and readable.
+
+    Returns (shapes, orig_img).
     """
     shapes = []
-    if result.obb is None:
-        pass
-    else:
+    orig_img = result.orig_img
+
+    if result.obb is not None:
+        filename = os.path.basename(image_path)
+        stem, _, ext = filename.rpartition(".")
+
         for det_idx, obb in enumerate(result.obb.xyxyxyxy):
-            points = obb.cpu().numpy().reshape((-1, 1, 2)).astype(int)
-            rect = cv2.minAreaRect(points)
+            pts = obb.cpu().numpy().reshape(-1, 2)
+            rect = cv2.minAreaRect(pts.astype(np.float32))
             confidence = result.obb.conf[det_idx].item()
+            _, _, angle = rect
 
-            print("rect: {}".format(rect) + "   conf: " + str(confidence))
-
-            center, size, angle = rect[0], rect[1], rect[2]
-            pts = obb.cpu().numpy().reshape((-1, 1, 2)).astype(float)
-            pts = pts.tolist()
-            pts = [item for sublist in pts for item in sublist]
-
-            thepatchpath = ""
-            if GEN_THUMBNAILS:
-                thepatchpath = generateThumbnailPatches(
-                    result.orig_img, image_path, rect, det_idx, model_name,
-                    patch_folder=str(patch_folder_path),
-                )
+            points = pts.tolist()
+            patch_filename = f"{stem}_{det_idx}_{model_name}.{ext}" if GEN_THUMBNAILS else ""
 
             shapes.append({
-                "points": pts,
+                "kie_linking": [],
                 "direction": angle,
+                "label": "creature",
                 "score": float(confidence),
-                "patch_path": thepatchpath,
+                "group_id": None,
+                "description": "",
+                "difficult": "false",
+                "shape_type": "rotation",
+                "flags": {},
+                "attributes": {},
+                "points": points,
+                "patch_path": patch_filename,
                 "confidence_detection": confidence,
                 "identifier_bot": "",
                 "identifier_human": "",
@@ -214,9 +483,7 @@ def _save_result(result, image_path, bot_json_path, patch_folder_path, model_nam
                 "detector_bot": str(model_name),
             })
 
-    # Use orig_img shape for width/height — avoids a redundant PIL disk read.
-    height, width = result.orig_img.shape[:2]
-
+    height, width = orig_img.shape[:2]
     data = {
         "version": model_name,
         "flags": {},
@@ -225,33 +492,12 @@ def _save_result(result, image_path, bot_json_path, patch_folder_path, model_nam
         "imageWidth": width,
         "description": "",
         "imageData": None,
-        "shapes": [
-            {
-                "kie_linking": [],
-                "direction": s["direction"],
-                "label": "creature",
-                "score": s["score"],
-                "group_id": None,
-                "description": "",
-                "difficult": "false",
-                "shape_type": "rotation",
-                "flags": {},
-                "attributes": {},
-                "points": s["points"],
-                "patch_path": s["patch_path"],
-                "confidence_detection": s["confidence_detection"],
-                "identifier_bot": s["identifier_bot"],
-                "identifier_human": s["identifier_human"],
-                "timestamp_detection": s["timestamp_detection"],
-                "detector_bot": s["detector_bot"],
-            }
-            for s in shapes
-        ],
+        "shapes": shapes,
     }
     with open(bot_json_path, "w") as f:
-        json.dump(data, f, indent=4)
+        json.dump(data, f, indent=2)
 
-    return shapes
+    return shapes, orig_img
 
 
 def process_image_list(img_files, dataset_root=None):
@@ -268,6 +514,9 @@ def process_image_list(img_files, dataset_root=None):
     global DATASET_ROOT
     DATASET_ROOT = dataset_root
 
+    global _EFFECTIVE_BATCH_SIZE, _IS_ONNX_MODEL
+    _EFFECTIVE_BATCH_SIZE = BATCH_SIZE  # reset; _load_onnx_model may lower this to 1
+    _IS_ONNX_MODEL = False              # reset; _load_onnx_model may set this to True
     model = load_yolo_model(YOLO_MODEL)
     model_name = "Mothbot_" + os.path.basename(YOLO_MODEL)
 
@@ -365,59 +614,128 @@ def process_image_list(img_files, dataset_root=None):
         print("No images need YOLO inference.")
         return
 
-    print(f"\nRunning YOLO on {len(pending)} image(s) in batches of up to {BATCH_SIZE}...")
+    print(f"\nRunning YOLO on {len(pending)} image(s) in batches of up to {_EFFECTIVE_BATCH_SIZE}...")
+    print(f"Patch writing: {PATCH_WORKERS} worker thread(s) (runs concurrently with inference)")
 
-    # ── Phase 2: batch inference ──────────────────────────────────────────────
+    # ── Phase 2: batch inference + concurrent patch writing ───────────────────
+    # Strategy: YOLO inference runs on the main thread. After each batch, JSON
+    # files are written immediately (fast). Patch image extraction/IO is
+    # submitted to a thread pool so it overlaps with the next YOLO batch rather
+    # than blocking it.
     images_done = 0
     total_pending = len(pending)
     infer_start = time.monotonic()
+    patch_futures = []  # (future, patch_folder_path, filename)
 
-    for batch_start in range(0, len(pending), BATCH_SIZE):
-        batch = pending[batch_start: batch_start + BATCH_SIZE]
-        batch_paths = [item[0] for item in batch]
+    with ThreadPoolExecutor(max_workers=PATCH_WORKERS) as executor:
+        for batch_start in range(0, len(pending), _EFFECTIVE_BATCH_SIZE):
+            batch = pending[batch_start: batch_start + _EFFECTIVE_BATCH_SIZE]
+            batch_paths = [item[0] for item in batch]
 
-        print(f"  Batch {batch_start // BATCH_SIZE + 1}: predicting {len(batch)} image(s)...")
-        try:
-            batch_results = model.predict(
-                source=batch_paths, imgsz=IMGSZ, device=DEVICE, verbose=False
-            )
-        except Exception as e:
-            print(f"⚠️  Batch failed ({e}), retrying one image at a time.")
-            batch_results = []
-            for image_path, _, _ in batch:
+            print(f"  Batch {batch_start // _EFFECTIVE_BATCH_SIZE + 1}: predicting {len(batch)} image(s)...")
+
+            # Collect (image_path, bot_json_path, patch_folder_path, shapes, orig_img)
+            # shapes=None means the image failed; skip patch writing for that entry.
+            batch_outcomes = []
+
+            if _IS_ONNX_MODEL:
+                # Direct ONNX Runtime path — batch is always 1 for ONNX models.
+                image_path, bot_json_path, patch_folder_path = batch[0]
                 try:
-                    res = model.predict(source=image_path, imgsz=IMGSZ, device=DEVICE, verbose=False)
-                    batch_results.append(res[0])
-                except Exception as e2:
-                    print(f"❌ Skipping {os.path.basename(image_path)}: {e2}")
-                    batch_results.append(None)
+                    shapes, orig_img = _infer_onnx_single(
+                        image_path, bot_json_path, model_name
+                    )
+                    batch_outcomes.append(
+                        (image_path, bot_json_path, patch_folder_path, shapes, orig_img)
+                    )
+                except Exception as e:
+                    print(f"❌ Skipping {os.path.basename(image_path)}: {e}")
+                    batch_outcomes.append(
+                        (image_path, bot_json_path, patch_folder_path, None, None)
+                    )
+            else:
+                # ultralytics predict path (PT models).
+                _pkw = {"source": batch_paths, "device": DEVICE, "verbose": False, "imgsz": IMGSZ}
+                try:
+                    batch_results = model.predict(**_pkw)
+                except Exception as e:
+                    print(f"⚠️  Batch failed ({e}), retrying one image at a time.")
+                    batch_results = []
+                    for img_path, _, _ in batch:
+                        try:
+                            res = model.predict(**{**_pkw, "source": img_path})
+                            batch_results.append(res[0])
+                        except Exception as e2:
+                            print(f"❌ Skipping {os.path.basename(img_path)}: {e2}")
+                            batch_results.append(None)
 
-        for result, (image_path, bot_json_path, patch_folder_path) in zip(batch_results, batch):
-            if result is None:
+                for result, (image_path, bot_json_path, patch_folder_path) in zip(batch_results, batch):
+                    if result is None:
+                        batch_outcomes.append(
+                            (image_path, bot_json_path, patch_folder_path, None, None)
+                        )
+                        continue
+                    try:
+                        shapes, orig_img = _save_result(
+                            result, image_path, bot_json_path, model_name
+                        )
+                        batch_outcomes.append(
+                            (image_path, bot_json_path, patch_folder_path, shapes, orig_img)
+                        )
+                    except Exception as e:
+                        print(f"❌ Error saving results for {os.path.basename(image_path)}: {e}")
+                        batch_outcomes.append(
+                            (image_path, bot_json_path, patch_folder_path, None, None)
+                        )
+
+            # Shared: schedule patch writing and emit progress for this batch.
+            for image_path, bot_json_path, patch_folder_path, shapes, orig_img in batch_outcomes:
+                filename = os.path.basename(image_path)
+                if shapes is None:
+                    images_done += 1
+                    continue
+
+                if GEN_THUMBNAILS and shapes:
+                    future = executor.submit(
+                        _write_patches_for_image, orig_img.copy(), shapes, patch_folder_path
+                    )
+                    patch_futures.append((future, patch_folder_path, filename))
+
                 images_done += 1
-                continue
-            filename = os.path.basename(image_path)
+                elapsed = time.monotonic() - infer_start
+                avg = elapsed / images_done
+                eta_secs = avg * (total_pending - images_done)
+                eta_str = _format_eta(eta_secs) if images_done < total_pending else "done"
+                print(f"  ✓ {filename}: {len(shapes)} detection(s) — "
+                      f"{images_done}/{total_pending} images — ETA {eta_str}")
+
+            # After each batch, emit previews for patch jobs already finished.
+            # Workers run concurrently with inference, so many patches are done
+            # by the time we reach here — no need to wait until the very end.
+            # We emit the last written patch per image (one Gradio update per image).
+            still_pending = []
+            for fut, pf_path, fname in patch_futures:
+                if fut.done():
+                    try:
+                        paths = fut.result()
+                        if paths:
+                            emit_preview(paths[-1])
+                    except Exception as e:
+                        print(f"❌ Patch write error for {fname}: {e}")
+                else:
+                    still_pending.append((fut, pf_path, fname))
+            patch_futures = still_pending
+
+        # Collect any patch jobs that finished after the last batch completed.
+        if patch_futures:
+            print(f"\n  Finishing {len(patch_futures)} patch write job(s)...")
+        for future, patch_folder_path, filename in patch_futures:
             try:
-                shapes = _save_result(result, image_path, bot_json_path, patch_folder_path, model_name)
+                paths = future.result()
+                if paths:
+                    emit_preview(paths[-1])
             except Exception as e:
-                print(f"❌ Error saving results for {filename}: {e}")
-                images_done += 1
-                continue
-
-            images_done += 1
-            elapsed = time.monotonic() - infer_start
-            avg = elapsed / images_done
-            eta_secs = avg * (total_pending - images_done)
-            eta_str = _format_eta(eta_secs) if images_done < total_pending else "done"
-            # Emit previews before printing so they're queued when Gradio yields on the print.
-            if GEN_THUMBNAILS and shapes:
-                for shape in shapes:
-                    patch_path = shape.get("patch_path", "")
-                    if patch_path:
-                        emit_preview(str(patch_folder_path / os.path.basename(patch_path)))
-
-            print(f"  ✓ {filename}: {len(shapes)} detection(s) — "
-                  f"{images_done}/{total_pending} images — ETA {eta_str}")
+                print(f"❌ Patch write error for {filename}: {e}")
 
 
 def process_jpg_files(img_files, date_folder):

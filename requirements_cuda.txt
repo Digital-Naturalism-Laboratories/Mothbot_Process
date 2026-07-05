@@ -12,16 +12,19 @@ python-dateutil==2.9.0.post0
 pytz==2025.2
 pyyaml==6.0.3
 regex==2025.9.1
-torch
-torchvision
-tqdm
+--extra-index-url https://download.pytorch.org/whl/cu118
+torch==2.7.1+cu118
+torchvision==0.22.1+cu118
+tqdm==4.67.1
 timm
 typing-extensions
 tzdata==2025.2
 ultralytics==8.4.81
 ultralytics-thop==2.0.20
+onnxruntime-gpu
+onnx
 polars==1.42.0
-rembg[cpu]>=2.0.57
+rembg[gpu]>=2.0.57
 gradio==5.42.0
 gradio-client==1.11.1
 babel==2.17.0

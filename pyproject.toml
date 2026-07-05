@@ -31,6 +31,8 @@ dependencies = [
     "rembg[cpu]>=2.0.57",
     "ultralytics==8.4.81",
     "ultralytics-thop==2.0.20",
+    "onnxruntime",
+    "onnx",
 ]
 
 [project.optional-dependencies]
@@ -41,6 +43,7 @@ cpu = [
 cuda118 = [
     "torch==2.7.1+cu118",
     "torchvision==0.22.1+cu118",
+    "onnxruntime-gpu",
 ]
 packaging = [
     "lap>=0.5.12",

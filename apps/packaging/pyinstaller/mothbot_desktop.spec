@@ -38,13 +38,14 @@ for package in [
     "gradio",
     "gradio_client",
     "ultralytics",
+    "onnxruntime",
     "fiftyone",
     "fiftyone_brain",
     "open_clip",
     "bioclip",
 	"pystray",
     "pystray._win32",   # Windows backend
-    "pystray._darwin",  # macOS backend  
+    "pystray._darwin",  # macOS backend
     "pystray._xorg",    # Linux backend
 ]:
     hiddenimports += collect_submodules(package)
@@ -55,6 +56,7 @@ for package in [
     "gradio_client",
     "groovy",
     "ultralytics",
+    "onnxruntime",
     "fiftyone",
     "fiftyone_brain",
     "safehttpx",

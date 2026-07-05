@@ -839,8 +839,14 @@ def browse_species_csv(current_path):
 
 
 def browse_yolo_model(current_path):
+    # ONNX support is temporarily disabled — our direct ONNX Runtime inference
+    # path produces correct detection counts but the OBB coordinate inverse-
+    # transform (undoing letterbox + rotation) has an off-by-one that makes
+    # patches land in the wrong place or outside the image entirely, causing
+    # black crops and warpAffine assertion errors.  .pt models work correctly.
+    # Re-enable by adding ("ONNX model", "*.onnx") back to filetypes once fixed.
     return _browse_file(
-        current_path, filetypes=[("PyTorch model", "*.pt"), ("All files", "*.*")]
+        current_path, filetypes=[("YOLO model", "*.pt"), ("PyTorch model", "*.pt"), ("All files", "*.*")]
     )
 
 

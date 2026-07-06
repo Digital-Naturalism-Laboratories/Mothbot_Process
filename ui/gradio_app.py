@@ -499,20 +499,126 @@ def app():
 
             # ~~~~~~~~~~~~ Metadata Tab ~~~~~~~~~~~~~~~~~~~~~~
             with gr.Tab("Insert Metadata", id="metadata", visible=False) as metadata_tab:
-                with gr.Row():
-                    meta_csv_mirror = gr.Text(
-                        label="Metadata field sheet:",
+                metadata_mode = gr.Radio(
+                    choices=["CSV File", "Manual Entry"],
+                    value="CSV File",
+                    label="Metadata Source",
+                )
+
+                with gr.Group(visible=True) as meta_csv_group:
+                    with gr.Row():
+                        meta_csv_mirror = gr.Text(
+                            label="Metadata field sheet:",
+                            interactive=True,
+                        )
+                        meta_browse_mirror = gr.Button("Browse", size="sm", scale=0, min_width=100)
+
+                with gr.Group(visible=False) as meta_manual_group:
+                    meta_manual_folder_choices = gr.CheckboxGroup(
+                        label="Apply to which nights (select the folders this metadata applies to):",
+                        choices=[],
+                        value=[],
                         interactive=True,
                     )
-                    meta_browse_mirror = gr.Button("Browse", size="sm", scale=0, min_width=100)
+                    gr.Markdown("### Enter deployment metadata manually")
+                    with gr.Row():
+                        meta_deployment_name = gr.Text(label="Deployment Name", interactive=True)
+                        meta_latitude = gr.Text(label="Latitude", interactive=True)
+                        meta_longitude = gr.Text(label="Longitude", interactive=True)
+                    with gr.Row():
+                        meta_crew = gr.Text(label="Crew", interactive=True)
+                        meta_project = gr.Text(label="Project", interactive=True)
+                        meta_site = gr.Text(label="Site", interactive=True)
+                    with gr.Row():
+                        meta_habitat = gr.Text(label="Habitat", interactive=True)
+                        meta_attractor = gr.Text(label="Attractor", interactive=True)
+                        meta_attractor_location = gr.Text(label="Attractor Location", interactive=True)
+                    with gr.Row():
+                        meta_device = gr.Text(label="Device", interactive=True)
+                        meta_firmware = gr.Text(label="Firmware", interactive=True)
+                        meta_utc = gr.Text(label="UTC Offset", interactive=True)
+                    with gr.Row():
+                        meta_deployment_date = gr.Text(label="Deployment Date", interactive=True)
+                        meta_collect_date = gr.Text(label="Collect Date", interactive=True)
+                        meta_height = gr.Text(label="Height Above Ground", interactive=True)
+                    with gr.Row():
+                        meta_schedule = gr.Text(label="Schedule", interactive=True)
+                        meta_storage_loc = gr.Text(label="Data Storage Location", interactive=True)
+                    meta_notes = gr.Textbox(label="Notes", interactive=True, lines=3)
+
+                overwrite_metadata = gr.Checkbox(
+                    value=True,
+                    label="Overwrite existing metadata (uncheck to skip detections that already have metadata)",
+                )
+
                 metadata_run_btn = gr.Button("Insert Metadata", variant="primary")
                 metadata_output_box = gr.Textbox(
                     label="Insert Metadata Output", lines=20
                 )
 
+                metadata_mode.change(
+                    fn=lambda mode: (
+                        gr.update(visible=(mode == "CSV File")),
+                        gr.update(visible=(mode == "Manual Entry")),
+                    ),
+                    inputs=[metadata_mode],
+                    outputs=[meta_csv_group, meta_manual_group],
+                )
+
+                meta_manual_folder_choices.change(
+                    fn=load_metadata_for_preview,
+                    inputs=[meta_manual_folder_choices, mapping_state, dataset_root_state],
+                    outputs=[
+                        meta_deployment_name, meta_latitude, meta_longitude,
+                        meta_crew, meta_project, meta_site,
+                        meta_habitat, meta_device, meta_firmware,
+                        meta_utc, meta_deployment_date, meta_collect_date,
+                        meta_attractor, meta_attractor_location, meta_height,
+                        meta_schedule, meta_storage_loc, meta_notes,
+                    ],
+                )
+
+                meta_latitude.change(
+                    fn=maybe_split_latlong,
+                    inputs=[meta_latitude],
+                    outputs=[meta_latitude, meta_longitude],
+                )
+                meta_longitude.change(
+                    fn=maybe_split_latlong,
+                    inputs=[meta_longitude],
+                    outputs=[meta_latitude, meta_longitude],
+                )
+
                 metadata_run_btn.click(
                     fn=run_metadata,
-                    inputs=[selected_paths, meta_csv_mirror],
+                    inputs=[
+                        selected_paths,
+                        metadata_mode,
+                        meta_csv_mirror,
+                        overwrite_metadata,
+                        meta_manual_folder_choices,
+                        mapping_state,
+                        external_keys_state,
+                        dataset_root_state,
+                        meta_deployment_name,
+                        meta_latitude,
+                        meta_longitude,
+                        meta_crew,
+                        meta_project,
+                        meta_site,
+                        meta_habitat,
+                        meta_device,
+                        meta_firmware,
+                        meta_utc,
+                        meta_deployment_date,
+                        meta_collect_date,
+                        meta_attractor,
+                        meta_attractor_location,
+                        meta_height,
+                        meta_schedule,
+                        meta_storage_loc,
+                        meta_notes,
+                    ],
                     outputs=[metadata_output_box, stop_btn],
                 )
 
@@ -700,7 +806,7 @@ def app():
                     OVERWRITE_PREV_BOT_IDENTIFICATIONS,
                     metadata_csv_file,
                 ],
-                outputs=[process_output_box, stop_btn, process_preview_img],
+                outputs=[process_output_box, stop_btn, process_preview_img, main_tabs],
             )
 
         # ── Stop button ────────────────────────────────────────────────────────
@@ -724,6 +830,7 @@ def app():
             legacy_converter_tab,
             lc_folder_choices,
             lc_run_btn,
+            meta_manual_folder_choices,
         ]
         deployment_browse_btn.click(
             fn=browse_deployment_folder,
@@ -776,6 +883,13 @@ def app():
             lambda v: v, inputs=[id_species_mirror], outputs=[species_path]
         )
 
+        # Setup folder selection → manual-entry night picker (keeps selection in sync)
+        folder_choices.change(
+            fn=lambda v: gr.update(value=v),
+            inputs=[folder_choices],
+            outputs=[meta_manual_folder_choices],
+        )
+
         # Setup ↔ Metadata: Metadata CSV
         metadata_csv_file.change(
             lambda v: v, inputs=[metadata_csv_file], outputs=[meta_csv_mirror]
@@ -816,6 +930,69 @@ def app():
 # ──────────────────────────────────────────────────────────────
 #  Functions called by the UI
 # ──────────────────────────────────────────────────────────────
+
+
+def maybe_split_latlong(value):
+    """If value looks like 'lat, lon' (two numbers separated by a comma),
+    split and return (lat, lon) for the two text boxes.  Otherwise no-op."""
+    import re as _re
+    value = (value or "").strip()
+    m = _re.match(r"^([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)$", value)
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+    return gr.update(), gr.update()
+
+
+def load_metadata_for_preview(selected_keys, mapping, dataset_root):
+    """Read existing metadata from the first selected night and pre-populate the manual-entry form."""
+    import json as _json
+    from core.common import find_detection_matches_processed
+
+    EMPTY = tuple(gr.update() for _ in range(18))
+
+    if not selected_keys or not mapping:
+        return EMPTY
+
+    folder_path = mapping.get(selected_keys[0])
+    if not folder_path or not os.path.isdir(folder_path):
+        return EMPTY
+
+    dr = dataset_root or folder_path
+    try:
+        hu_pairs, bot_pairs = find_detection_matches_processed(dr, source_folder=folder_path)
+    except Exception:
+        return EMPTY
+
+    for _, json_path in (hu_pairs + bot_pairs):
+        try:
+            with open(json_path) as f:
+                data = _json.load(f)
+            if not data.get("field_sheet_metadata"):
+                continue
+            return (
+                gr.update(value=str(data.get("deployment_name", "") or "")),
+                gr.update(value=str(data.get("latitude", "") or "")),
+                gr.update(value=str(data.get("longitude", "") or "")),
+                gr.update(value=str(data.get("crew", "") or "")),
+                gr.update(value=str(data.get("project", "") or "")),
+                gr.update(value=str(data.get("site", "") or "")),
+                gr.update(value=str(data.get("habitat", "") or "")),
+                gr.update(value=str(data.get("device", "") or "")),
+                gr.update(value=str(data.get("firmware", "") or "")),
+                gr.update(value=str(data.get("UTC", "") or "")),
+                gr.update(value=str(data.get("deployment_date", "") or "")),
+                gr.update(value=str(data.get("collect_date", "") or "")),
+                gr.update(value=str(data.get("attractor", "") or "")),
+                gr.update(value=str(data.get("attractor_location", "") or "")),
+                gr.update(value=str(data.get("ground_height", "") or "")),
+                gr.update(value=str(data.get("schedule", "") or "")),
+                gr.update(value=str(data.get("data_storage_location", "") or "")),
+                gr.update(value=str(data.get("notes", "") or "")),
+            )
+        except Exception:
+            continue
+
+    return EMPTY
 
 
 def browse_deployment_folder(current_path):
@@ -939,6 +1116,7 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
         gr.update(visible=False),  # legacy_converter_tab
         gr.update(choices=[], value=[], visible=False),  # lc_folder_choices
         gr.update(interactive=False),  # lc_run_btn
+        gr.update(choices=[], value=[]),  # meta_manual_folder_choices
     )
 
     if picker_error_message:
@@ -1082,6 +1260,7 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
         gr.update(visible=any_legacy),  # legacy_converter_tab
         gr.update(choices=lc_choices, value=[c[1] for c in lc_choices], visible=any_legacy),  # lc_folder_choices
         gr.update(interactive=any_legacy),  # lc_run_btn
+        gr.update(choices=choices, value=[]),  # meta_manual_folder_choices
     )
 
 
@@ -1482,19 +1661,91 @@ def run_ID(selected_folders, species_list, chosenrank, IDHum, IDBot, overwrite_b
     )
 
 
-def run_metadata(selected_folders, metadata):
-    yield from _run_batch_pipeline(
-        selected_folders=selected_folders,
-        runner=Mothbot_InsertMetadata.run,
-        start_message="---🔍 Running METADATA for {folder} ---\n",
-        success_message="✅ Insert Metadata completed for {folder}\n",
-        finish_message="------ Insert Metadata processing finished ------",
-        kwargs_builder=lambda folder, dataset_root: {
-            "input_path": folder,
-            "metadata_path": str(metadata),
-            "dataset_root": dataset_root,
-        },
-    )
+def run_metadata(
+    selected_folders,
+    metadata_mode,
+    metadata_csv,
+    overwrite_existing,
+    meta_manual_selected,
+    mapping,
+    external_keys,
+    dataset_root,
+    deployment_name,
+    latitude,
+    longitude,
+    crew,
+    project,
+    site,
+    habitat,
+    device,
+    firmware,
+    utc,
+    deployment_date,
+    collect_date,
+    attractor,
+    attractor_location,
+    height_above_ground,
+    schedule,
+    data_storage_location,
+    notes,
+):
+    if metadata_mode == "Manual Entry":
+        # Resolve the manual night-picker selection to actual folder paths.
+        # Fall back to the global selected_folders if the picker is empty.
+        if meta_manual_selected and mapping:
+            target_folders, _ = confirm_selection(
+                meta_manual_selected, mapping, external_keys or set(), dataset_root or ""
+            )
+        else:
+            target_folders = selected_folders
+
+        manual_meta = {
+            "deployment_name": deployment_name or "",
+            "latitude": latitude or "",
+            "longitude": longitude or "",
+            "crew": crew or "",
+            "project": project or "",
+            "site": site or "",
+            "habitat": habitat or "",
+            "device": device or "",
+            "firmware": firmware or "",
+            "UTC": utc or "",
+            "deployment_date": deployment_date or "",
+            "collect_date": collect_date or "",
+            "attractor": attractor or "",
+            "attractor_location": attractor_location or "",
+            "height_above_ground": height_above_ground or "",
+            "schedule": schedule or "",
+            "data_storage_location": data_storage_location or "",
+            "notes": notes or "",
+        }
+        yield from _run_batch_pipeline(
+            selected_folders=target_folders,
+            runner=Mothbot_InsertMetadata.run,
+            start_message="---🔍 Running METADATA for {folder} ---\n",
+            success_message="✅ Insert Metadata completed for {folder}\n",
+            finish_message="------ Insert Metadata processing finished ------",
+            kwargs_builder=lambda folder, dataset_root, _meta=manual_meta: {
+                "input_path": folder,
+                "manual_metadata": _meta,
+                "dataset_root": dataset_root,
+                "overwrite_existing": bool(overwrite_existing),
+            },
+        )
+    else:
+        yield from _run_batch_pipeline(
+            selected_folders=selected_folders,
+            runner=Mothbot_InsertMetadata.run,
+            start_message="---🔍 Running METADATA for {folder} ---\n",
+            success_message="✅ Insert Metadata completed for {folder}\n",
+            finish_message="------ Insert Metadata processing finished ------",
+            kwargs_builder=lambda folder, dataset_root: {
+                "input_path": folder,
+                "metadata_path": str(metadata_csv),
+                "dataset_root": dataset_root,
+                "overwrite_existing": bool(overwrite_existing),
+            },
+        )
 
 
 def run_cluster_with_continue(selected_folders):
@@ -1575,8 +1826,10 @@ def run_full_process(
 ):
     SHOW_STOP = gr.update(visible=True, value="Stop Current Run", interactive=True)
     HIDE_STOP = gr.update(visible=False)
+    NO_TAB = gr.update()  # no-op tab navigation
+    NO_IMG = gr.update()
     if not selected_folders:
-        yield "No image collections selected.\n", gr.update(visible=False)
+        yield "No image collections selected.\n", gr.update(visible=False), NO_IMG, NO_TAB
         return
 
     # Steps that cannot run on externally-processed collections (no source images)
@@ -1645,7 +1898,17 @@ def run_full_process(
 
     for step_name, runner, kwargs_builder in steps:
         output_log += f"\n===== {step_name} =====\n"
-        yield output_log, SHOW_STOP, NO_IMG
+        yield output_log, SHOW_STOP, NO_IMG, NO_TAB
+
+        if step_name == "Insert Metadata" and not (metadata_csv and str(metadata_csv).strip()):
+            output_log += (
+                "⚠️  No metadata CSV selected — automatic metadata insertion is paused.\n"
+                "→ Go to the Metadata tab, choose your metadata source (CSV or manual entry),\n"
+                "  then click Insert Metadata there. Remaining pipeline steps were skipped.\n"
+            )
+            yield output_log, HIDE_STOP, NO_IMG, gr.Tabs(selected="metadata")
+            return
+
         for entry in selected_folders:
             folder       = entry["path"]                     if isinstance(entry, dict) else entry
             is_ext       = entry.get("external", False)       if isinstance(entry, dict) else False
@@ -1653,29 +1916,29 @@ def run_full_process(
 
             if is_ext and step_name in source_only_steps:
                 output_log += f"⚠️  Skipping {step_name} for externally-processed collection:\n    {folder}\n"
-                yield output_log, SHOW_STOP, NO_IMG
+                yield output_log, SHOW_STOP, NO_IMG, NO_TAB
                 continue
 
             if is_ext and step_name == "Cluster":
                 output_log += f"  ℹ️  Building stub JSONs from patches before clustering {folder}...\n"
-                yield output_log, SHOW_STOP, NO_IMG
+                yield output_log, SHOW_STOP, NO_IMG, NO_TAB
                 output_log += build_stub_jsons_from_patches(folder)
-                yield output_log, SHOW_STOP, NO_IMG
+                yield output_log, SHOW_STOP, NO_IMG, NO_TAB
 
             output_log += f"--- Running {step_name} for {folder} ---\n"
-            yield output_log, SHOW_STOP, NO_IMG
+            yield output_log, SHOW_STOP, NO_IMG, NO_TAB
             try:
                 for chunk in run_in_thread(runner, **kwargs_builder(folder, dataset_root)):
                     output_log += chunk
                     img = _poll_preview() if step_name == "Detect" else NO_IMG
-                    yield output_log, SHOW_STOP, img
+                    yield output_log, SHOW_STOP, img, NO_TAB
                 output_log += f"✅ {step_name} completed for {folder}\n"
             except Exception as exc:
                 output_log += f"\n❌ Exception while processing {folder} in {step_name}: {exc}\n"
-            yield output_log, SHOW_STOP, NO_IMG
+            yield output_log, SHOW_STOP, NO_IMG, NO_TAB
 
     output_log += "\n------ Full processing finished ------"
-    yield output_log, HIDE_STOP, NO_IMG
+    yield output_log, HIDE_STOP, NO_IMG, NO_TAB
 
 
 # ──────────────────────────────────────────────────────────────

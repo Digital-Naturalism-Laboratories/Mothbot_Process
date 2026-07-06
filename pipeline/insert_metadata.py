@@ -216,7 +216,7 @@ def get_aliased(metadata, canonical_name, default=""):
     return default
 
 
-def load_anylabeling_data(json_path, image_path, metadata):
+def load_anylabeling_data(json_path, image_path, metadata, overwrite=True):
     """Writes field-sheet metadata into an AnyLabeling-style detection JSON.
 
     `metadata` is one normalized row from the field sheet CSV (see
@@ -243,33 +243,37 @@ def load_anylabeling_data(json_path, image_path, metadata):
     with open(json_path, "r") as f:
         data = json.load(f)
 
-        data["filepath"] = image_path
-        data["uploaded"] = metadata.get("uploaded", "")
-        data["sd"] = metadata.get("sd_card", "")
-        data["device"] = get_aliased(metadata, "device")
-        data["firmware"] = str(get_aliased(metadata, "firmware"))
-        data["sheet"] = get_aliased(metadata, "sheet")
-        data["datasetcollection"] = get_aliased(metadata, "dataset")
-        data["project"] = get_aliased(metadata, "project")
-        data["site"] = get_aliased(metadata, "site")
-        data["longitude"] = get_aliased(metadata, "longitude", "0.00000")
-        data["latitude"] = get_aliased(metadata, "latitude", "0.00000")
-        data["ground_height"] = extract_number(therawgroundheight)
-        data["deployment_name"] = get_aliased(metadata, "deployment_name")
-        data["UTC"] = get_aliased(metadata, "UTC", "0")
-        data["deployment_date"] = get_aliased(metadata, "deployment_date")
-        data["collect_date"] = get_aliased(metadata, "collect_date")
-        data["data_storage_location"] = get_aliased(metadata, "data_storage_location")
-        data["crew"] = get_aliased(metadata, "crew")
-        data["notes"] = get_aliased(metadata, "notes")
-        data["schedule"] = get_aliased(metadata, "schedule")
-        data["habitat"] = get_aliased(metadata, "habitat")
-        data["attractor"] = get_aliased(metadata, "attractor")
-        data["attractor_location"] = get_aliased(metadata, "attractor_location")
+    if not overwrite and data.get("field_sheet_metadata"):
+        print(f"Skipping (metadata already present, overwrite=False): {json_path}")
+        return
 
-        # Flexible passthrough: keep every column from the field sheet,
-        # whatever it's called, so extra/custom info is never lost.
-        data["field_sheet_metadata"] = dict(metadata)
+    data["filepath"] = image_path
+    data["uploaded"] = metadata.get("uploaded", "")
+    data["sd"] = metadata.get("sd_card", "")
+    data["device"] = get_aliased(metadata, "device")
+    data["firmware"] = str(get_aliased(metadata, "firmware"))
+    data["sheet"] = get_aliased(metadata, "sheet")
+    data["datasetcollection"] = get_aliased(metadata, "dataset")
+    data["project"] = get_aliased(metadata, "project")
+    data["site"] = get_aliased(metadata, "site")
+    data["longitude"] = get_aliased(metadata, "longitude", "0.00000")
+    data["latitude"] = get_aliased(metadata, "latitude", "0.00000")
+    data["ground_height"] = extract_number(therawgroundheight)
+    data["deployment_name"] = get_aliased(metadata, "deployment_name")
+    data["UTC"] = get_aliased(metadata, "UTC", "0")
+    data["deployment_date"] = get_aliased(metadata, "deployment_date")
+    data["collect_date"] = get_aliased(metadata, "collect_date")
+    data["data_storage_location"] = get_aliased(metadata, "data_storage_location")
+    data["crew"] = get_aliased(metadata, "crew")
+    data["notes"] = get_aliased(metadata, "notes")
+    data["schedule"] = get_aliased(metadata, "schedule")
+    data["habitat"] = get_aliased(metadata, "habitat")
+    data["attractor"] = get_aliased(metadata, "attractor")
+    data["attractor_location"] = get_aliased(metadata, "attractor_location")
+
+    # Flexible passthrough: keep every column from the field sheet,
+    # whatever it's called, so extra/custom info is never lost.
+    data["field_sheet_metadata"] = dict(metadata)
 
     with open(json_path, "w") as f:
         json.dump(data, f, indent=4)
@@ -281,7 +285,7 @@ def load_anylabeling_data(json_path, image_path, metadata):
 
 # Maybe this?
 def connect_metadata_matched_img_json_pairs(
-    hu_matched_img_json_pairs, bot_matched_img_json_pairs, metadata
+    hu_matched_img_json_pairs, bot_matched_img_json_pairs, metadata, overwrite=True
 ):
 
     # Process Human Detections
@@ -296,7 +300,7 @@ def connect_metadata_matched_img_json_pairs(
             # Load JSON file
             image_path, json_path = pair[:2]  # Always extract the first two elements
 
-            load_anylabeling_data(json_path, image_path, metadata)
+            load_anylabeling_data(json_path, image_path, metadata, overwrite=overwrite)
 
     print("processing BOT Detections.........")
     if ID_BOTDETECTIONS:
@@ -308,7 +312,7 @@ def connect_metadata_matched_img_json_pairs(
             # Load JSON file and
             image_path, json_path = pair[:2]  # Always extract the first two elements
 
-            load_anylabeling_data(json_path, image_path, metadata)
+            load_anylabeling_data(json_path, image_path, metadata, overwrite=overwrite)
 
 
 def _normalize_key(key: str) -> str:
@@ -479,18 +483,24 @@ def find_csv_match_old_onlyparent(input_path: str, metadata_path: str) -> dict:
     return matches[0]
 
 
-def run(input_path, metadata_path, dataset_root=None):
+def run(input_path, metadata_path=None, dataset_root=None, manual_metadata=None, overwrite_existing=True):
     """Run the metadata-insertion pipeline programmatically.
 
     Parameters
     ----------
     input_path : str
         Root folder containing Mothbox data (any sub-folder structure).
-    metadata_path : str
-        Path to the CSV field-sheet metadata file.
+    metadata_path : str | None
+        Path to the CSV field-sheet metadata file.  Required when
+        *manual_metadata* is not provided.
     dataset_root : str | None
         Top-level folder for the _processed output tree.  Defaults to
         *input_path* itself.
+    manual_metadata : dict | None
+        If provided, use this dict directly as the metadata row instead of
+        reading from a CSV file.  Keys should match the canonical field names
+        in FIELD_ALIASES (e.g. "latitude", "longitude", "crew", ...) but are
+        normalized the same way as CSV headers, so case and spacing don't matter.
     """
     global ID_HUMANDETECTIONS, ID_BOTDETECTIONS, INPUT_PATH
 
@@ -525,10 +535,17 @@ def run(input_path, metadata_path, dataset_root=None):
         print("example bot detection and json pair:")
         print(bot_matched_img_json_pairs[0])
 
-    metadata = find_csv_match(input_path, metadata_path)
+    if manual_metadata is not None:
+        print("ℹ️  Using manually-entered metadata (no CSV file).")
+        metadata = _normalize_row(manual_metadata)
+    else:
+        if not metadata_path:
+            print("⚠️  No metadata CSV path provided and no manual metadata given. Skipping.")
+            return
+        metadata = find_csv_match(input_path, metadata_path)
 
     if not metadata:
-        print("⚠️  Skipping metadata insertion — no matching row found in the CSV.")
+        print("⚠️  Skipping metadata insertion — no metadata available.")
         return
 
     # ~~~~~~~~~~~~~~~~ Processing Data ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -537,6 +554,7 @@ def run(input_path, metadata_path, dataset_root=None):
         hu_matched_img_json_pairs,
         bot_matched_img_json_pairs,
         metadata=metadata,
+        overwrite=overwrite_existing,
     )
 
     print("Finished Attaching Metadata field info")

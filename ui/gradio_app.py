@@ -522,27 +522,38 @@ def app():
                     )
                     gr.Markdown("### Enter deployment metadata manually")
                     with gr.Row():
-                        meta_deployment_name = gr.Text(label="Deployment Name", interactive=True)
-                        meta_latitude = gr.Text(label="Latitude", interactive=True)
-                        meta_longitude = gr.Text(label="Longitude", interactive=True)
-                    with gr.Row():
-                        meta_crew = gr.Text(label="Crew", interactive=True)
                         meta_project = gr.Text(label="Project", interactive=True)
                         meta_site = gr.Text(label="Site", interactive=True)
+                        meta_device = gr.Text(label="Device (Mothbox name)", interactive=True)
+                    with gr.Row():
+                        meta_deployment_date = gr.DateTime(
+                            label="Deployment Date",
+                            include_time=False,
+                            type="string",
+                        )
+                        meta_collect_date = gr.DateTime(
+                            label="Collect Date",
+                            include_time=False,
+                            type="string",
+                        )
+                        meta_height = gr.Text(label="Height Above Ground", interactive=True)
+                    meta_deployment_name = gr.Text(
+                        label="Deployment Name (auto-generated from Project + Site + Device + Date)",
+                        interactive=False,
+                    )
+                    with gr.Row():
+                        meta_latitude = gr.Text(label="Latitude", interactive=True)
+                        meta_longitude = gr.Text(label="Longitude", interactive=True)
+                        meta_crew = gr.Text(label="Crew", interactive=True)
                     with gr.Row():
                         meta_habitat = gr.Text(label="Habitat", interactive=True)
                         meta_attractor = gr.Text(label="Attractor", interactive=True)
                         meta_attractor_location = gr.Text(label="Attractor Location", interactive=True)
                     with gr.Row():
-                        meta_device = gr.Text(label="Device", interactive=True)
                         meta_firmware = gr.Text(label="Firmware", interactive=True)
                         meta_utc = gr.Text(label="UTC Offset", interactive=True)
-                    with gr.Row():
-                        meta_deployment_date = gr.Text(label="Deployment Date", interactive=True)
-                        meta_collect_date = gr.Text(label="Collect Date", interactive=True)
-                        meta_height = gr.Text(label="Height Above Ground", interactive=True)
-                    with gr.Row():
                         meta_schedule = gr.Text(label="Schedule", interactive=True)
+                    with gr.Row():
                         meta_storage_loc = gr.Text(label="Data Storage Location", interactive=True)
                     meta_notes = gr.Textbox(label="Notes", interactive=True, lines=3)
 
@@ -564,6 +575,13 @@ def app():
                     inputs=[metadata_mode],
                     outputs=[meta_csv_group, meta_manual_group],
                 )
+
+                for _dep_trigger in [meta_project, meta_site, meta_device, meta_deployment_date]:
+                    _dep_trigger.change(
+                        fn=generate_deployment_name,
+                        inputs=[meta_project, meta_site, meta_device, meta_deployment_date],
+                        outputs=[meta_deployment_name],
+                    )
 
                 meta_manual_folder_choices.change(
                     fn=load_metadata_for_preview,
@@ -932,6 +950,26 @@ def app():
 # ──────────────────────────────────────────────────────────────
 
 
+def generate_deployment_name(project, site, device, deploy_date):
+    """Build deployment name as project_site_device_YYYY-MM-DD (matching the CSV formula)."""
+    from datetime import datetime as _dt
+    project = (project or "").strip()
+    site = (site or "").strip()
+    device = (device or "").strip()
+    date_str = (deploy_date or "").strip()
+
+    if date_str:
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%Y/%m/%d"):
+            try:
+                date_str = _dt.strptime(date_str, fmt).strftime("%Y-%m-%d")
+                break
+            except ValueError:
+                continue
+
+    parts = [p for p in [project, site, device, date_str] if p]
+    return "_".join(parts)
+
+
 def maybe_split_latlong(value):
     """If value looks like 'lat, lon' (two numbers separated by a comma),
     split and return (lat, lon) for the two text boxes.  Otherwise no-op."""
@@ -969,18 +1007,23 @@ def load_metadata_for_preview(selected_keys, mapping, dataset_root):
                 data = _json.load(f)
             if not data.get("field_sheet_metadata"):
                 continue
+            project = str(data.get("project", "") or "")
+            site = str(data.get("site", "") or "")
+            device = str(data.get("device", "") or "")
+            deploy_date = str(data.get("deployment_date", "") or "")
+            auto_name = generate_deployment_name(project, site, device, deploy_date)
             return (
-                gr.update(value=str(data.get("deployment_name", "") or "")),
+                gr.update(value=auto_name),
                 gr.update(value=str(data.get("latitude", "") or "")),
                 gr.update(value=str(data.get("longitude", "") or "")),
                 gr.update(value=str(data.get("crew", "") or "")),
-                gr.update(value=str(data.get("project", "") or "")),
-                gr.update(value=str(data.get("site", "") or "")),
+                gr.update(value=project),
+                gr.update(value=site),
                 gr.update(value=str(data.get("habitat", "") or "")),
-                gr.update(value=str(data.get("device", "") or "")),
+                gr.update(value=device),
                 gr.update(value=str(data.get("firmware", "") or "")),
                 gr.update(value=str(data.get("UTC", "") or "")),
-                gr.update(value=str(data.get("deployment_date", "") or "")),
+                gr.update(value=deploy_date),
                 gr.update(value=str(data.get("collect_date", "") or "")),
                 gr.update(value=str(data.get("attractor", "") or "")),
                 gr.update(value=str(data.get("attractor_location", "") or "")),

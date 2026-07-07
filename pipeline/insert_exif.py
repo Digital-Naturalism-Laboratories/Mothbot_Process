@@ -91,7 +91,7 @@ def load_anylabeling_data(json_path, image_path, dataset_root):
             resolve_patch_path(the_patch_path, image_path, dataset_root)
         )
 
-        print(str(i) + "/" + str(len(detections)) + " detection being processed")
+        print(str(i + 1) + "/" + str(len(detections)) + " detection being processed")
         print("adding GPS to " + str(full_patch_path))
         add_gps_exif(full_patch_path, full_patch_path, float(lat), float(long))
 
@@ -181,9 +181,13 @@ def add_gps_exif(input_path, output_path, lat, lng, altitude=None):
     else:
         exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
 
-    # Extract datetime from filename
+    # Extract datetime from filename — supports both formats:
+    #   ISO 8601:  name_2026-07-07T03-39-06+02-00_...  (colons replaced with dashes for filename safety)
+    #   Legacy:    name_2026_07_07__03_39_06_...
     filename = Path(input_path).name
-    match = re.search(r"_(\d{4})_(\d{2})_(\d{2})__?(\d{2})_(\d{2})_(\d{2})", filename)
+    match = re.search(r"_(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})", filename)
+    if not match:
+        match = re.search(r"_(\d{4})_(\d{2})_(\d{2})__?(\d{2})_(\d{2})_(\d{2})", filename)
     if match:
         y, m, d, h, mi, s = match.groups()
         datetime_str = f"{y}:{m}:{d} {h}:{mi}:{s}".encode("utf-8")

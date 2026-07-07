@@ -27,36 +27,33 @@ ARCH="$(uname -m)"
 TARGET_PATH="$RELEASE_DIR/Mothbot-${VERSION}-linux-${ARCH}.zip"
 
 mkdir -p "$RELEASE_DIR"
-rm -f "$TARGET_PATH"
+# Clean up any previous parts before creating new ones
+rm -f "${TARGET_PATH}"*
 
-# Keep .zip output for user compatibility but use 7z compression for better ratios.
-echo "Compressing Linux artifact with 7z (this can take a while on CI)..."
-7z a -tzip -mx=9 -bsp1 "$TARGET_PATH" "$DIST_DIR/Mothbot"
-
-MAX_BYTES=1932735283
-WARN_BYTES=1717986918
-FILE_SIZE_BYTES="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).stat().st_size)' "$TARGET_PATH")"
-FILE_SIZE_HUMAN="$(python3 -c 'import pathlib,sys; s=pathlib.Path(sys.argv[1]).stat().st_size; print(f"{s/1024/1024/1024:.2f} GiB")' "$TARGET_PATH")"
+echo "Compressing Linux artifact with 7z split archive (800 MB parts)..."
+7z a -tzip -mx=5 -v800m "$TARGET_PATH" "$DIST_DIR/Mothbot"
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  total_bytes=0
+  rows=""
+  for part in "${TARGET_PATH}".*; do
+    [ -f "$part" ] || continue
+    part_bytes="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).stat().st_size)' "$part")"
+    part_human="$(python3 -c 'import pathlib,sys; s=pathlib.Path(sys.argv[1]).stat().st_size; print(f"{s/1024/1024:.0f} MB")' "$part")"
+    rows="$rows"$'\n'"| $(basename "$part") | $part_human |"
+    total_bytes=$((total_bytes + part_bytes))
+  done
+  total_human="$(python3 -c "print(f'{${total_bytes}/1024/1024/1024:.2f} GiB')")"
   {
     echo "### Linux artifact size"
     echo ""
-    echo "| Artifact | Size |"
+    echo "| Part | Size |"
     echo "| --- | --- |"
-    echo "| $(basename "$TARGET_PATH") | $FILE_SIZE_HUMAN |"
+    echo "$rows"
+    echo "| **Total** | **$total_human** |"
   } >> "$GITHUB_STEP_SUMMARY"
 fi
 
-echo "Linux release artifact size: $FILE_SIZE_HUMAN"
-if [ "$FILE_SIZE_BYTES" -ge "$WARN_BYTES" ]; then
-  echo "::warning::Linux release artifact is above 1.6 GiB ($FILE_SIZE_HUMAN)."
-fi
-if [ "$FILE_SIZE_BYTES" -ge "$MAX_BYTES" ]; then
-  echo "::error::Linux release artifact exceeds 1.8 GiB ($FILE_SIZE_HUMAN)."
-  exit 1
-fi
-
 echo
-echo "Release artifact created:"
-ls -lh "$TARGET_PATH"
+echo "Release artifact parts created:"
+ls -lh "${TARGET_PATH}".*

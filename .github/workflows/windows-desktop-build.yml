@@ -1,4 +1,4 @@
-name: Desktop Release Build
+name: Desktop Release Build (macOS / Windows / Windows CUDA / Linux)
 
 on:
   push:
@@ -20,15 +20,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - os: macos-latest
+            platform: macos
           - os: windows-latest
             platform: windows
           - os: windows-latest
-            platform: windows-cuda  
-          - os: macos-latest
-            platform: macos
-          #Disabling linux for now, because it fails because it is over 1.6 gb
-          #- os: ubuntu-latest
-          #  platform: linux
+            platform: windows-cuda
+          - os: ubuntu-latest
+            platform: linux
 
 
     steps:

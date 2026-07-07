@@ -45,6 +45,7 @@ GEN_BOT_DET_EVENIF_HUMAN_EXISTS = True
 OVERWRITE_PREV_BOT_DETECTIONS = True
 GEN_THUMBNAILS = True
 DELETE_OLD_MODEL_PATCHES = False  # When True, deletes patch images from the old model when switching models
+GEN_HUMAN_DET_PATCHES = True    # When True, extracts patch crops from x-anylabeling annotations and writes _humandetection.json
 DATASET_ROOT = None  # Set by run(); when None, outputs go next to source images (legacy)
 
 
@@ -305,8 +306,44 @@ def is_valid_image(image_path):
         return False
 
 
+def _write_humandetection_json(source_json_data: dict, output_path: str, image_path: str):
+    """Write a _humandetection.json from an x-anylabeling source JSON.
+
+    Copies the processed shapes (which already have patch_path set by
+    generateThumbnailPatches_JSON) into a new file using the same structure as
+    _botdetection.json so that Classify can ingest it alongside bot runs.
+    Sets version/detector_bot/identifier_bot to "HumanDetection" so Classify
+    can identify the detection source.
+    """
+    shapes = source_json_data.get("shapes", [])
+    humandetection_data = {
+        "version": "HumanDetection",
+        "flags": source_json_data.get("flags", {}),
+        "imagePath": image_path,
+        "imageHeight": source_json_data.get("imageHeight"),
+        "imageWidth": source_json_data.get("imageWidth"),
+        "description": "Human detection via x-anylabeling",
+        "imageData": None,
+        "shapes": [
+            {
+                **shape,
+                "detector_bot": "HumanDetection",
+                "identifier_bot": shape.get("identifier_bot", ""),
+                "timestamp_detection": shape.get("timestamp_detection", current_timestamp()),
+            }
+            for shape in shapes
+        ],
+    }
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump(humandetection_data, f, indent=2)
+    print(f"  Wrote human detection file: {os.path.basename(output_path)}")
+
+
 def _resolve_output_paths(image_path, filename_stem, source_folder):
-    """Return (human_json_path, bot_json_path, patch_folder_path).
+    """Return (human_json_path, bot_json_path, humandetection_json_path, patch_folder_path).
 
     When DATASET_ROOT is set the outputs go into the _processed mirror tree
     flat alongside the JSONs — no patches/ sub-folder.
@@ -316,15 +353,17 @@ def _resolve_output_paths(image_path, filename_stem, source_folder):
     if DATASET_ROOT:
         human_json_path = get_json_output_path(image_path, "", DATASET_ROOT)
         bot_json_path = get_json_output_path(image_path, "_botdetection", DATASET_ROOT)
+        humandetection_json_path = get_json_output_path(image_path, "_humandetection", DATASET_ROOT)
         # Patches go flat in the same mirrored folder as the JSONs
         patch_folder_path = Path(get_processed_folder(source_folder, DATASET_ROOT))
     else:
         # Legacy: outputs next to source image
         human_json_path = os.path.join(source_folder, filename_stem + ".json")
         bot_json_path = os.path.join(source_folder, filename_stem + "_botdetection.json")
+        humandetection_json_path = os.path.join(source_folder, filename_stem + "_humandetection.json")
         patch_folder_path = Path(source_folder) / "patches"
         patch_folder_path.mkdir(parents=True, exist_ok=True)
-    return human_json_path, bot_json_path, patch_folder_path
+    return human_json_path, bot_json_path, humandetection_json_path, patch_folder_path
 
 
 BATCH_SIZE = 8
@@ -531,7 +570,7 @@ def process_image_list(img_files, dataset_root=None):
         filename_stem = filename[:-4] if filename.lower().endswith(".jpg") else filename
         source_folder = os.path.dirname(image_path)
 
-        human_json_path, bot_json_path, patch_folder_path = _resolve_output_paths(
+        human_json_path, bot_json_path, humandetection_json_path, patch_folder_path = _resolve_output_paths(
             image_path, filename_stem, source_folder
         )
 
@@ -544,7 +583,7 @@ def process_image_list(img_files, dataset_root=None):
             print(f"Skipping {filename}: Image file is missing or empty.")
             continue
 
-        # Check 1: human detection file
+        # Check 1: human detection file (x-anylabeling annotation)
         human_json_source = os.path.join(source_folder, filename_stem + ".json")
         effective_human_json = human_json_path if os.path.isfile(human_json_path) else (
             human_json_source if os.path.isfile(human_json_source) else None
@@ -559,6 +598,8 @@ def process_image_list(img_files, dataset_root=None):
                     json_data = generateThumbnailPatches_JSON(image_path, json_data, patch_folder_path)
                     with open(human_json_path, "w") as f:
                         json.dump(json_data, f, indent=4)
+                if GEN_HUMAN_DET_PATCHES:
+                    _write_humandetection_json(json_data, humandetection_json_path, image_path)
                 if not GEN_BOT_DET_EVENIF_HUMAN_EXISTS:
                     print("skipping-will not create bot detections in parallel with human detections")
                     continue
@@ -780,6 +821,7 @@ def run(
     overwrite_prev_bot_detections=True,
     gen_bot_det_evenif_human_exists=True,
     gen_thumbnails=True,
+    gen_human_det_patches=True,
     delete_old_model_patches=False,
     dataset_root=None,
 ):
@@ -801,7 +843,7 @@ def run(
     """
     global YOLO_MODEL, IMGSZ, DEVICE, GEN_THUMBNAILS
     global GEN_BOT_DET_EVENIF_HUMAN_EXISTS, OVERWRITE_PREV_BOT_DETECTIONS
-    global DELETE_OLD_MODEL_PATCHES, DATASET_ROOT
+    global GEN_HUMAN_DET_PATCHES, DELETE_OLD_MODEL_PATCHES, DATASET_ROOT
 
     YOLO_MODEL = yolo_model or DEFAULT_YOLO_MODEL
     IMGSZ = int(imgsz)
@@ -809,6 +851,7 @@ def run(
     GEN_THUMBNAILS = gen_thumbnails
     GEN_BOT_DET_EVENIF_HUMAN_EXISTS = gen_bot_det_evenif_human_exists
     OVERWRITE_PREV_BOT_DETECTIONS = overwrite_prev_bot_detections
+    GEN_HUMAN_DET_PATCHES = gen_human_det_patches
     DELETE_OLD_MODEL_PATCHES = delete_old_model_patches
     DATASET_ROOT = dataset_root or input_path
 
@@ -839,6 +882,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--overwrite_prev_bot_detections", default=True, required=False)
     parser.add_argument("--gen_thumbnails", default=True, required=False)
+    parser.add_argument("--gen_human_det_patches", default=True, required=False)
     parser.add_argument(
         "--dataset_root",
         default=None,
@@ -857,6 +901,11 @@ if __name__ == "__main__":
             bool(int(args.gen_thumbnails))
             if not isinstance(args.gen_thumbnails, bool)
             else args.gen_thumbnails
+        ),
+        gen_human_det_patches=(
+            bool(int(args.gen_human_det_patches))
+            if not isinstance(args.gen_human_det_patches, bool)
+            else args.gen_human_det_patches
         ),
         dataset_root=args.dataset_root,
     )

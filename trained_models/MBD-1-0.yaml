@@ -1,0 +1,10 @@
+type: yolo26_obb
+name: yolo26m_obb_custom15
+display_name: Yolo26m15kbugs-OBB
+provider: Ultralytics
+model_path: "MBD-1-0.onnx"
+iou_threshold: 0.45
+conf_threshold: 0.1
+max_det: 500
+classes:
+  - creature

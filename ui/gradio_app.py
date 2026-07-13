@@ -300,9 +300,12 @@ def app():
                     with gr.Column():
                         gr.Markdown("### Additional Processing Files:")
                         with gr.Row():
-                            yolo_model_path = gr.Text(
+                            yolo_model_path = gr.Dropdown(
+                                choices=BUNDLED_MODEL_CHOICES,
                                 value=DEFAULT_YOLO_MODEL,
-                                label="Detection Model Path",
+                                label="Detection Model",
+                                allow_custom_value=True,
+                                info="Select a bundled model or browse / paste a custom .pt path.",
                             )
                             yolo_browse_btn = gr.Button("Browse", size="sm", scale=0, min_width=100)
                         with gr.Row():
@@ -374,8 +377,11 @@ def app():
             # ~~~~~~~~~~~~ DETECTION TAB ~~~~~~~~~~~~~~~~~~~~~~
             with gr.Tab("Detect", id="detect", visible=False) as detect_tab:
                 with gr.Row():
-                    det_model_path_mirror = gr.Text(
-                        label="Detection Model Path",
+                    det_model_path_mirror = gr.Dropdown(
+                        choices=BUNDLED_MODEL_CHOICES,
+                        value=DEFAULT_YOLO_MODEL,
+                        label="Detection Model",
+                        allow_custom_value=True,
                         interactive=True,
                     )
                     det_model_browse_mirror = gr.Button("Browse", size="sm", scale=0, min_width=100)
@@ -1607,6 +1613,7 @@ def get_index(selected_word):
 
 
 def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bot, delete_old_patches=False, external_keys=None):
+    yolo_model = _resolve_model_path(yolo_model)
     SHOW_STOP = gr.update(visible=True, value="Stop Current Run", interactive=True)
     HIDE_STOP = gr.update(visible=False)
     NO_IMG = gr.update()  # no-op update for the preview image
@@ -1867,6 +1874,7 @@ def run_full_process(
     metadata_csv=None,
     external_keys=None,
 ):
+    yolo_model = _resolve_model_path(yolo_model)
     SHOW_STOP = gr.update(visible=True, value="Stop Current Run", interactive=True)
     HIDE_STOP = gr.update(visible=False)
     NO_TAB = gr.update()  # no-op tab navigation
@@ -2186,11 +2194,60 @@ DEFAULT_YOLO_MODEL = _resolve_first_artifact_match(
 )
 '''
 
-# Temporarily disable the artifact matching to just leave the defaults blank #because i don't know how to use the artifact thing right yet
-
 DEFAULT_METADATA_CSV = ""
 DEFAULT_SPECIES_CSV = ""
-DEFAULT_YOLO_MODEL = ""
+
+
+def _discover_bundled_models():
+    """Find MBD-*.pt files in trained_models/ for both packaged and source runs.
+
+    Checks sys._MEIPASS first (PyInstaller bundle), then PROJECT_ROOT/trained_models.
+    Returns a list of (label, path) tuples sorted newest-version-first, ready for
+    a gr.Dropdown choices list.
+    """
+    search_dirs = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        search_dirs.append(Path(meipass) / "trained_models")
+    search_dirs.append(PROJECT_ROOT / "trained_models")
+
+    seen: set[str] = set()
+    models = []
+    for d in search_dirs:
+        if not d.is_dir():
+            continue
+        for pt in sorted(d.glob("MBD-*.pt")):
+            m = re.match(r"MBD-(\d+)-(\d+)\.pt$", pt.name)
+            if not m or pt.name in seen:
+                continue
+            seen.add(pt.name)
+            major, minor = int(m.group(1)), int(m.group(2))
+            models.append((major, minor, pt))
+
+    models.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    return [
+        (f"MBD-{major}-{minor} (bundled)", str(path.resolve()))
+        for major, minor, path in models
+    ]
+
+
+BUNDLED_MODEL_CHOICES = _discover_bundled_models()
+# Map label → path so we can resolve it even when Gradio sends the label string
+# instead of the underlying value (a known gr.Dropdown allow_custom_value quirk).
+BUNDLED_MODEL_LABEL_TO_PATH: dict[str, str] = {
+    label: path for label, path in BUNDLED_MODEL_CHOICES
+}
+DEFAULT_YOLO_MODEL = BUNDLED_MODEL_CHOICES[0][1] if BUNDLED_MODEL_CHOICES else ""
+
+
+def _resolve_model_path(value: str) -> str:
+    """Return the real filesystem path for a model dropdown value.
+
+    Gradio 5's gr.Dropdown with allow_custom_value=True can send the displayed
+    label text instead of the underlying value when a bundled choice is selected.
+    This maps the label back to the path; custom / already-absolute paths pass through.
+    """
+    return BUNDLED_MODEL_LABEL_TO_PATH.get(value, value)
 
 demo = app()
 

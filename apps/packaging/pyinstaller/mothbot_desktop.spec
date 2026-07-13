@@ -93,6 +93,14 @@ for src in [
         else:
             datas.append((str(src), "."))
 
+# Bundle MBD detector models so the UI can offer them as built-in options.
+trained_models_dir = project_dir / "trained_models"
+if trained_models_dir.exists():
+    import re as _re
+    for _model in sorted(trained_models_dir.glob("MBD-*.pt")):
+        if _re.match(r"MBD-\d+-\d+\.pt$", _model.name):
+            datas.append((str(_model), "trained_models"))
+
 # Bundle favicon.png into assets/ so tray icon and browser tab can find it.
 favicon_png = project_dir / "assets" / "favicon.png"
 if favicon_png.exists():

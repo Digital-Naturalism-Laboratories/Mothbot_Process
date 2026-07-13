@@ -481,6 +481,7 @@ def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_erro
     """
     cache_path = os.path.splitext(taxa_path)[0] + ".pt"
 
+    _ensure_hf_mode()
     print("Loading TOL classifier")
     classifier = TreeOfLifeClassifier(device=device)
 
@@ -679,33 +680,56 @@ def ID_matched_img_json_pairs(
         run_id_on_detection_set(bot_matched_img_json_pairs, classifier, "BOT")
 
 
+def _ensure_hf_mode():
+    """Disable HuggingFace Hub network access if no internet is available.
+
+    TreeOfLifeClassifier() triggers huggingface_hub to HEAD-check its embeddings
+    file on every init, even when they are already cached. With no connection this
+    causes ~40 s of retries. A 2-second DNS probe avoids that wait.
+    """
+    if os.environ.get("HF_HUB_OFFLINE") == "1":
+        return
+    import socket
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        sock.connect(("8.8.8.8", 53))
+        sock.close()
+    except OSError:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        print("No internet connection detected — HuggingFace Hub will use cached files only.")
+
+
 def extract_doi_from_csv_path(csv_path: str) -> str:
     """
     Extracts the DOI from a filename like:
-      SpeciesList_..._doi.org10.15468dl.epzeza.csv
+      SpeciesList_..._doi.org10.15468dl.epzeza.csv       (old: no separator dot)
+      SpeciesList_..._doi.org.10.15468.dl.pkbmuj.csv     (new: dot-separated)
     and returns the full DOI URL.
-
-    Works for any DOI variant formatted as "doi.org10....".
     Returns "no_doi" if no valid DOI is found.
     """
     filename = os.path.basename(csv_path)
 
-    # Try to find the DOI chunk (everything after 'doi.org' up to .csv)
     match = re.search(r"(doi\.org[0-9A-Za-z\.\-]+)", filename)
     if not match:
         return "no_doi"
 
-    doi_raw = match.group(1)  # e.g. "doi.org10.15468dl.epzeza"
-    doi_core = doi_raw.replace("doi.org", "")  # e.g. "10.15468dl.epzeza"
+    doi_raw = match.group(1)
+    # Strip "doi.org", any leading separator dot, and trailing ".csv" if the
+    # regex greedily consumed it as part of the DOI chunk.
+    doi_core = doi_raw.replace("doi.org", "").lstrip(".")
+    if doi_core.lower().endswith(".csv"):
+        doi_core = doi_core[:-4]
 
-    # General DOI rule: starts with "10." and has a slash somewhere
-    # Fix by inserting a slash between the prefix and the rest
+    # DOI prefix is always "10.<registrant>" — find the split point.
     m = re.match(r"(10\.\d+)(.+)", doi_core)
     if not m:
         return "no_doi"
 
     prefix, suffix = m.groups()
-    doi_fixed = f"{prefix}/{suffix}"
+    # suffix may start with "." in dot-separated filenames — strip it.
+    doi_fixed = f"{prefix}/{suffix.lstrip('.')}"
 
     return f"https://doi.org/{doi_fixed}"
 

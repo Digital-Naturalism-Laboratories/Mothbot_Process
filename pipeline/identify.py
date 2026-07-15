@@ -457,24 +457,49 @@ def add_metadata_to_json(json_path, metadata_path):
     print(f"Metadata added to {json_path}")
 
 
+def _build_classifier_from_embedding_cache(txt_embeddings, txt_names, device):
+    """Create a TreeOfLifeClassifier from pre-filtered embeddings without loading the full TOL set.
+
+    TreeOfLifeClassifier.__init__() always loads the complete Tree of Life
+    embedding file (~900 MB numpy array + large JSON).  On a cache hit we can
+    skip that entirely: initialise only the vision model via BaseClassifier,
+    then inject the small filtered tensors that were saved to cache.
+
+    The resulting object is a fully functional TreeOfLifeClassifier — predict()
+    calls get_txt_embeddings() / get_current_txt_names() which both return the
+    subset attrs when they are set, so inference is identical to the full path.
+    """
+    from bioclip.predict import BaseClassifier as _BaseClassifier
+
+    # Allocate the instance without calling TreeOfLifeClassifier.__init__
+    # (which would trigger the 900 MB TOL embedding load).
+    classifier = object.__new__(TreeOfLifeClassifier)
+    # BaseClassifier.__init__ loads the CLIP vision model + torch.compile — unavoidable.
+    _BaseClassifier.__init__(classifier, device=device)
+
+    # Inject the pre-filtered subset; full attrs are not needed in this mode.
+    classifier.txt_embeddings = None
+    classifier.txt_names = None
+    classifier._subset_txt_embeddings = txt_embeddings.to(device)
+    classifier._subset_txt_names = txt_names
+    return classifier
+
+
 def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_errors):
     """Build (or load from cache) a TreeOfLifeClassifier filtered to the given taxa.
 
-    Uses the modern apply_filter() API. The boolean filter mask is cached as a
-    .pt file alongside the CSV so subsequent runs skip the expensive rebuild.
+    Cache format (v2): stores the pre-filtered embedding tensor + names list so
+    subsequent runs skip loading the full ~900 MB Tree of Life embedding file.
 
-    NOTE: If you have a .pt cache from an older version of this script (which
-    stored raw tensors instead of a bool list), delete it before running so it
-    gets rebuilt in the new format.
+    Old format (v1 bool mask) is detected and upgraded automatically on the next
+    full run — delete the .pt file to force a rebuild at any time.
 
     Args:
         taxa_path: Path to the GBIF species-list CSV.
         taxa_cols: Column name list for the CSV.
         taxon_rank: Taxonomic rank string (e.g. "order", "species").
         device: Torch device string ("cpu" or "cuda").
-        flag_the_det_errors: Whether to add abiotic error labels (currently
-            unused with the filter approach — low-confidence noise detections
-            will naturally score low against the insect-only label set).
+        flag_the_det_errors: Unused; kept for API compatibility.
 
     Returns:
         TreeOfLifeClassifier with embeddings filtered to the taxa in taxa_path.
@@ -482,20 +507,31 @@ def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_erro
     cache_path = os.path.splitext(taxa_path)[0] + ".pt"
 
     _ensure_hf_mode()
-    print("Loading TOL classifier")
-    classifier = TreeOfLifeClassifier(device=device)
 
+    # ── Fast path: load pre-filtered embeddings from cache ─────────────────
     if os.path.exists(cache_path):
-        print(f"Loading cached taxa filter from {cache_path}")
-        cache = torch.load(cache_path, map_location="cpu")
-        if "keep_labels_ary" not in cache:
-            print("⚠️  Cache is in old tensor format — rebuilding. Delete the .pt file to suppress this message.")
-        else:
-            classifier.apply_filter(cache["keep_labels_ary"])
-            print(f"TOL: Loaded {sum(cache['keep_labels_ary'])} filtered labels from cache")
+        try:
+            cache = torch.load(cache_path, map_location="cpu", weights_only=False)
+        except Exception:
+            cache = {}
+
+        if "txt_embeddings" in cache and "txt_names" in cache:
+            n = cache["txt_embeddings"].shape[1]
+            print(f"Loading BioCLIP model with cached filter ({n} filtered labels) — skipping full TOL embedding load")
+            classifier = _build_classifier_from_embedding_cache(
+                cache["txt_embeddings"], cache["txt_names"], device
+            )
             return classifier
 
-    # ── No valid cache → build filter fresh ────────────────────────
+        if "keep_labels_ary" in cache:
+            print("ℹ️  Old-style bool-mask cache found — running full load once to upgrade cache format.")
+        else:
+            print("⚠️  Unrecognised cache — rebuilding from scratch.")
+
+    # ── Slow path: load full TOL (~900 MB), filter, save v2 cache ──────────
+    print("Loading TOL classifier (slow first run — result will be cached for next time)...")
+    classifier = TreeOfLifeClassifier(device=device)
+
     taxon_keys = load_taxon_keys(
         taxa_path=taxa_path,
         taxa_cols=taxa_cols,
@@ -506,8 +542,8 @@ def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_erro
     print(f"Filtering TOL embeddings to {len(taxon_keys)} {taxon_rank} values...")
     label_data = classifier.get_label_data()
 
-    # Use isin() rather than create_taxa_filter() because the GBIF list will
-    # always contain taxa not present in TOL — create_taxa_filter() raises on those.
+    # Use isin() rather than create_taxa_filter() — GBIF lists contain taxa not
+    # in TOL, and create_taxa_filter() raises on unknown values.
     keep_labels_ary = label_data[taxon_rank].str.lower().isin(taxon_keys).tolist()
     matched = sum(keep_labels_ary)
     print(f"Keeping {matched} of {len(keep_labels_ary)} TOL embeddings")
@@ -520,8 +556,15 @@ def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_erro
 
     classifier.apply_filter(keep_labels_ary)
 
-    print(f"Saving taxa filter cache to {cache_path}")
-    torch.save({"keep_labels_ary": keep_labels_ary}, cache_path)
+    # Save v2 cache: the filtered tensor + names so next run skips the full load.
+    print(f"Saving filtered embedding cache to {cache_path}")
+    torch.save(
+        {
+            "txt_embeddings": classifier._subset_txt_embeddings.cpu(),
+            "txt_names": classifier._subset_txt_names,
+        },
+        cache_path,
+    )
 
     return classifier
 

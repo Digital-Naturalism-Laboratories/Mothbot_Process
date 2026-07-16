@@ -25,6 +25,7 @@ Arguments:
 
 """
 import ssl
+import threading
 
 ssl._create_default_https_context = (
     ssl._create_unverified_context
@@ -329,20 +330,41 @@ def get_bioclip_predictions_batch(imgs, classifier, batch_size=32):
     start_time = time.time()
     rank_label = str(TAXONOMIC_RANK_FILTER.get_label())
 
+    # BioCLIP's predict() has a silent finalization phase after the last batch
+    # callback fires (internal result collection). A heartbeat thread prints a
+    # reminder every ~10s whenever no progress has been reported for that long.
+    _last_print = [time.time()]
+    _done = threading.Event()
+
+    def _heartbeat():
+        while not _done.wait(5):
+            if time.time() - _last_print[0] > 10:
+                elapsed = time.time() - start_time
+                print(f"   ⏳ Still working... ({elapsed:.0f}s elapsed — finalizing predictions)")
+                _last_print[0] = time.time()
+
+    _hb = threading.Thread(target=_heartbeat, daemon=True)
+    _hb.start()
+
     def progress_callback(processed, total_imgs):
         elapsed = time.time() - start_time
         if processed > 0 and (processed % (batch_size * 5) == 0 or processed == total_imgs):
             remaining = (elapsed / processed) * (total_imgs - processed)
             print(f"   📦 {processed}/{total_imgs} images — ~{remaining:.0f}s remaining")
+            _last_print[0] = time.time()
 
-    # predict() returns one dict per result row; with k=1 that's exactly one per image
-    all_predictions = classifier.predict(
-        imgs,
-        rank=TAXONOMIC_RANK_FILTER,
-        k=1,
-        batch_size=batch_size,
-        callback=progress_callback,
-    )
+    try:
+        raw_predictions = classifier.predict(
+            imgs,
+            rank=TAXONOMIC_RANK_FILTER,
+            k=1,
+            batch_size=batch_size,
+            callback=progress_callback,
+        )
+        all_predictions = list(raw_predictions)  # force evaluation if predict() is a generator
+    finally:
+        _done.set()
+    _hb.join(timeout=2)
 
     results = []
     for pred in all_predictions:
@@ -695,16 +717,21 @@ def run_id_on_detection_set(matched_img_json_pairs, classifier, label):
     # Batch predict on representatives only
     predictions = get_bioclip_predictions_batch(rep_imgs, classifier, batch_size=batch_size)
 
-    # Write results — apply each prediction to ALL members of that cluster
-    for (rep_path, rep_json, rep_idx), members, (pred, conf, winningdict) in zip(
-        valid_reps, valid_members, predictions
+    # Write results — apply each prediction to ALL members of that cluster.
+    # Print progress every 50 entries instead of every line; individual prints
+    # all arrive within a single Gradio poll window and appear as one burst.
+    n_reps = len(valid_reps)
+    print(f"  Writing IDs to {n_reps} result groups...")
+    for i, ((rep_path, rep_json, rep_idx), members, (pred, conf, winningdict)) in enumerate(
+        zip(valid_reps, valid_members, predictions)
     ):
-        print(f"  {os.path.basename(rep_path)}: {pred} ({conf:.3f}) → applied to {len(members)} detection(s)")
         apply_id_to_cluster(
             [m[1] for m in members],
             [m[2] for m in members],
             pred, conf, winningdict,
         )
+        if (i + 1) % 50 == 0 or (i + 1) == n_reps:
+            print(f"  ✏️  {i + 1}/{n_reps} groups written...")
 
     total_time = time.time() - start_time
     print(

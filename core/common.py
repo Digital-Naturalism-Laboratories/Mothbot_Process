@@ -8,6 +8,7 @@ provides a lightweight stdout-capture helper used by the Gradio UI to
 stream output from in-process worker calls.
 """
 
+import ctypes
 import io
 import json
 import logging
@@ -394,7 +395,11 @@ def run_in_thread(fn, *args, tick_interval: float | None = None, **kwargs):
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
 
-    # Prevent macOS from suspending CPU-heavy background work when the screen locks.
+    # Prevent the OS from sleeping during CPU-heavy pipeline work.
+    # macOS: caffeinate -dis  (-d display, -i idle, -s system sleep on AC power).
+    #        Lid-close on battery still sleeps — that's an OS-level restriction.
+    # Windows: SetThreadExecutionState keeps the CPU + display awake for the
+    #          duration of this generator; restored in the finally block below.
     _caffeinate = None
     if sys.platform == "darwin":
         try:
@@ -402,6 +407,16 @@ def run_in_thread(fn, *args, tick_interval: float | None = None, **kwargs):
             _caffeinate = _sp.Popen(["caffeinate", "-dis"])
         except Exception:
             pass  # non-fatal if caffeinate is somehow unavailable
+    elif sys.platform == "win32":
+        try:
+            _ES_CONTINUOUS       = 0x80000000
+            _ES_SYSTEM_REQUIRED  = 0x00000001
+            _ES_DISPLAY_REQUIRED = 0x00000002
+            ctypes.windll.kernel32.SetThreadExecutionState(
+                _ES_CONTINUOUS | _ES_SYSTEM_REQUIRED | _ES_DISPLAY_REQUIRED
+            )
+        except Exception:
+            pass
 
     poll = 0.05 if tick_interval else 0.2
     last_tick = time.monotonic()
@@ -441,3 +456,8 @@ def run_in_thread(fn, *args, tick_interval: float | None = None, **kwargs):
         if _caffeinate is not None:
             _caffeinate.terminate()
             _caffeinate.wait(timeout=3)
+        elif sys.platform == "win32":
+            try:
+                ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)  # ES_CONTINUOUS only
+            except Exception:
+                pass

@@ -151,6 +151,72 @@ def app():
             }
             tagPixelMassTab();
             new MutationObserver(tagPixelMassTab).observe(document.body, { childList: true, subtree: true });
+
+            // ── Sleep / reconnect recovery banner ──────────────────────────────
+            // When the laptop wakes from sleep (lid opens, screen-on, etc.) the
+            // browser fires visibilitychange: hidden → visible.  If a pipeline
+            // was running, Gradio's SSE stream is orphaned and the UI freezes.
+            // Show a banner so the user knows what happened and how to recover.
+            var _wasHidden = false;
+
+            function _isPipelineRunning() {
+                // The Stop button is visible and enabled only while a run is active.
+                var buttons = document.querySelectorAll('button');
+                for (var i = 0; i < buttons.length; i++) {
+                    var btn = buttons[i];
+                    if (btn.offsetParent !== null &&
+                        !btn.disabled &&
+                        btn.textContent.trim().startsWith('Stop')) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            function _showReconnectBanner() {
+                if (document.getElementById('mothbot-reconnect-banner')) return;
+                var banner = document.createElement('div');
+                banner.id = 'mothbot-reconnect-banner';
+                banner.style.cssText = [
+                    'position:fixed', 'top:64px', 'left:50%',
+                    'transform:translateX(-50%)',
+                    'background:#e65100', 'color:#fff',
+                    'padding:12px 18px', 'border-radius:8px',
+                    'z-index:99999', 'box-shadow:0 4px 16px rgba(0,0,0,.4)',
+                    'font:14px/1.5 sans-serif', 'max-width:520px',
+                    'text-align:center'
+                ].join(';');
+                banner.innerHTML = [
+                    '<strong>⚠️ Connection restored after sleep</strong><br>',
+                    'The pipeline is still running in the background.',
+                    ' If the output is frozen, click <strong>Stop</strong>',
+                    ' then re-run the current stage.',
+                    '&nbsp;&nbsp;<button onclick="document.getElementById(',
+                    "'mothbot-reconnect-banner').remove()\"",
+                    ' style="background:#fff;color:#e65100;border:none;',
+                    'border-radius:4px;padding:3px 9px;cursor:pointer;',
+                    'font-weight:bold">✕</button>'
+                ].join('');
+                document.body.appendChild(banner);
+                // Auto-dismiss after 60 s
+                setTimeout(function() {
+                    var el = document.getElementById('mothbot-reconnect-banner');
+                    if (el) el.remove();
+                }, 60000);
+            }
+
+            document.addEventListener('visibilitychange', function() {
+                if (document.visibilityState === 'hidden') {
+                    _wasHidden = true;
+                } else if (_wasHidden) {
+                    _wasHidden = false;
+                    // Give Gradio ~2 s to re-establish its SSE connection before
+                    // checking whether a pipeline is still marked as running.
+                    setTimeout(function() {
+                        if (_isPipelineRunning()) _showReconnectBanner();
+                    }, 2000);
+                }
+            });
         }
         """,
         css="""

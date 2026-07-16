@@ -30,6 +30,15 @@ python -m PyInstaller --clean --noconfirm \
   --distpath "$DIST_DIR" \
   apps/packaging/pyinstaller/mothbot_desktop.spec
 
+# Free disk space before compression — the venv and PyInstaller work dir are
+# no longer needed after the build completes, but together they occupy ~5+ GB
+# that 7z needs to write the compressed split-archive parts.
+echo "Freeing disk space before compression..."
+deactivate 2>/dev/null || true
+rm -rf "$VENV_DIR"
+rm -rf "$BUILD_DIR"
+df -h . || true  # log remaining space for CI debugging
+
 bash "./apps/scripts/package_release_linux.sh"
 
 echo

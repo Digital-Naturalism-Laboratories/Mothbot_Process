@@ -282,24 +282,34 @@ def extract_embeddings(image_files, batch_size=8):
 def cluster_embeddings(embeddings):
     n = len(embeddings)
 
+    # --- L2-normalize embeddings ---
+    # DINOv2 features are most meaningful when compared by direction (cosine
+    # similarity), not by magnitude.  L2-normalizing maps all vectors onto the
+    # unit hypersphere so euclidean distance == sqrt(2*(1-cosine_sim)), giving
+    # distances a consistent 0–2 scale regardless of batch size or model output.
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1.0, norms)
+    embeddings = embeddings / norms
+
     # --- min_cluster_size ---
-    # Should be small enough to allow many distinct clusters even in large
-    # batches.  A fixed value of 3 forces HDBSCAN to merge sparse regions
-    # aggressively when embeddings are dense (e.g. lower-res patches).
-    # Cap at 3 so we never need more than 3 similar images to form a cluster.
-    min_cluster_size = 2 if n < 100 else 3
+    # Fixed at 2: any pair of visually similar images forms a cluster.
+    # Using 3 on large datasets was the main cause of ~30% of obvious matches
+    # being left as noise (-1) — two identical-looking moths with no third
+    # similar image would both be discarded as unclustered.
+    min_cluster_size = 2
 
     # --- cluster_selection_epsilon ---
-    # This is the main over-generalisation culprit.  Even a small value like
-    # 0.05 can merge dozens of distinct clusters when embeddings are tightly
-    # packed (lower resolution → less variance).  Setting it to 0.0 disables
-    # the merging step entirely and lets HDBSCAN find natural density boundaries.
-    epsilon = 0.0
+    # After L2-normalization, distances are bounded [0, 2].  epsilon=0.4
+    # corresponds roughly to cosine_similarity ≥ 0.92, bridging small density
+    # gaps between patches of the same species that HDBSCAN would otherwise
+    # leave as separate leaf clusters or noise.  Safe to use here because the
+    # normalized scale is well-defined (unlike raw DINOv2 magnitudes where
+    # even 0.05 could over-merge).
+    epsilon = 0.4
 
     # --- cluster_selection_method ---
-    # "eom" (excess of mass, the default) tends to produce a few large clusters.
-    # "leaf" keeps the finest-grained clusters that HDBSCAN finds, which gives
-    # far more clusters and is much better for diverse insect collections.
+    # "leaf" keeps the finest-grained clusters, giving more clusters and
+    # better separation for diverse insect collections.
     cluster_selection_method = "leaf"
 
     clusterer = hdbscan.HDBSCAN(

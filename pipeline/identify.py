@@ -184,6 +184,10 @@ def load_taxon_keys(
     Returns:
         set(str): lowercased unique taxon_rank values
     """
+    if not taxa_path or (isinstance(taxa_path, str) and not taxa_path.strip()):
+        print("No species list provided — running without taxon filter (full Tree of Life).")
+        return set()
+
     print(f"Reading {taxa_path!s}, extracting {taxon_rank} values.")
 
     # encodings to try in order (utf-8 first, then common windows/latin fallbacks)
@@ -504,6 +508,12 @@ def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_erro
     Returns:
         TreeOfLifeClassifier with embeddings filtered to the taxa in taxa_path.
     """
+    # No species list → use the full unfiltered Tree of Life.
+    if not taxa_path or (isinstance(taxa_path, str) and not taxa_path.strip()):
+        _ensure_hf_mode()
+        print("No species list provided — loading full Tree of Life classifier (no taxon filter).")
+        return TreeOfLifeClassifier(device=device)
+
     cache_path = os.path.splitext(taxa_path)[0] + ".pt"
 
     _ensure_hf_mode()

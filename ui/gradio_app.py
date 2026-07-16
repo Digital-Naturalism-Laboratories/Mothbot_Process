@@ -559,6 +559,7 @@ def app():
                 with gr.Row():
                     id_species_mirror = gr.Text(
                         label="Species List:",
+                        value=DEFAULT_SPECIES_CSV,
                         interactive=True,
                     )
                     id_species_browse_mirror = gr.Button("Browse", size="sm", scale=0, min_width=100)
@@ -2270,7 +2271,60 @@ DEFAULT_YOLO_MODEL = _resolve_first_artifact_match(
 '''
 
 DEFAULT_METADATA_CSV = ""
-DEFAULT_SPECIES_CSV = ""
+
+
+def _ensure_bundled_species_csv() -> str:
+    """Return the path to the bundled worldwide species-list CSV, extracting it
+    from the committed zip if the CSV hasn't been unpacked yet.
+
+    The CSV is 269 MB (over GitHub's 100 MB limit) so only the zip is stored in
+    git.  For a frozen app the zip is bundled inside sys._MEIPASS/specieslists/;
+    the extracted CSV is written to ~/.mothbot/specieslists/ (writable on all
+    platforms).  For source runs both the zip and the extracted CSV live in
+    PROJECT_ROOT/specieslists/.
+    """
+    import zipfile
+
+    zip_name = "Species_GBIF_Insecta_Worldwide_doi.org10.15468dl.hr7yfq.csv.zip"
+    csv_name = zip_name[:-4]  # strip .zip
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        zip_path = Path(meipass) / "specieslists" / zip_name
+        csv_dir  = Path.home() / ".mothbot" / "specieslists"
+    else:
+        zip_path = PROJECT_ROOT / "specieslists" / zip_name
+        csv_dir  = PROJECT_ROOT / "specieslists"
+
+    csv_path = csv_dir / csv_name
+
+    if csv_path.exists():
+        return str(csv_path)
+
+    if not zip_path.exists():
+        return ""
+
+    try:
+        csv_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Extracting bundled worldwide species list — this happens once (~270 MB)...")
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            # Extract only the CSV; skip macOS __MACOSX metadata entries
+            for member in zf.namelist():
+                if member.endswith(".csv") and not member.startswith("__"):
+                    zf.extract(member, csv_dir)
+                    extracted = csv_dir / member
+                    if extracted != csv_path:
+                        extracted.rename(csv_path)
+                    break
+        if csv_path.exists():
+            print(f"Species list ready: {csv_path}")
+            return str(csv_path)
+    except Exception as exc:
+        print(f"Warning: could not extract bundled species list: {exc}")
+    return ""
+
+
+DEFAULT_SPECIES_CSV = _ensure_bundled_species_csv()
 
 
 def _discover_bundled_models():

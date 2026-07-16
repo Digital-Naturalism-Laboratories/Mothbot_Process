@@ -93,6 +93,13 @@ for src in [
         else:
             datas.append((str(src), "."))
 
+# Bundle species-list zips (the full CSVs are too large for git; the app
+# extracts them on first run to ~/.mothbot/specieslists/).
+species_list_dir = project_dir / "specieslists"
+if species_list_dir.exists():
+    for _zf in sorted(species_list_dir.glob("*.csv.zip")):
+        datas.append((str(_zf), "specieslists"))
+
 # Bundle MBD detector models so the UI can offer them as built-in options.
 trained_models_dir = project_dir / "trained_models"
 if trained_models_dir.exists():

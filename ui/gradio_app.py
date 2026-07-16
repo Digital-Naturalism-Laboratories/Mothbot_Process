@@ -186,17 +186,21 @@ def app():
                     'font:14px/1.5 sans-serif', 'max-width:520px',
                     'text-align:center'
                 ].join(';');
-                banner.innerHTML = [
-                    '<strong>⚠️ Connection restored after sleep</strong><br>',
-                    'The pipeline is still running in the background.',
-                    ' If the output is frozen, click <strong>Stop</strong>',
-                    ' then re-run the current stage.',
-                    '&nbsp;&nbsp;<button onclick="document.getElementById(',
-                    "'mothbot-reconnect-banner').remove()\"",
-                    ' style="background:#fff;color:#e65100;border:none;',
-                    'border-radius:4px;padding:3px 9px;cursor:pointer;',
-                    'font-weight:bold">✕</button>'
-                ].join('');
+                var msg = document.createElement('span');
+                msg.innerHTML = '<strong>⚠️ Connection restored after sleep</strong> — '
+                    + 'The pipeline is still running in the background. '
+                    + 'If the output is frozen, click <strong>Stop</strong> then re-run the current stage.';
+                var closeBtn = document.createElement('button');
+                closeBtn.textContent = '✕';
+                closeBtn.style.cssText = 'background:#fff;color:#e65100;border:none;'
+                    + 'border-radius:4px;padding:3px 9px;cursor:pointer;'
+                    + 'font-weight:bold;margin-left:12px';
+                closeBtn.onclick = function() {
+                    var el = document.getElementById('mothbot-reconnect-banner');
+                    if (el) el.remove();
+                };
+                banner.appendChild(msg);
+                banner.appendChild(closeBtn);
                 document.body.appendChild(banner);
                 // Auto-dismiss after 60 s
                 setTimeout(function() {

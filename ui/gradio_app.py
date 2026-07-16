@@ -157,7 +157,9 @@ def app():
             // browser fires visibilitychange: hidden → visible.  If a pipeline
             // was running, Gradio's SSE stream is orphaned and the UI freezes.
             // Show a banner so the user knows what happened and how to recover.
-            var _wasHidden = false;
+            // Track timestamp so we can ignore normal tab switches (< 30 s hidden).
+            var _hiddenAt = 0;
+            var _MIN_SLEEP_MS = 30000;
 
             function _isPipelineRunning() {
                 // The Stop button is visible and enabled only while a run is active.
@@ -211,14 +213,17 @@ def app():
 
             document.addEventListener('visibilitychange', function() {
                 if (document.visibilityState === 'hidden') {
-                    _wasHidden = true;
-                } else if (_wasHidden) {
-                    _wasHidden = false;
-                    // Give Gradio ~2 s to re-establish its SSE connection before
-                    // checking whether a pipeline is still marked as running.
-                    setTimeout(function() {
-                        if (_isPipelineRunning()) _showReconnectBanner();
-                    }, 2000);
+                    _hiddenAt = Date.now();
+                } else if (_hiddenAt > 0) {
+                    var hiddenMs = Date.now() - _hiddenAt;
+                    _hiddenAt = 0;
+                    // Only react to genuine sleep/suspend (hidden > 30 s).
+                    // Normal tab switches are milliseconds and should be ignored.
+                    if (hiddenMs >= _MIN_SLEEP_MS) {
+                        setTimeout(function() {
+                            if (_isPipelineRunning()) _showReconnectBanner();
+                        }, 2000);
+                    }
                 }
             });
         }

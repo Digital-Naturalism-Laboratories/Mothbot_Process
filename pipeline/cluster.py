@@ -299,13 +299,13 @@ def cluster_embeddings(embeddings):
     min_cluster_size = 2
 
     # --- cluster_selection_epsilon ---
-    # After L2-normalization, distances are bounded [0, 2].  epsilon=0.6
+    # After L2-normalization, distances are bounded [0, 2].  epsilon=0.42
     # corresponds roughly to cosine_similarity ≥ 0.82, which handles real-world
     # variation in pose, scale, and trap lighting between moths of the same
     # species.  0.4 was still leaving large swaths of visually identical moths
-    # unclustered; 0.6 bridges those gaps while still keeping different-looking
+    # unclustered; 0.6 was too broad
     # species in separate clusters.
-    epsilon = 0.6
+    epsilon = 0.42
 
     # --- cluster_selection_method ---
     # "leaf" keeps the finest-grained clusters, giving more clusters and

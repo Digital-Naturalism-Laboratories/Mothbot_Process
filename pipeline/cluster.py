@@ -291,6 +291,32 @@ def cluster_embeddings(embeddings):
     norms = np.where(norms == 0, 1.0, norms)
     embeddings = embeddings / norms
 
+    # --- PCA for large datasets ---
+    # HDBSCAN's 'generic' fallback computes a full n×n pairwise distance matrix
+    # when dimensionality is high (384 dims triggers this path).  For n=50,000
+    # that is ~10 GB and kills the process.  PCA reduces to 50 dims where
+    # HDBSCAN can use its boruvka_balltree path (~50 MB total) instead.
+    # sklearn PCA uses randomized SVD, so memory peaks at ~200 MB during the
+    # reduction regardless of dataset size.
+    _LARGE_N = 10_000
+    algorithm = "best"
+    if n > _LARGE_N:
+        from sklearn.decomposition import PCA
+        n_pca = 50
+        print(
+            f"  Large dataset ({n:,} images) — reducing {embeddings.shape[1]}-dim embeddings "
+            f"to {n_pca} dims via PCA to avoid HDBSCAN memory spike..."
+        )
+        pca = PCA(n_components=n_pca, random_state=42)
+        embeddings = pca.fit_transform(embeddings)
+        explained = pca.explained_variance_ratio_.sum()
+        # Re-L2-normalize so epsilon distances remain in [0, 2]
+        norms2 = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        norms2 = np.where(norms2 == 0, 1.0, norms2)
+        embeddings = embeddings / norms2
+        print(f"  PCA complete — {explained:.1%} of variance retained. Clustering in {n_pca}-dim space...")
+        algorithm = "boruvka_balltree"
+
     # --- min_cluster_size ---
     # Fixed at 2: any pair of visually similar images forms a cluster.
     # Using 3 on large datasets was the main cause of ~30% of obvious matches
@@ -318,6 +344,7 @@ def cluster_embeddings(embeddings):
         cluster_selection_epsilon=epsilon,
         cluster_selection_method=cluster_selection_method,
         metric="euclidean",
+        algorithm=algorithm,
     )
     labels = clusterer.fit_predict(embeddings)
 

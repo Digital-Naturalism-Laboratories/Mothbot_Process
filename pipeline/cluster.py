@@ -259,6 +259,11 @@ def extract_embeddings(image_files, batch_size=8):
                 with torch.no_grad():
                     feats = _dino_model(batch_tensor)
                 embeddings.extend(feats.cpu().numpy())
+                del batch_tensor, feats
+                # Flush MPS (Apple Silicon) allocator cache so Metal buffers are
+                # returned between batches instead of accumulating across 6000+ batches.
+                if hasattr(torch, "mps") and torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
 
         # Progress + ETA after first batch
         elapsed = time.time() - start_time
@@ -586,20 +591,25 @@ def Cluster_matched_img_json_pairs(
     if len(patch_paths_hu) > 0:
         embeddings = extract_embeddings(patch_paths_hu, batch_size=batch_size)
         labels = cluster_embeddings(embeddings)
-        # save_clusters(input_folder, filenames, labels, output_folder)
+        del embeddings
         labels = temporal_subclusters(
             patch_paths_hu, json_paths_hu, idx_paths_hu, labels
         )
         write_cluster_to_json(patch_paths_hu, json_paths_hu, idx_paths_hu, labels)
+        # Explicitly free HU data before BOT processing so both sets of paths/
+        # labels don't sit in RAM simultaneously on large datasets.
+        del patch_paths_hu, json_paths_hu, idx_paths_hu, labels
 
-    # bot detections first
+    # Bot detections
     if len(patch_paths_bots) > 0:
-        embeddings = extract_embeddings(patch_paths_bots,  batch_size=batch_size)
+        embeddings = extract_embeddings(patch_paths_bots, batch_size=batch_size)
         labels = cluster_embeddings(embeddings)
+        del embeddings
         labels = temporal_subclusters(
             patch_paths_bots, json_paths_bots, idx_paths_bots, labels
         )
         write_cluster_to_json(patch_paths_bots, json_paths_bots, idx_paths_bots, labels)
+        del patch_paths_bots, json_paths_bots, idx_paths_bots, labels
 
 
 def _is_external_collection(input_path, dataset_root):

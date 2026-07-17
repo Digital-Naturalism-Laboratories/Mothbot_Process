@@ -25,7 +25,6 @@ Arguments:
 
 """
 import ssl
-import threading
 
 ssl._create_default_https_context = (
     ssl._create_unverified_context
@@ -330,41 +329,27 @@ def get_bioclip_predictions_batch(imgs, classifier, batch_size=32):
     start_time = time.time()
     rank_label = str(TAXONOMIC_RANK_FILTER.get_label())
 
-    # BioCLIP's predict() has a silent finalization phase after the last batch
-    # callback fires (internal result collection). A heartbeat thread prints a
-    # reminder every ~10s whenever no progress has been reported for that long.
-    _last_print = [time.time()]
-    _done = threading.Event()
-
-    def _heartbeat():
-        while not _done.wait(5):
-            if time.time() - _last_print[0] > 10:
-                elapsed = time.time() - start_time
-                print(f"   ⏳ Still working... ({elapsed:.0f}s elapsed — finalizing predictions)")
-                _last_print[0] = time.time()
-
-    _hb = threading.Thread(target=_heartbeat, daemon=True)
-    _hb.start()
-
     def progress_callback(processed, total_imgs):
         elapsed = time.time() - start_time
         if processed > 0 and (processed % (batch_size * 5) == 0 or processed == total_imgs):
             remaining = (elapsed / processed) * (total_imgs - processed)
             print(f"   📦 {processed}/{total_imgs} images — ~{remaining:.0f}s remaining")
-            _last_print[0] = time.time()
+        if processed == total_imgs:
+            print(
+                f"   ⏳ All images submitted — BioCLIP is now finalizing results internally.\n"
+                f"      This phase has no sub-progress updates and may take several minutes.\n"
+                f"      Please wait — it is still running. (Can take around 1 second per ID)"
+            )
 
-    try:
-        raw_predictions = classifier.predict(
-            imgs,
-            rank=TAXONOMIC_RANK_FILTER,
-            k=1,
-            batch_size=batch_size,
-            callback=progress_callback,
-        )
-        all_predictions = list(raw_predictions)  # force evaluation if predict() is a generator
-    finally:
-        _done.set()
-    _hb.join(timeout=2)
+    raw_predictions = classifier.predict(
+        imgs,
+        rank=TAXONOMIC_RANK_FILTER,
+        k=1,
+        batch_size=batch_size,
+        callback=progress_callback,
+    )
+    print(f"   ✅ Inference complete — collecting and organizing {total} results...")
+    all_predictions = list(raw_predictions)  # force evaluation if predict() is a generator
 
     results = []
     for pred in all_predictions:

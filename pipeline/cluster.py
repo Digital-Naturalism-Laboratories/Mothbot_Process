@@ -76,7 +76,9 @@ if (
         sk_utils.check_array = _check_array_compat
 
 import gc
+import hashlib
 import hdbscan
+from pathlib import Path
 
 from core.common import (
     find_date_folders,
@@ -308,6 +310,115 @@ def extract_embeddings(image_files, batch_size=8):
     if embeddings_out is None:
         return np.empty((0, 384), dtype=np.float32)
     return embeddings_out[:filled]
+
+
+def cluster_with_size_groups(all_patch_paths, batch_size=8):
+    """Embed and cluster a large dataset using natural size groups.
+
+    Instead of splitting by arbitrary index (which would cut real clusters in
+    half), this finds natural size groupings via 1D HDBSCAN on log(patch_size).
+    With a fixed camera, the same individual always appears at a consistent
+    scale (±30%), so images that belong together always land in the same group.
+
+    Each group is independently embedded (DINOv2) and visually clustered
+    (HDBSCAN).  Embeddings and labels are saved to disk after each group
+    completes, so a crash only loses the current in-progress group — the next
+    run skips all completed groups.
+
+    Returns a labels array of length n with globally unique positive cluster IDs
+    and -1 for visual noise, in the same order as all_patch_paths.
+    """
+    n = len(all_patch_paths)
+
+    # ---- 1. Read patch sizes (JPEG header only — fast, ~10s for 52k images) ----
+    print(f"  Reading patch sizes for {n:,} images...")
+    sizes = _read_patch_sizes(all_patch_paths)
+
+    # ---- 2. 1D HDBSCAN on log(size) to find natural size groups ----
+    log_sizes = np.log(np.clip(sizes, 1.0, None)).reshape(-1, 1)
+    # min_cluster_size scales up with dataset so very large collections still
+    # get broad groups rather than thousands of tiny ones.
+    min_cs = max(5, n // 2000)
+    size_clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=min_cs,
+        min_samples=1,
+        cluster_selection_epsilon=0.5,   # groups sizes within ~65% of each other
+        cluster_selection_method="eom",  # "eom" gives fewer, broader groups
+        metric="euclidean",
+    )
+    size_labels = size_clusterer.fit_predict(log_sizes)
+
+    n_groups = len(set(size_labels) - {-1})
+    n_noise = int(np.sum(size_labels == -1))
+    total_groups = n_groups + (1 if n_noise > 0 else 0)
+    print(f"  Size clustering: {n_groups} natural size groups + {n_noise} size-unique images → {total_groups} processing groups")
+
+    # Build ordered list of (name, indices) — noise images form a final group
+    # of their own so they still get visual clustering with each other.
+    groups = [
+        (f"group_{g}", np.where(size_labels == g)[0])
+        for g in sorted(g for g in set(size_labels) if g >= 0)
+    ]
+    if n_noise > 0:
+        groups.append(("noise", np.where(size_labels == -1)[0]))
+
+    # ---- 3. Per-group DINOv2 embedding + visual HDBSCAN with checkpointing ----
+    path_hash = hashlib.md5("\n".join(str(p) for p in all_patch_paths).encode()).hexdigest()[:16]
+    cache_dir = Path.home() / ".mothbot" / "embed_cache" / path_hash
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    print(f"  Checkpoint cache: {cache_dir}")
+
+    final_labels = np.full(n, -1, dtype=int)
+    max_label = 0  # offset so cluster IDs are globally unique across groups
+
+    for group_num, (group_name, group_indices) in enumerate(groups):
+        group_size = len(group_indices)
+        size_lo = float(sizes[group_indices].min())
+        size_hi = float(sizes[group_indices].max())
+        print(f"\n  [{group_num + 1}/{total_groups}] {group_name}: {group_size:,} images, {size_lo:.0f}–{size_hi:.0f}px")
+
+        labels_file = cache_dir / f"{group_name}_labels.npy"
+        embed_file  = cache_dir / f"{group_name}_embeddings.npy"
+
+        if labels_file.exists():
+            print(f"    ✅ Already clustered — loading labels from cache")
+            group_labels = np.load(labels_file)
+        else:
+            if embed_file.exists():
+                print(f"    ✅ Embeddings cached — running visual clustering...")
+                group_embeddings = np.load(embed_file)
+            else:
+                group_paths = [all_patch_paths[i] for i in group_indices]
+                group_embeddings = extract_embeddings(group_paths, batch_size=batch_size)
+                np.save(embed_file, group_embeddings)
+                print(f"    💾 Embeddings saved ({embed_file.name})")
+
+            group_paths = [all_patch_paths[i] for i in group_indices]
+            group_labels = cluster_embeddings(group_embeddings, patch_paths=group_paths)
+            del group_embeddings
+            np.save(labels_file, group_labels)
+            # Embeddings no longer needed once labels are written
+            if embed_file.exists():
+                embed_file.unlink()
+
+        # Shift positive IDs so they don't collide with other groups' IDs
+        pos_mask = group_labels >= 0
+        if pos_mask.any():
+            group_labels = group_labels.copy()
+            group_labels[pos_mask] += max_label
+            max_label = int(group_labels[pos_mask].max()) + 1
+
+        final_labels[group_indices] = group_labels
+
+    # All groups done — clean up cache
+    for f in list(cache_dir.iterdir()):
+        f.unlink()
+    try:
+        cache_dir.rmdir()
+    except OSError:
+        pass
+
+    return final_labels
 
 
 # --------------------------
@@ -660,24 +771,30 @@ def Cluster_matched_img_json_pairs(
         batch_size = max(2, batch_size // 2)
         print(f"  Large dataset ({total_patches:,} patches) — using batch_size={batch_size} to reduce peak attention memory.")
 
+    _SIZE_GROUP_THRESHOLD = 5_000  # use size-grouped processing above this count
+
     # Hu detections first
     if len(patch_paths_hu) > 0:
-        embeddings = extract_embeddings(patch_paths_hu, batch_size=batch_size)
-        labels = cluster_embeddings(embeddings, patch_paths=patch_paths_hu)
-        del embeddings
+        if len(patch_paths_hu) > _SIZE_GROUP_THRESHOLD:
+            labels = cluster_with_size_groups(patch_paths_hu, batch_size=batch_size)
+        else:
+            embeddings = extract_embeddings(patch_paths_hu, batch_size=batch_size)
+            labels = cluster_embeddings(embeddings, patch_paths=patch_paths_hu)
+            del embeddings
         labels = temporal_subclusters(
             patch_paths_hu, json_paths_hu, idx_paths_hu, labels
         )
         write_cluster_to_json(patch_paths_hu, json_paths_hu, idx_paths_hu, labels)
-        # Explicitly free HU data before BOT processing so both sets of paths/
-        # labels don't sit in RAM simultaneously on large datasets.
         del patch_paths_hu, json_paths_hu, idx_paths_hu, labels
 
     # Bot detections
     if len(patch_paths_bots) > 0:
-        embeddings = extract_embeddings(patch_paths_bots, batch_size=batch_size)
-        labels = cluster_embeddings(embeddings, patch_paths=patch_paths_bots)
-        del embeddings
+        if len(patch_paths_bots) > _SIZE_GROUP_THRESHOLD:
+            labels = cluster_with_size_groups(patch_paths_bots, batch_size=batch_size)
+        else:
+            embeddings = extract_embeddings(patch_paths_bots, batch_size=batch_size)
+            labels = cluster_embeddings(embeddings, patch_paths=patch_paths_bots)
+            del embeddings
         labels = temporal_subclusters(
             patch_paths_bots, json_paths_bots, idx_paths_bots, labels
         )

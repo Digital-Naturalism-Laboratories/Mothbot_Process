@@ -696,7 +696,7 @@ def process_image_list(img_files, dataset_root=None):
                     )
             else:
                 # ultralytics predict path (PT models).
-                _pkw = {"source": batch_paths, "device": DEVICE, "verbose": False, "imgsz": IMGSZ}
+                _pkw = {"source": batch_paths, "device": DEVICE, "verbose": False, "imgsz": IMGSZ, "max_det": 1000}
                 try:
                     batch_results = model.predict(**_pkw)
                 except Exception as e:

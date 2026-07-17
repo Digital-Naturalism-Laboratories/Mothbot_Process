@@ -75,6 +75,7 @@ if (
     if hasattr(sk_utils, "check_array"):
         sk_utils.check_array = _check_array_compat
 
+import gc
 import hdbscan
 
 from core.common import (
@@ -218,7 +219,6 @@ def get_fallback_embedding(img_path):
     return feat if norm == 0 else feat / norm
 
 def extract_embeddings(image_files, batch_size=8):
-    embeddings = []
     use_fallback = False
     try:
         _ensure_dino_loaded()
@@ -237,13 +237,24 @@ def extract_embeddings(image_files, batch_size=8):
     import time
     start_time = time.time()
 
+    # Pre-allocate output array after the first batch reveals embed_dim.
+    # This replaces the old list.extend() approach which created thousands of
+    # tiny numpy view objects across 6000+ batches, preventing PyTorch's
+    # allocator from reclaiming tensor storage and fragmenting the heap.
+    embeddings_out = None  # np.ndarray, shaped (total, embed_dim)
+    filled = 0
+
     for batch_num, i in enumerate(range(0, total, batch_size)):
         batch_paths = image_files[i:i+batch_size]
 
         if use_fallback:
             for path in batch_paths:
                 try:
-                    embeddings.append(get_fallback_embedding(path))
+                    emb = get_fallback_embedding(path)
+                    if embeddings_out is None:
+                        embeddings_out = np.empty((total, emb.shape[0]), dtype=np.float32)
+                    embeddings_out[filled] = emb
+                    filled += 1
                 except Exception as e:
                     print(f"⚠️ Skipping {path}: {e}")
         else:
@@ -252,18 +263,34 @@ def extract_embeddings(image_files, batch_size=8):
                 try:
                     img = Image.open(path).convert("RGB")
                     tensors.append(_dino_transform(img))
+                    del img  # free full-res PIL image immediately after transform
                 except Exception as e:
                     print(f"⚠️ Skipping {path}: {e}")
             if tensors:
                 batch_tensor = torch.stack(tensors).to(device)
+                del tensors  # stack made its own copy; originals no longer needed
                 with torch.no_grad():
                     feats = _dino_model(batch_tensor)
-                embeddings.extend(feats.cpu().numpy())
-                del batch_tensor, feats
-                # Flush MPS (Apple Silicon) allocator cache so Metal buffers are
-                # returned between batches instead of accumulating across 6000+ batches.
+                del batch_tensor
+                # .copy() gives an owned numpy array so PyTorch can immediately
+                # reclaim the underlying tensor storage when feats is deleted,
+                # instead of keeping it alive via a numpy view reference.
+                batch_np = feats.cpu().numpy().copy()
+                del feats
+                n = len(batch_np)
+                if embeddings_out is None:
+                    embeddings_out = np.empty((total, batch_np.shape[1]), dtype=np.float32)
+                embeddings_out[filled:filled + n] = batch_np
+                filled += n
+                del batch_np
+
                 if hasattr(torch, "mps") and torch.backends.mps.is_available():
                     torch.mps.empty_cache()
+
+        # Periodic GC pass to break any reference cycles from PIL/torchvision
+        # that CPython's reference counter misses on large runs.
+        if batch_num % 500 == 499:
+            gc.collect()
 
         # Progress + ETA after first batch
         elapsed = time.time() - start_time
@@ -278,7 +305,9 @@ def extract_embeddings(image_files, batch_size=8):
 
     total_time = time.time() - start_time
     print(f"✅ Embeddings complete — {total} images in {total_time:.1f}s ({total_time/60:.1f} min)")
-    return np.array(embeddings)
+    if embeddings_out is None:
+        return np.empty((0, 384), dtype=np.float32)
+    return embeddings_out[:filled]
 
 
 # --------------------------
@@ -586,6 +615,15 @@ def Cluster_matched_img_json_pairs(
     # process perceptual similarities for bot and hu detections
     print("Loading Embeddings for Perceptual Processing...")
     batch_size = 32 if torch.cuda.is_available() else 8
+
+    # For very large datasets, halve the batch size to cut peak memory during
+    # DINOv2 attention computation.  At 518×518 input the attention matrix is
+    # batch × 6 heads × 1370 × 1370 × 4 bytes = 361 MB for batch=8, 180 MB for
+    # batch=4.  On 8 GB MacBook Airs the smaller batch prevents OOM kills.
+    total_patches = len(patch_paths_hu) + len(patch_paths_bots)
+    if total_patches > 20_000 and not torch.cuda.is_available():
+        batch_size = max(2, batch_size // 2)
+        print(f"  Large dataset ({total_patches:,} patches) — using batch_size={batch_size} to reduce peak attention memory.")
 
     # Hu detections first
     if len(patch_paths_hu) > 0:

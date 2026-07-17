@@ -313,7 +313,24 @@ def extract_embeddings(image_files, batch_size=8):
 # --------------------------
 # 3. Cluster with HDBSCAN
 # --------------------------
-def cluster_embeddings(embeddings):
+def _read_patch_sizes(patch_paths):
+    """Return max(width, height) for each patch by reading JPEG headers only.
+
+    PIL reads the SOF marker (a few hundred bytes) without decompressing pixels,
+    so 52,000 images take ~10 seconds rather than minutes.
+    """
+    sizes = np.zeros(len(patch_paths), dtype=np.float32)
+    for i, path in enumerate(patch_paths):
+        try:
+            with Image.open(path) as img:
+                w, h = img.size
+            sizes[i] = float(max(w, h))
+        except Exception:
+            sizes[i] = 100.0  # safe fallback; won't skew log-normalization much
+    return sizes
+
+
+def cluster_embeddings(embeddings, patch_paths=None):
     n = len(embeddings)
 
     # --- L2-normalize embeddings ---
@@ -350,6 +367,24 @@ def cluster_embeddings(embeddings):
         embeddings = embeddings / norms2
         print(f"  PCA complete — {explained:.1%} of variance retained. Clustering in {n_pca}-dim space...")
         algorithm = "boruvka_balltree"
+
+    # --- size feature ---
+    # Append log(patch_size) as one extra dimension after all visual normalization.
+    # With a fixed camera, the same individual always appears at a consistent
+    # scale, so a 30 px detection should never cluster with a 3000 px one even
+    # if their DINOv2 embeddings happen to be close.  Appending after PCA keeps
+    # the size signal clean (not mixed into the visual principal components).
+    # Weight 0.25: a 4× size gap contributes ~0.35 to distance (just outside
+    # epsilon=0.42), a 2× gap contributes ~0.17 (comfortably inside).
+    if patch_paths is not None and len(patch_paths) == n:
+        print(f"  Reading patch sizes for {n:,} images...")
+        sizes = _read_patch_sizes(patch_paths)
+        log_sizes = np.log(np.clip(sizes, 1.0, None))
+        log_sizes -= log_sizes.mean()
+        std = log_sizes.std()
+        if std > 0:
+            log_sizes /= std
+        embeddings = np.hstack([embeddings, (log_sizes * 0.25).reshape(-1, 1)])
 
     # --- min_cluster_size ---
     # Fixed at 2: any pair of visually similar images forms a cluster.
@@ -628,7 +663,7 @@ def Cluster_matched_img_json_pairs(
     # Hu detections first
     if len(patch_paths_hu) > 0:
         embeddings = extract_embeddings(patch_paths_hu, batch_size=batch_size)
-        labels = cluster_embeddings(embeddings)
+        labels = cluster_embeddings(embeddings, patch_paths=patch_paths_hu)
         del embeddings
         labels = temporal_subclusters(
             patch_paths_hu, json_paths_hu, idx_paths_hu, labels
@@ -641,7 +676,7 @@ def Cluster_matched_img_json_pairs(
     # Bot detections
     if len(patch_paths_bots) > 0:
         embeddings = extract_embeddings(patch_paths_bots, batch_size=batch_size)
-        labels = cluster_embeddings(embeddings)
+        labels = cluster_embeddings(embeddings, patch_paths=patch_paths_bots)
         del embeddings
         labels = temporal_subclusters(
             patch_paths_bots, json_paths_bots, idx_paths_bots, labels

@@ -145,7 +145,12 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        # triton is PyTorch's CUDA kernel compiler — not used by Mothbot.
+        # On Linux it pulls in libcupti_static.a (400+ MB) which exhausts
+        # the GitHub Actions runner disk during the COLLECT phase.
+        "triton",
+    ],
     noarchive=False,
 	
 )

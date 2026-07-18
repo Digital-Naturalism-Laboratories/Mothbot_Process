@@ -7,6 +7,11 @@ APPS_DIR="$ROOT_DIR/apps"
 BUILD_DIR="$APPS_DIR/build"
 DIST_DIR="$APPS_DIR/dist"
 
+# Free pre-installed tooling that Mothbot never needs (~14 GB on ubuntu-latest).
+echo "Freeing pre-installed runner disk space..."
+sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+df -h . || true
+
 mkdir -p "$BUILD_DIR" "$DIST_DIR"
 
 VENV_DIR="$ROOT_DIR/.venv-packaging"

@@ -37,6 +37,7 @@ import argparse
 import re
 import io
 import time
+import hashlib
 from pathlib import Path
 from collections import defaultdict
 import numpy as np
@@ -316,49 +317,34 @@ def crop_image(image, x, y, w, h):
     return cropped_image
 
 
+# Representatives are ID'd and written to disk in chunks of this size. Smaller =
+# finer progress feedback + more frequent crash-safe banking, but slightly more
+# per-call predict() overhead. The main pipeline chunks explicitly (see
+# run_id_on_detection_set); the whole point is that predict() is NOT called once
+# on the entire dataset — that is what made the final aggregation opaque and
+# unbanked. See docstring in run_id_on_detection_set for the reasoning.
+PREDICT_CHUNK = 256
+
+
 def get_bioclip_predictions_batch(imgs, classifier, batch_size=32):
     """Predict taxonomic IDs for a list of PIL images using the modern predict() API.
 
-    classifier.predict() handles all batching internally. We use k=1 since we
-    only need the top hit per image, and wire a callback for progress reporting.
+    Kept for single-image / utility use (see get_bioclip_prediction_PILimg). The
+    main pipeline no longer routes through here — it chunks predict() calls itself
+    so it can bank each chunk to disk and report live progress.
 
     Returns:
         List of (winner, winnerprob, winningdict) tuples, one per input image.
     """
-    total = len(imgs)
-    start_time = time.time()
     rank_label = str(TAXONOMIC_RANK_FILTER.get_label())
-
-    def progress_callback(processed, total_imgs):
-        elapsed = time.time() - start_time
-        if processed > 0 and (processed % (batch_size * 5) == 0 or processed == total_imgs):
-            remaining = (elapsed / processed) * (total_imgs - processed)
-            print(f"   📦 {processed}/{total_imgs} images — ~{remaining:.0f}s remaining")
-        if processed == total_imgs:
-            print(
-                f"   ⏳ All images submitted — BioCLIP is now finalizing results internally.\n"
-                f"      This phase has no sub-progress updates and may take several minutes.\n"
-                f"      Please wait — it is still running. (Can take around 1 second per ID)"
-            )
-
     raw_predictions = classifier.predict(
-        imgs,
-        rank=TAXONOMIC_RANK_FILTER,
-        k=1,
-        batch_size=batch_size,
-        callback=progress_callback,
+        imgs, rank=TAXONOMIC_RANK_FILTER, k=1, batch_size=batch_size,
     )
-    print(f"   ✅ Inference complete — collecting and organizing {total} results...")
-    all_predictions = list(raw_predictions)  # force evaluation if predict() is a generator
-
     results = []
-    for pred in all_predictions:
+    for pred in list(raw_predictions):
         winner = pred.get(rank_label, "")
         winnerprob = pred.get("score", 0.0)
         results.append((winner, winnerprob, pred))
-
-    total_time = time.time() - start_time
-    print(f"✅ Batch predictions complete — {total} images in {total_time:.1f}s ({total_time/60:.1f} min)")
     return results
 
 
@@ -654,8 +640,68 @@ def group_patches_by_cluster(all_patches):
     return cluster_groups, clustered_count, individual_count
 
 
+def _id_checkpoint_dir(matched_img_json_pairs, label):
+    """Return the per-run checkpoint directory for crash-resume of overwrite runs.
+
+    Keyed by the dataset (its JSON paths) plus everything that determines the
+    result — model VERSION, species-list DOI, taxonomic rank, and HU/BOT label.
+    Changing any of those yields a different directory, so a genuinely different
+    job is treated as fresh rather than resumed.
+
+    The directory holds a single ``done.txt`` listing the representatives already
+    written to disk. It survives a crash and is deleted on successful completion,
+    which is precisely what lets an *overwrite* run tell "interrupted, resume"
+    (directory present) from "fresh overwrite, redo everything" (absent).
+    """
+    key_parts = [label, VERSION, DOI, str(TAXONOMIC_RANK_FILTER)]
+    key_parts += sorted(str(jp) for _, jp in matched_img_json_pairs)
+    digest = hashlib.md5("\n".join(key_parts).encode("utf-8")).hexdigest()[:16]
+    return Path.home() / ".mothbot" / "id_cache" / digest
+
+
+def _rep_key(rep):
+    """Stable identity of a representative for the checkpoint: its JSON + shape idx."""
+    return f"{rep[1]}\t{rep[2]}"
+
+
+def _clear_id_checkpoint(ckpt_dir):
+    """Delete a completed run's checkpoint so the next run starts fresh."""
+    if ckpt_dir is None:
+        return
+    try:
+        for f in ckpt_dir.iterdir():
+            f.unlink()
+        ckpt_dir.rmdir()
+    except OSError:
+        pass
+
+
 def run_id_on_detection_set(matched_img_json_pairs, classifier, label):
-    """Collect, cluster-deduplicate, batch-predict, and write IDs for one detection set.
+    """Collect, cluster-deduplicate, then chunk-predict-and-bank IDs for one set.
+
+    Rather than calling classifier.predict() once on every representative (which
+    forces BioCLIP to do one large, invisible result-aggregation at the very end
+    and writes nothing to disk until it finishes), we predict in chunks of
+    PREDICT_CHUNK. After each chunk we immediately write its IDs to the JSON files
+    on disk. This gives three things the single-call version could not:
+
+      1. Live progress — each chunk reports throughput and a real ETA, and the
+         predict() callback reports sub-chunk progress so the console never sits
+         silent for minutes.
+      2. Crash-safe banking — completed chunks are already on disk, so a crash at
+         minute 100 of a 200-minute run loses at most one chunk's work.
+      3. Resumability — see the checkpoint handling below. A crashed run resumes
+         from where it stopped; a fresh overwrite run redoes everything.
+
+    Resume vs. overwrite:
+      • When NOT overwriting, collect_patches already dropped anything previously
+        ID'd, so a crashed run resumes naturally (shapes we rewrote before the
+        crash now count as pre-ID'd) — no checkpoint needed.
+      • When overwriting, we intentionally re-ID existing shapes, so JSON state
+        can't tell "done this run" from "done a previous run". Instead we record
+        completed representatives in a checkpoint file that survives a crash and
+        is deleted on success. A fresh overwrite run has no checkpoint and so
+        re-IDs everything; only an interrupted one skips already-banked reps.
 
     Args:
         matched_img_json_pairs: List of (image_path, json_path) pairs.
@@ -683,45 +729,134 @@ def run_id_on_detection_set(matched_img_json_pairs, classifier, label):
         f"{clustered_count} in clusters → {num_clusters} representative IDs needed, "
         f"{individual_count} individual"
     )
-    print(f"  Running bioclip on {len(representatives)} representative images (down from {len(all_patches)})...")
+
+    # ── Resume handling (only meaningful when overwriting; see docstring) ──
+    ckpt_dir = None
+    done_keys = set()
+    if OVERWRITE_EXISTING_IDs:
+        ckpt_dir = _id_checkpoint_dir(matched_img_json_pairs, label)
+        done_file = ckpt_dir / "done.txt"
+        if done_file.exists():
+            # An earlier run of this exact job crashed — resume from its checkpoint.
+            done_keys = {ln for ln in done_file.read_text().splitlines() if ln}
+        else:
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    reps_to_do, members_to_do, already_done = [], [], 0
+    for rep, members in zip(representatives, cluster_members):
+        if done_keys and _rep_key(rep) in done_keys:
+            already_done += 1
+        else:
+            reps_to_do.append(rep)
+            members_to_do.append(members)
+
+    if already_done:
+        print(
+            f"  🔄 Resuming an interrupted run — {already_done} of "
+            f"{len(representatives)} representatives already banked; skipping them."
+        )
+
+    total_to_do = len(reps_to_do)
+    if total_to_do == 0:
+        print(f"  ✅ All {label} representatives already identified — nothing to do.")
+        _clear_id_checkpoint(ckpt_dir)
+        return
+
+    print(
+        f"  Running BioCLIP on {total_to_do} representative images "
+        f"(from {len(all_patches)} detections) in chunks of {PREDICT_CHUNK}, "
+        f"banking each chunk to disk as it completes..."
+    )
 
     batch_size = 32 if torch.cuda.is_available() else 8
+    rank_label = str(TAXONOMIC_RANK_FILTER.get_label())
     start_time = time.time()
+    processed = 0          # representatives predicted so far
+    written_dets = 0       # detections (cluster members) written so far
+    pending_imgs, pending_members = [], []
 
-    # Load representative images, skipping any that can't be opened
-    rep_imgs, valid_reps, valid_members = [], [], []
-    for rep, members in zip(representatives, cluster_members):
-        patchfullpath, json_path, idx = rep
-        try:
-            rep_imgs.append(Image.open(patchfullpath))
-            valid_reps.append(rep)
-            valid_members.append(members)
-        except Exception as e:
-            print(f"  ⚠️ Could not open representative {patchfullpath}: {e}")
+    def flush_chunk():
+        """Predict on the accumulated chunk, write every result to disk, report."""
+        nonlocal processed, written_dets
+        if not pending_imgs:
+            return
+        base = processed  # representatives finished before this chunk
 
-    # Batch predict on representatives only
-    predictions = get_bioclip_predictions_batch(rep_imgs, classifier, batch_size=batch_size)
+        def chunk_callback(done_in_chunk, total_in_chunk):
+            # Sub-chunk heartbeat so long chunks never sit silent.
+            if done_in_chunk > 0 and (
+                done_in_chunk % (batch_size * 5) == 0 or done_in_chunk == total_in_chunk
+            ):
+                elapsed = time.time() - start_time
+                overall = base + done_in_chunk
+                rate = overall / elapsed if elapsed > 0 else 0
+                remaining = (total_to_do - overall) / rate if rate > 0 else 0
+                print(
+                    f"   🧠 {overall}/{total_to_do} IDs — "
+                    f"{rate:.1f} IDs/s — ~{remaining/60:.1f} min remaining"
+                )
 
-    # Write results — apply each prediction to ALL members of that cluster.
-    # Print progress every 50 entries instead of every line; individual prints
-    # all arrive within a single Gradio poll window and appear as one burst.
-    n_reps = len(valid_reps)
-    print(f"  Writing IDs to {n_reps} result groups...")
-    for i, ((rep_path, rep_json, rep_idx), members, (pred, conf, winningdict)) in enumerate(
-        zip(valid_reps, valid_members, predictions)
-    ):
-        apply_id_to_cluster(
-            [m[1] for m in members],
-            [m[2] for m in members],
-            pred, conf, winningdict,
+        preds = list(classifier.predict(
+            pending_imgs, rank=TAXONOMIC_RANK_FILTER, k=1,
+            batch_size=batch_size, callback=chunk_callback,
+        ))
+
+        chunk_dets = 0
+        done_this_chunk = []
+        for members, pred in zip(pending_members, preds):
+            winner = pred.get(rank_label, "")
+            winnerprob = pred.get("score", 0.0)
+            # Write the representative (members[0]) LAST so that a rep recorded in
+            # the checkpoint reliably means the whole cluster was banked — even if
+            # a crash interrupts this cluster's write loop.
+            ordered = members[1:] + members[:1]
+            apply_id_to_cluster(
+                [m[1] for m in ordered], [m[2] for m in ordered],
+                winner, winnerprob, pred,
+            )
+            chunk_dets += len(members)
+            done_this_chunk.append(_rep_key(members[0]))
+
+        # Record this chunk's reps AFTER their JSONs are written, so a crash can
+        # only ever under-count what's done (harmless re-work), never over-count.
+        if ckpt_dir is not None:
+            with open(ckpt_dir / "done.txt", "a") as f:
+                f.write("".join(k + "\n" for k in done_this_chunk))
+
+        for im in pending_imgs:
+            try:
+                im.close()
+            except Exception:
+                pass
+
+        processed += len(pending_imgs)
+        written_dets += chunk_dets
+        pending_imgs.clear()
+        pending_members.clear()
+        print(
+            f"   💾 Banked chunk to disk — {processed}/{total_to_do} representative "
+            f"IDs done ({written_dets} detections written so far)."
         )
-        if (i + 1) % 50 == 0 or (i + 1) == n_reps:
-            print(f"  ✏️  {i + 1}/{n_reps} groups written...")
+
+    for rep, members in zip(reps_to_do, members_to_do):
+        try:
+            pending_imgs.append(Image.open(rep[0]))
+            pending_members.append(members)
+        except Exception as e:
+            print(f"  ⚠️ Could not open representative {rep[0]}: {e}")
+            continue
+        if len(pending_imgs) >= PREDICT_CHUNK:
+            flush_chunk()
+    flush_chunk()  # final partial chunk
+
+    # Run finished cleanly — drop the checkpoint so the next run starts fresh
+    # (this is what makes a later overwrite run re-ID everything).
+    _clear_id_checkpoint(ckpt_dir)
 
     total_time = time.time() - start_time
     print(
-        f"✅ {label} ID complete — {len(all_patches)} detections identified "
-        f"in {total_time:.1f}s ({total_time/60:.1f} min)"
+        f"✅ {label} ID complete — {written_dets} detections identified via "
+        f"{processed} representative IDs in {total_time:.1f}s ({total_time/60:.1f} min)"
     )
 
 

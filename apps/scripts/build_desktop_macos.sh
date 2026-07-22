@@ -40,6 +40,10 @@ iconutil -c icns "$ICONSET_TMP" -o "$ICNS_OUT"
 rm -rf "$(dirname "$ICONSET_TMP")"
 echo "Generated $ICNS_OUT"
 
+# Fetch large models (e.g. the default birefnet bg-removal model) into assets/
+# so the PyInstaller spec can bundle them into the app.
+python apps/scripts/fetch_bundled_models.py
+
 python -m PyInstaller --clean --noconfirm \
   --workpath "$BUILD_DIR" \
   --distpath "$DIST_DIR" \

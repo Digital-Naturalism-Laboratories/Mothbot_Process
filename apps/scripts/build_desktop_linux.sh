@@ -30,6 +30,11 @@ export MOTHBOT_VERSION_FILE="$BUILD_DIR/VERSION"
 
 python -m pip install --upgrade pip
 python -m pip install -e ".[cpu,packaging]"
+
+# Fetch large models (e.g. the default birefnet bg-removal model) into assets/
+# so the PyInstaller spec can bundle them into the app.
+python apps/scripts/fetch_bundled_models.py
+
 python -m PyInstaller --clean --noconfirm \
   --workpath "$BUILD_DIR" \
   --distpath "$DIST_DIR" \

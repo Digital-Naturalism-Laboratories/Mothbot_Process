@@ -25,6 +25,11 @@ $env:MOTHBOT_VERSION_FILE = $VersionFile
 
 & $PythonExe -m pip install --upgrade pip
 & $PythonExe -m pip install -e ".[cpu,packaging]"
+
+# Fetch large models (e.g. the default birefnet bg-removal model) into assets/
+# so the PyInstaller spec can bundle them into the app.
+& $PythonExe apps/scripts/fetch_bundled_models.py
+
 & $PythonExe -m PyInstaller --clean --noconfirm --workpath $BuildDir --distpath $DistDir apps/packaging/pyinstaller/mothbot_desktop.spec
 
 & "$RootDir\apps\scripts\package_release_windows.ps1"

@@ -17,6 +17,8 @@ Calibration is stored per-collection in:
 
 import json
 import os
+import shutil
+import sys
 import time
 from pathlib import Path
 
@@ -34,11 +36,52 @@ _rembg_session = None
 _rembg_model_name: str | None = None
 
 
+def _u2net_home() -> Path:
+    """Directory where rembg looks for / caches its model weights."""
+    return Path(os.path.expanduser(
+        os.getenv("U2NET_HOME", os.path.join(os.getenv("XDG_DATA_HOME", "~"), ".u2net"))
+    ))
+
+
+def _ensure_bundled_model(model_name: str) -> None:
+    """Copy a model bundled with the app into the rembg cache so it isn't re-downloaded.
+
+    Packaged builds ship the default model under ``<bundle>/models/`` (see the
+    PyInstaller spec). rembg only looks in ``u2net_home()``, so on first run we copy
+    the bundled file there; rembg's checksum check then passes and it skips the
+    network download entirely. No-op when the model is already cached or when no
+    bundled copy exists (dev runs fall back to rembg's normal download).
+    """
+    dest = _u2net_home() / f"{model_name}.onnx"
+    if dest.exists():
+        return
+
+    # PyInstaller unpacks bundled datas under sys._MEIPASS; assets/ is the dev fallback.
+    search_dirs = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        search_dirs.append(Path(meipass) / "models")
+    search_dirs.append(Path(__file__).resolve().parents[1] / "assets")
+
+    src = next((d / f"{model_name}.onnx" for d in search_dirs
+                if (d / f"{model_name}.onnx").is_file()), None)
+    if src is None:
+        return
+
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        print(f"  Installing bundled {model_name} model into {dest.parent} (first run)...")
+        shutil.copy2(src, dest)
+    except Exception as e:
+        print(f"  ⚠️ Could not install bundled model ({e}); rembg will download it instead.")
+
+
 def _get_session(model_name: str = "birefnet-general-lite"):
     global _rembg_session, _rembg_model_name
     if _rembg_session is not None and _rembg_model_name == model_name:
         return _rembg_session
 
+    _ensure_bundled_model(model_name)
     print(f"Loading {model_name} background-removal model (first use may download weights)...")
     from rembg import new_session
     import onnxruntime as _ort

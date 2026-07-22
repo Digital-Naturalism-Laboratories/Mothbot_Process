@@ -29,6 +29,10 @@ $env:MOTHBOT_VERSION_FILE = $VersionFile
 Write-Host "=== Verifying torch installation ==="
 & $PythonExe -c "import torch; print('torch version:', torch.__version__); print('CUDA available:', torch.cuda.is_available())"
 
+# Fetch large models (e.g. the default birefnet bg-removal model) into assets/
+# so the PyInstaller spec can bundle them into the app.
+& $PythonExe apps/scripts/fetch_bundled_models.py
+
 & $PythonExe -m PyInstaller --clean --noconfirm --workpath $BuildDir --distpath $DistDir apps/packaging/pyinstaller/mothbot_desktop.spec
 
 & "$RootDir\apps\scripts\package_release_windows_cuda.ps1"

@@ -11,7 +11,7 @@ import importlib.util
 import os
 import sys
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 
 def _resolve_project_dir():
@@ -60,6 +60,12 @@ for package in [
     "bioclip",
 ]:
     datas += collect_data_files(package)
+
+# rembg imports pymatting at load time, and pymatting/__init__.py runs
+# importlib.metadata.version("pymatting") — which raises PackageNotFoundError in a
+# frozen build unless the package's .dist-info metadata is bundled too. Copying it
+# fixes "No package metadata was found for pymatting" during background removal.
+datas += copy_metadata("pymatting")
 
 
 def _package_dir(package_name):
@@ -117,6 +123,14 @@ if favicon_png.exists():
 dino_weights = project_dir / "assets" / "dinov2_vits14_pretrain.pth"
 if dino_weights.exists():
     datas.append((str(dino_weights), "assets"))
+
+# Bundle the default birefnet background-removal model (~224 MB) into models/ so
+# the app never has to download it on first use. Too large for git, so it is
+# fetched into assets/ at build time by apps/scripts/fetch_bundled_models.py.
+# At runtime pixel_mass._ensure_bundled_model copies it into the rembg cache.
+birefnet_model = project_dir / "assets" / "birefnet-general-lite.onnx"
+if birefnet_model.exists():
+    datas.append((str(birefnet_model), "models"))
 
 # Bundle favicon.ico for the Windows exe icon.
 favicon_ico = project_dir / "assets" / "favicon.ico"

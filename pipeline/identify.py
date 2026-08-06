@@ -819,9 +819,18 @@ def run_id_on_detection_set(matched_img_json_pairs, classifier, label):
 
         # Record this chunk's reps AFTER their JSONs are written, so a crash can
         # only ever under-count what's done (harmless re-work), never over-count.
+        # The checkpoint is best-effort: the real output is the JSON files, which
+        # are already on disk, so a checkpoint-write failure must never crash the
+        # ID run. Recreate the dir first in case it was removed mid-run (e.g. a
+        # concurrent/leftover ID process cleared its own completed checkpoint).
         if ckpt_dir is not None:
-            with open(ckpt_dir / "done.txt", "a") as f:
-                f.write("".join(k + "\n" for k in done_this_chunk))
+            try:
+                ckpt_dir.mkdir(parents=True, exist_ok=True)
+                with open(ckpt_dir / "done.txt", "a") as f:
+                    f.write("".join(k + "\n" for k in done_this_chunk))
+            except OSError as e:
+                print(f"  ⚠️ Could not update resume checkpoint ({e}); "
+                      f"continuing — IDs for this chunk are already saved.")
 
         for im in pending_imgs:
             try:

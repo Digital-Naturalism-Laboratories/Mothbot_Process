@@ -204,11 +204,11 @@ def app():
                 banner.appendChild(msg);
                 banner.appendChild(closeBtn);
                 document.body.appendChild(banner);
-                // Auto-dismiss after 60 s
+                // Auto-dismiss after 3 s
                 setTimeout(function() {
                     var el = document.getElementById('mothbot-reconnect-banner');
                     if (el) el.remove();
-                }, 60000);
+                }, 3000);
             }
 
             document.addEventListener('visibilitychange', function() {

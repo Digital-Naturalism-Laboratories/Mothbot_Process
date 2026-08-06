@@ -444,6 +444,16 @@ def _read_patch_sizes(patch_paths):
 def cluster_embeddings(embeddings, patch_paths=None):
     n = len(embeddings)
 
+    # --- tiny-group guard ---
+    # HDBSCAN's k-NN step needs at least 2 points ("k must be <= number of
+    # training points"), which a single-image size group (e.g. a lone size-outlier
+    # patch in cluster_with_size_groups) violates. A lone image cannot form a
+    # cluster of min_cluster_size=2 anyway, so it is trivially noise (-1).
+    if n == 0:
+        return np.array([], dtype=int)
+    if n == 1:
+        return np.array([-1], dtype=int)
+
     # --- L2-normalize embeddings ---
     # DINOv2 features are most meaningful when compared by direction (cosine
     # similarity), not by magnitude.  L2-normalizing maps all vectors onto the

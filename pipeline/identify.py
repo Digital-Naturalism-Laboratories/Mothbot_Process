@@ -50,6 +50,36 @@ ImageFile.LOAD_TRUNCATED_IMAGES = (
     True  # makes ok for use images that are messed up slightly
 )
 import pandas as pd
+
+
+def _set_hf_offline_if_unreachable():
+    """Put HuggingFace Hub in cache-only mode when huggingface.co can't be reached.
+
+    BioCLIP asks huggingface_hub to HEAD-check its model files on load; offline —
+    or with broken/partial DNS — that turns into minutes of retries and then a
+    crash, even though the model is already cached. This MUST run before
+    huggingface_hub is imported (via bioclip, just below) because its offline flag
+    (``constants.HF_HUB_OFFLINE``) is fixed from the env var at import time and
+    can't be changed afterwards.
+
+    We probe the *actual* host HF uses (huggingface.co:443), which exercises DNS +
+    TCP, so a machine that can reach the internet but can't resolve huggingface.co
+    (the real-world failure in the field) is correctly treated as offline. Any
+    OSError — DNS failure, no route, timeout — means "use the local cache".
+    """
+    if os.environ.get("HF_HUB_OFFLINE") == "1":
+        return
+    import socket
+    try:
+        socket.create_connection(("huggingface.co", 443), timeout=3).close()
+    except OSError:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        print("huggingface.co unreachable — HuggingFace Hub will use cached files only.")
+
+
+_set_hf_offline_if_unreachable()
+
 from bioclip import TreeOfLifeClassifier, Rank
 import importlib.metadata
 
@@ -890,24 +920,21 @@ def ID_matched_img_json_pairs(
 
 
 def _ensure_hf_mode():
-    """Disable HuggingFace Hub network access if no internet is available.
+    """Re-check connectivity at classifier-build time and enforce offline mode.
 
-    TreeOfLifeClassifier() triggers huggingface_hub to HEAD-check its embeddings
-    file on every init, even when they are already cached. With no connection this
-    causes ~40 s of retries. A 2-second DNS probe avoids that wait.
+    The main gate is the import-time probe (_set_hf_offline_if_unreachable, run
+    before bioclip is imported). This runtime re-check also forces the already
+    imported ``huggingface_hub.constants.HF_HUB_OFFLINE`` so that connectivity lost
+    *after* import (e.g. app launched online, then run in the field) still routes
+    to the local cache instead of hanging on retries.
     """
+    _set_hf_offline_if_unreachable()
     if os.environ.get("HF_HUB_OFFLINE") == "1":
-        return
-    import socket
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(2)
-        sock.connect(("8.8.8.8", 53))
-        sock.close()
-    except OSError:
-        os.environ["HF_HUB_OFFLINE"] = "1"
-        os.environ["TRANSFORMERS_OFFLINE"] = "1"
-        print("No internet connection detected — HuggingFace Hub will use cached files only.")
+        try:
+            import huggingface_hub.constants as _hc
+            _hc.HF_HUB_OFFLINE = True
+        except Exception:
+            pass
 
 
 def extract_doi_from_csv_path(csv_path: str) -> str:

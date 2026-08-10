@@ -441,10 +441,20 @@ def _crop_obb_fast(img, points):
 
     roi = img[y1:y2, x1:x2]
     local_center = (center[0] - x1, center[1] - y1)
-    rh, rw = roi.shape[:2]
+    # Rotate and crop to the w×h patch in a single warp. The ROI was clamped to the
+    # image bounds above, so where the detection box extends past the source-image
+    # edge there is no pixel data — BORDER_CONSTANT fills it with solid black.
+    # (cv2.getRectSubPix, used previously, always BORDER_REPLICATEs, smearing a
+    # coloured edge-streak across the off-image area that confuses the ID model.)
     M = cv2.getRotationMatrix2D(local_center, angle, 1)
-    roi_rot = cv2.warpAffine(roi, M, (rw, rh), flags=cv2.INTER_LINEAR)
-    patch = cv2.getRectSubPix(roi_rot, (w, h), local_center)
+    # Map the detection centre to the patch centre ((w-1)/2, (h-1)/2 matches the
+    # framing cv2.getRectSubPix used before, so in-bounds patches are unchanged).
+    M[0, 2] += (w - 1) / 2 - local_center[0]
+    M[1, 2] += (h - 1) / 2 - local_center[1]
+    patch = cv2.warpAffine(
+        roi, M, (w, h), flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+    )
     return patch
 
 

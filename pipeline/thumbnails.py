@@ -15,11 +15,21 @@ def crop_rect(
     img, rect, interpolation=cv2.INTER_LINEAR
 ):  # cv2.INTER_LANCZOS4  cv2.INTER_LINEAR cv2.INTER_CUBIC
     center, size, angle = rect[0], rect[1], rect[2]
-    center, size = tuple(map(int, center)), tuple(map(int, size))
-    height, width = img.shape[0], img.shape[1]
+    center = tuple(map(float, center))
+    w, h = int(size[0]), int(size[1])
+    # Rotate and crop to the w×h patch in a single warp with a black constant
+    # border, so a detection box that extends past the source-image edge yields
+    # solid black there instead of cv2.getRectSubPix's replicated-edge colour
+    # streak (which would confuse the downstream ID model).
     M = cv2.getRotationMatrix2D(center, angle, 1)
-    img_rot = cv2.warpAffine(img, M, (width, height), flags=interpolation)
-    img_crop = cv2.getRectSubPix(img_rot, size, center)
+    # (w-1)/2, (h-1)/2 matches the framing cv2.getRectSubPix used before, so
+    # in-bounds patches are unchanged.
+    M[0, 2] += (w - 1) / 2 - center[0]
+    M[1, 2] += (h - 1) / 2 - center[1]
+    img_crop = cv2.warpAffine(
+        img, M, (w, h), flags=interpolation,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+    )
     return img_crop
 
 

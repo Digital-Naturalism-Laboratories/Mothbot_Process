@@ -6,8 +6,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "babel==2.17.0",
-    "gradio==5.42.0",
-    "gradio-client==1.11.1",
+    "gradio==5.50.0",
+    "gradio-client==1.14.0",
     "hdbscan==0.8.40",
     "numpy",
     "open-clip-torch==3.1.0",

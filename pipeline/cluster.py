@@ -89,6 +89,7 @@ from core.common import (
     current_timestamp,
     get_rotated_rect_raw_coordinates,
     get_device,
+    has_accelerator,
     print_device_info,
 )
 from core.paths import resolve_patch_path, get_processed_folder
@@ -107,7 +108,7 @@ DATASET_ROOT = None  # Set by run(); used for patch path resolution
 image_embeddings_path = INPUT_PATH + "/image_embeddings.npy"
 embedding_labels_path = INPUT_PATH + "/embedding_labels.json"
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE = get_device()
 
 
 def parse_args():
@@ -122,9 +123,9 @@ def parse_args():
     parser.add_argument(
         "--device",
         required=False,
-        choices=["cpu", "cuda"],
+        choices=["cpu", "cuda", "xpu"],
         default=DEVICE,
-        help="device on which to run pybioblip ('cpu' or 'cuda', default: what your comp detects)",
+        help="device on which to run pybioblip ('cpu', 'cuda', or 'xpu', default: what your comp detects)",
     )
     parser.add_argument(
         "--ID_Hum",
@@ -770,14 +771,14 @@ def Cluster_matched_img_json_pairs(
     # ~~~~~~~~~~~~~ PERCEPTUAL PROCESSING ~~~~~~~~~~~~~~~~~~~~~~~~
     # process perceptual similarities for bot and hu detections
     print("Loading Embeddings for Perceptual Processing...")
-    batch_size = 32 if torch.cuda.is_available() else 8
+    batch_size = 32 if has_accelerator() else 8
 
     # For very large datasets, halve the batch size to cut peak memory during
     # DINOv2 attention computation.  At 518×518 input the attention matrix is
     # batch × 6 heads × 1370 × 1370 × 4 bytes = 361 MB for batch=8, 180 MB for
     # batch=4.  On 8 GB MacBook Airs the smaller batch prevents OOM kills.
     total_patches = len(patch_paths_hu) + len(patch_paths_bots)
-    if total_patches > 20_000 and not torch.cuda.is_available():
+    if total_patches > 20_000 and not has_accelerator():
         batch_size = max(2, batch_size // 2)
         print(f"  Large dataset ({total_patches:,} patches) — using batch_size={batch_size} to reduce peak attention memory.")
 

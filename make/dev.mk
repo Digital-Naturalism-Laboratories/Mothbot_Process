@@ -4,7 +4,7 @@ VENV ?= .venv-packaging
 PYTHON := $(VENV)/bin/python
 PIP := $(PYTHON) -m pip
 
-.PHONY: help venv install-cpu install-gpu-cuda118 run-local run-local-watch
+.PHONY: help venv install-cpu install-gpu-cuda118 intel-xpu run-local run-local-watch
 
 help:
 	@echo "Mothbot development targets"
@@ -35,3 +35,10 @@ run-local-watch:
 install-gpu-cuda118: venv
 	$(PIP) install --upgrade pip
 	$(PIP) install -e ".[cuda118,packaging]" --extra-index-url https://download.pytorch.org/whl/cu118
+
+install-xpu: venv
+	$(PIP) install --upgrade pip
+	$(PIP) install -e ".[xpu,packaging]" --extra-index-url https://download.pytorch.org/whl/xpu
+	@$(PIP) install onnxruntime-openvino \
+		&& echo "  onnxruntime-openvino installed — OpenVINOExecutionProvider available (Intel GPU/NPU acceleration)." \
+		|| echo "  onnxruntime-openvino has no wheel for this Python version — staying on plain onnxruntime (CPU-only ONNX Runtime). torch.xpu still accelerates the main YOLO detection path."

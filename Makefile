@@ -47,6 +47,10 @@ run-watch:
 gpu-setup:
 	@$(MAKE) -f make/dev.mk install-gpu-cuda118
 
+xpu-setup:
+	@$(MAKE) -f make/dev.mk install-xpu
+
+
 dev-help:
 	@$(MAKE) -f make/dev.mk help
 

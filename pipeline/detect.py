@@ -93,7 +93,24 @@ def _load_onnx_model(resolved_model_path):
     global _EFFECTIVE_BATCH_SIZE, _IS_ONNX_MODEL
     global _onnx_session, _onnx_input_name, _onnx_imgsz, _onnx_task
 
-    session = ort.InferenceSession(resolved_model_path, providers=["CPUExecutionProvider"])
+    available = ort.get_available_providers()
+    if "CUDAExecutionProvider" in available:
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    elif "OpenVINOExecutionProvider" in available:
+        # "AUTO:GPU,CPU" lets the OpenVINO EP fall back to CPU itself if no
+        # Intel GPU/NPU is present, instead of failing at inference time.
+        providers = [
+            ("OpenVINOExecutionProvider", {"device_type": "AUTO:GPU,CPU"}),
+            "CPUExecutionProvider",
+        ]
+    else:
+        providers = ["CPUExecutionProvider"]
+
+    try:
+        session = ort.InferenceSession(resolved_model_path, providers=providers)
+    except Exception as exc:
+        print(f"  ⚠️  Falling back to CPUExecutionProvider ({exc})")
+        session = ort.InferenceSession(resolved_model_path, providers=["CPUExecutionProvider"])
 
     inp = session.get_inputs()[0]
     _onnx_input_name = inp.name
@@ -110,7 +127,7 @@ def _load_onnx_model(resolved_model_path):
     print(f"  ℹ️  ONNX model (task={_onnx_task}, imgsz={_onnx_imgsz}) — "
           f"running via ONNX Runtime directly (UI imgsz setting ignored).")
     print(f"  ℹ️  Batch size forced to 1 for ONNX.")
-    print(f"  ✓ Loaded ONNX model (ONNX Runtime — faster CPU inference)")
+    print(f"  ✓ Loaded ONNX model (ONNX Runtime — active provider: {session.get_providers()[0]})")
     return None  # ONNX path does not use the YOLO wrapper
 
 
@@ -706,7 +723,11 @@ def process_image_list(img_files, dataset_root=None):
                     )
             else:
                 # ultralytics predict path (PT models).
-                _pkw = {"source": batch_paths, "device": DEVICE, "verbose": False, "imgsz": IMGSZ, "max_det": 1000}
+                # Pass a torch.device instance rather than a bare string: ultralytics'
+                # select_device() only special-cases "cuda"/"cpu"/"mps" strings and
+                # otherwise treats the string as a CUDA device id (breaking "xpu").
+                # A torch.device object bypasses that parsing entirely.
+                _pkw = {"source": batch_paths, "device": torch.device(DEVICE), "verbose": False, "imgsz": IMGSZ, "max_det": 1000}
                 try:
                     batch_results = model.predict(**_pkw)
                 except Exception as e:

@@ -60,6 +60,12 @@ Optional CUDA 11.8 setup:
 make gpu-setup
 ```
 
+Optional Intel XPU setup:
+
+```bash
+make xpu-setup
+```
+
 ## Project Structure
 
 - `ui/`: Gradio app and local runners

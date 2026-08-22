@@ -93,6 +93,7 @@ from core.common import (
     current_timestamp,
     get_rotated_rect_raw_coordinates,
     get_device,
+    has_accelerator,
     print_device_info,
 )
 from core.paths import resolve_patch_path
@@ -131,7 +132,7 @@ taxa_path = SPECIES_LIST
 
 # print(torch.cuda.is_available())
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE = get_device()
 
 DOI = ""
 
@@ -176,9 +177,9 @@ def parse_args():
     parser.add_argument(
         "--device",
         required=False,
-        choices=["cpu", "cuda"],
+        choices=["cpu", "cuda", "xpu"],
         default=DEVICE,
-        help="device on which to run pybioblip ('cpu' or 'cuda', default: what your comp detects)",
+        help="device on which to run pybioblip ('cpu', 'cuda', or 'xpu', default: what your comp detects)",
     )
     parser.add_argument(
         "--ID_Hum",
@@ -798,7 +799,7 @@ def run_id_on_detection_set(matched_img_json_pairs, classifier, label):
         f"banking each chunk to disk as it completes..."
     )
 
-    batch_size = 32 if torch.cuda.is_available() else 8
+    batch_size = 32 if has_accelerator() else 8
     rank_label = str(TAXONOMIC_RANK_FILTER.get_label())
     start_time = time.time()
     processed = 0          # representatives predicted so far

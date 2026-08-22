@@ -9,6 +9,7 @@ stream output from in-process worker calls.
 """
 
 import ctypes
+import functools
 import io
 import json
 import logging
@@ -182,10 +183,46 @@ def current_timestamp():
     return now.strftime("%Y-%m-%d__%H_%M_%S_(%z)")
 
 
+@functools.lru_cache(maxsize=1)
+def _xpu_actually_works():
+    """Verify an XPU tensor op runs cleanly, not just that a device is enumerated.
+
+    On some Intel driver/GPU combinations ``torch.xpu.is_available()`` returns
+    True even though the compute-runtime aborts (an uncatchable SIGABRT, not a
+    Python exception) on the very first real op. Running the probe in a
+    subprocess means a crash there can't take down the caller; the result is
+    cached for the life of the process since driver behaviour won't change
+    mid-run.
+    """
+    import subprocess
+    import sys
+    probe = "import torch; x = torch.randn(2, 2).to('xpu'); (x @ x).cpu()"
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            timeout=30,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
 def get_device():
-    """Return ``'cuda'`` if a CUDA GPU is available, else ``'cpu'``."""
+    """Return ``'cuda'`` or ``'xpu'`` if available and actually usable, else ``'cpu'``."""
     import torch
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch, "xpu") and torch.xpu.is_available():
+        if _xpu_actually_works():
+            return "xpu"
+        print("⚠️  torch.xpu.is_available() is True, but a real XPU op crashed the driver — falling back to cpu.")
+    return "cpu"
+
+
+def has_accelerator():
+    """Return True if a CUDA or XPU GPU is available (i.e. get_device() != 'cpu')."""
+    return get_device() != "cpu"
 
 
 def build_cuda_diagnostics():
@@ -201,12 +238,17 @@ def build_cuda_diagnostics():
         and cuda_backend.is_built()
     )
 
+    xpu_module = getattr(torch, "xpu", None)
+    xpu_available = bool(xpu_module and xpu_module.is_available())
+
     lines = [
         f"PyTorch version: {torch.__version__}",
         f"PyTorch CUDA build: {cuda_build or 'None (CPU-only build likely)'}",
         f"PyTorch CUDA backend built: {cuda_backend_built}",
         f"torch.cuda.is_available(): {cuda_available}",
         f"CUDA_VISIBLE_DEVICES: {os.getenv('CUDA_VISIBLE_DEVICES', '<unset>')}",
+        f"torch.xpu available: {xpu_module is not None}",
+        f"torch.xpu.is_available(): {xpu_available}",
     ]
 
     if cuda_available:
@@ -217,6 +259,16 @@ def build_cuda_diagnostics():
             lines.append(f"Current GPU name: {torch.cuda.get_device_name(current_device)}")
         except Exception as exc:
             lines.append(f"Could not read current CUDA device details: {exc}")
+    elif xpu_available:
+        lines.append(f"Number of XPUs: {xpu_module.device_count()}")
+        try:
+            current_device = xpu_module.current_device()
+            lines.append(f"Current device index: {current_device}")
+            lines.append(f"Current XPU name: {xpu_module.get_device_name(current_device)}")
+        except Exception as exc:
+            lines.append(f"Could not read current XPU device details: {exc}")
+        xpu_ok = _xpu_actually_works()
+        lines.append(f"XPU real-op health check: {'passed' if xpu_ok else 'FAILED (driver crashed — falling back to cpu)'}")
     else:
         if not cuda_backend_built or cuda_build is None:
             lines.append("Likely cause: CPU-only torch build in this environment.")

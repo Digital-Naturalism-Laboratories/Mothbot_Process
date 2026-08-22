@@ -93,6 +93,14 @@ def _get_session(model_name: str = "birefnet-general-lite"):
     elif "DmlExecutionProvider" in available:
         providers = ["DmlExecutionProvider", "CPUExecutionProvider"]
         print("  ⚡ DirectML acceleration active (Windows GPU)")
+    elif "OpenVINOExecutionProvider" in available:
+        # "AUTO:GPU,CPU" lets the OpenVINO EP itself fall back to CPU if no
+        # Intel GPU/NPU is present, instead of failing at inference time.
+        providers = [
+            ("OpenVINOExecutionProvider", {"device_type": "AUTO:GPU,CPU"}),
+            "CPUExecutionProvider",
+        ]
+        print("  ⚡ OpenVINO acceleration active (Intel GPU/XPU)")
     else:
         providers = ["CPUExecutionProvider"]
 

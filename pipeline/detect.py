@@ -131,8 +131,41 @@ def _load_onnx_model(resolved_model_path):
     return None  # ONNX path does not use the YOLO wrapper
 
 
+# Per-image detection ceiling passed to ultralytics predict(). Ultralytics defaults
+# to 300 and MBD models are trained on frames that can hold 4,000+ insects, so keep
+# this well above any realistic single-image count. (The NMS candidate cap
+# `max_nms` stays at ultralytics' 30,000, which is above anything we see.)
+MAX_DET_PER_IMAGE = 10_000
+
+
+def _lift_nms_time_limit():
+    """Stop ultralytics NMS from silently blanking dense images.
+
+    ultralytics' non_max_suppression has a *cumulative* time budget per batch
+    (``2.0 + 0.05 * batch_size`` seconds, ~2.4 s for our batch of 8). When rotated
+    OBB-NMS on thousands of boxes exceeds it, the loop ``break``s and every
+    remaining image in the batch is returned with **zero detections** — only a
+    log warning is emitted. That silently drops whole frames from dense nights.
+
+    ``max_time_img`` is not exposed as a predict() argument, so wrap the function
+    to default it to an effectively unlimited value. Idempotent.
+    """
+    from ultralytics.utils import nms as _nms
+    if getattr(_nms.non_max_suppression, "_mothbot_patched", False):
+        return
+    _orig = _nms.non_max_suppression
+
+    def _patched(*args, **kwargs):
+        kwargs.setdefault("max_time_img", 3600.0)
+        return _orig(*args, **kwargs)
+
+    _patched._mothbot_patched = True
+    _nms.non_max_suppression = _patched
+
+
 def _load_pt_model(resolved_model_path):
     """Load a PyTorch .pt model with a weights_only compatibility fallback."""
+    _lift_nms_time_limit()
     try:
         return YOLO(resolved_model_path)
     except Exception as err:
@@ -727,7 +760,9 @@ def process_image_list(img_files, dataset_root=None):
                 # select_device() only special-cases "cuda"/"cpu"/"mps" strings and
                 # otherwise treats the string as a CUDA device id (breaking "xpu").
                 # A torch.device object bypasses that parsing entirely.
-                _pkw = {"source": batch_paths, "device": torch.device(DEVICE), "verbose": False, "imgsz": IMGSZ, "max_det": 1000}
+                # max_det caps detections *per image* (ultralytics default 300). Dense
+                # nights can exceed 4,000 insects in one frame, so give generous headroom.
+                _pkw = {"source": batch_paths, "device": torch.device(DEVICE), "verbose": False, "imgsz": IMGSZ, "max_det": MAX_DET_PER_IMAGE}
                 try:
                     batch_results = model.predict(**_pkw)
                 except Exception as e:

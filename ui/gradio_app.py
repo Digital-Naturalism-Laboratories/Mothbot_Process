@@ -352,6 +352,11 @@ def app():
                                 "↻ Refresh", size="sm", variant="secondary", scale=1, min_width=100,
                             )
                         classify_link = gr.HTML(value="", visible=False)
+                        with gr.Row():
+                            classify_open_btn = gr.Button(
+                                "🦋 Open in Mothbot Classify", size="sm", variant="secondary", visible=False,
+                            )
+                        classify_open_status = gr.Markdown(value="", visible=False)
                         with gr.Group():
                             status = gr.Textbox(
                                 label="Error", lines=3, interactive=False, visible=False
@@ -948,10 +953,21 @@ def app():
             outputs=_scan_outputs,
         )
         # Show the "open in Classify" handoff link whenever the dataset folder changes.
+        def _classify_handoff_ui(folder_path):
+            link = classify_handoff_html(folder_path)
+            return link, gr.update(visible=bool(link.get("visible"))), gr.update(value="", visible=False)
+
         deployment_path.change(
-            fn=classify_handoff_html,
+            fn=_classify_handoff_ui,
             inputs=[deployment_path],
-            outputs=[classify_link],
+            outputs=[classify_link, classify_open_btn, classify_open_status],
+        )
+        # Opens the link in a Chromium browser on this machine (Classify's folder
+        # picker needs the File System Access API, which Firefox/Safari lack).
+        classify_open_btn.click(
+            fn=open_classify_in_chrome,
+            inputs=[deployment_path],
+            outputs=[classify_open_status],
         )
         refresh_btn.click(
             fn=scan_deployment_folder_on_change,
@@ -1398,37 +1414,108 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
 
 CLASSIFY_URL = "https://classify.mothbox.org"
 
+# Classify needs the File System Access API (showDirectoryPicker), which only
+# Chromium-based browsers implement. Firefox/Safari can load the page but can't
+# open a folder, so we try to launch the link in a Chromium browser directly.
+_CHROMIUM_BROWSERS = {
+    "darwin": [
+        ("Google Chrome", ["open", "-a", "Google Chrome"]),
+        ("Microsoft Edge", ["open", "-a", "Microsoft Edge"]),
+        ("Brave", ["open", "-a", "Brave Browser"]),
+        ("Chromium", ["open", "-a", "Chromium"]),
+    ],
+    "win32": [
+        ("Google Chrome", ["cmd", "/c", "start", "", "chrome"]),
+        ("Microsoft Edge", ["cmd", "/c", "start", "", "msedge"]),
+    ],
+    "linux": [
+        ("Google Chrome", ["google-chrome"]),
+        ("Chromium", ["chromium"]),
+        ("Chromium", ["chromium-browser"]),
+        ("Microsoft Edge", ["microsoft-edge"]),
+    ],
+}
+
+
+def _classify_handoff_url(folder_path):
+    """Return (url, root) for the chosen datasets folder.
+
+    Hand Classify exactly the folder chosen here — not its parent, not a
+    sub-folder. It becomes Classify's datasets folder, and Classify lists the
+    datasets inside it.
+    """
+    from urllib.parse import quote
+
+    root = os.path.normpath(folder_path)
+    return f"{CLASSIFY_URL}/?root={quote(root)}", root
+
+
+def open_classify_in_chrome(folder_path):
+    """Open the Classify hand-off link, preferring a Chromium browser.
+
+    Process runs locally, so this launches a browser on the user's own machine.
+    Falls back to the default browser (with a warning) when no Chromium build is
+    found — Classify loads there but its folder picker won't work.
+    """
+    import shutil
+    import subprocess
+    import webbrowser
+
+    folder_path = (folder_path or "").strip()
+    if not folder_path or not os.path.isdir(folder_path):
+        return gr.update(value="Choose a datasets folder first.", visible=True)
+
+    url, _root = _classify_handoff_url(folder_path)
+
+    for name, cmd in _CHROMIUM_BROWSERS.get(sys.platform, []):
+        exe = cmd[0]
+        if exe in ("open", "cmd"):
+            if shutil.which(exe) is None:
+                continue
+        elif shutil.which(exe) is None:
+            continue
+        try:
+            result = subprocess.run([*cmd, url], capture_output=True, timeout=15)
+            if result.returncode == 0:
+                return gr.update(value=f"✅ Opened Mothbot Classify in {name}.", visible=True)
+        except Exception:
+            continue
+
+    webbrowser.open(url)
+    return gr.update(
+        value=(
+            "⚠️ Couldn't find Chrome, Edge, or Brave, so this opened in your default browser. "
+            "Classify needs a Chromium-based browser to open folders — if the page can't open your "
+            "dataset, paste the link into Chrome."
+        ),
+        visible=True,
+    )
+
 
 def classify_handoff_html(folder_path):
-    """Link that hands the chosen dataset folder off to Mothbot Classify.
+    """Link that hands the chosen datasets folder off to Mothbot Classify.
 
     A browser can't open a local folder from a URL, but Classify remembers the
-    user's *datasets folder* (the parent of this one) and auto-opens whichever
-    dataset the ``?dataset=<folder name>`` param names. So: the chosen folder's
-    basename is the Classify dataset name, and its parent is what the user should
-    pick as Classify's datasets folder the first time. Both are passed so Classify
-    can either auto-open the dataset or tell the user exactly which folder to pick.
+    datasets folder it was pointed at. The folder chosen here is sent as
+    ``?root=`` so Classify opens that exact folder — and uses it (display-only)
+    to name the folder to pick if it isn't pointed there yet.
     """
     import html
-    from urllib.parse import quote
 
     folder_path = (folder_path or "").strip()
     if not folder_path or not os.path.isdir(folder_path):
         return gr.update(value="", visible=False)
 
-    name = os.path.basename(os.path.normpath(folder_path))
-    parent = os.path.dirname(os.path.normpath(folder_path))
-    # `root` is the parent folder — Classify shows it to the user as the exact
-    # folder to pick if it can't auto-open the dataset (display only).
-    url = f"{CLASSIFY_URL}/?dataset={quote(name)}&root={quote(parent)}"
+    url, root = _classify_handoff_url(folder_path)
+    target = os.path.basename(root) or root
     body = (
         f'<div style="margin:6px 0 2px 0;font-size:14px;line-height:1.5">'
         f'<a href="{html.escape(url)}" target="_blank" rel="noopener" '
         f'style="font-weight:600;text-decoration:none">'
-        f'🦋 Open <b>{html.escape(name)}</b> in Mothbot Classify ↗</a>'
+        f'🦋 Open <b>{html.escape(target)}</b> in Mothbot Classify ↗</a>'
         f'<div style="color:#888;font-size:12px;margin-top:2px">'
-        f'Classify auto-opens this dataset when its datasets folder is set to '
-        f'<code>{html.escape(parent)}</code>. First time? Choose that folder when Classify asks.'
+        f'Use the button for best results — Classify needs Chrome/Edge to open folders. '
+        f'Point its datasets folder at <code>{html.escape(root)}</code> if it asks.'
         f'</div></div>'
     )
     return gr.update(value=body, visible=True)

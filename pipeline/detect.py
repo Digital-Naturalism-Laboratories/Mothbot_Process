@@ -150,17 +150,50 @@ def _lift_nms_time_limit():
     ``max_time_img`` is not exposed as a predict() argument, so wrap the function
     to default it to an effectively unlimited value. Idempotent.
     """
+    import logging
+    from ultralytics.utils import LOGGER as _ul_logger
     from ultralytics.utils import nms as _nms
     if getattr(_nms.non_max_suppression, "_mothbot_patched", False):
         return
     _orig = _nms.non_max_suppression
 
+    # Effectively unlimited: NMS always terminates (candidates are capped at
+    # max_nms=30,000), so a slow machine just takes longer and still finds every
+    # bug — never trading detections for time.
+    _NMS_MAX_TIME_PER_IMAGE = 3600.0
+    _SLOW_BATCH_NOTICE_S = 20.0
+
     def _patched(*args, **kwargs):
-        kwargs.setdefault("max_time_img", 3600.0)
-        return _orig(*args, **kwargs)
+        kwargs.setdefault("max_time_img", _NMS_MAX_TIME_PER_IMAGE)
+        t0 = time.time()
+        out = _orig(*args, **kwargs)
+        took = time.time() - t0
+        if took > _SLOW_BATCH_NOTICE_S:
+            # Heartbeat for dense frames on slow CPUs so the run doesn't look frozen.
+            print(f"  ⏳ NMS took {took:.0f}s for this batch (very dense frames) — still running, nothing lost.")
+        return out
 
     _patched._mothbot_patched = True
     _nms.non_max_suppression = _patched
+
+    # ultralytics' logger writes to the stdout it captured at import time, which
+    # Gradio's console redirect never sees. If the time limit ever trips anyway,
+    # re-emit it with print() so it reaches the user, and say what it means.
+    class _NmsTimeLimitToUser(logging.Handler):
+        def emit(self, record):
+            try:
+                msg = record.getMessage()
+            except Exception:
+                return
+            if "NMS time limit" in msg:
+                print(
+                    f"  ⚠️  {msg}. ultralytics stopped NMS early, so some images in "
+                    f"this batch were returned with ZERO detections. Re-run detection "
+                    f"on this folder to recover them."
+                )
+
+    if not any(isinstance(h, _NmsTimeLimitToUser) for h in _ul_logger.handlers):
+        _ul_logger.addHandler(_NmsTimeLimitToUser(level=logging.WARNING))
 
 
 def _load_pt_model(resolved_model_path):

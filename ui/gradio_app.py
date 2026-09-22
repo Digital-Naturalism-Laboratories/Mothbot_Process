@@ -1406,7 +1406,8 @@ def classify_handoff_html(folder_path):
     user's *datasets folder* (the parent of this one) and auto-opens whichever
     dataset the ``?dataset=<folder name>`` param names. So: the chosen folder's
     basename is the Classify dataset name, and its parent is what the user should
-    pick as Classify's datasets folder the first time.
+    pick as Classify's datasets folder the first time. Both are passed so Classify
+    can either auto-open the dataset or tell the user exactly which folder to pick.
     """
     import html
     from urllib.parse import quote
@@ -1417,7 +1418,9 @@ def classify_handoff_html(folder_path):
 
     name = os.path.basename(os.path.normpath(folder_path))
     parent = os.path.dirname(os.path.normpath(folder_path))
-    url = f"{CLASSIFY_URL}/?dataset={quote(name)}"
+    # `root` is the parent folder — Classify shows it to the user as the exact
+    # folder to pick if it can't auto-open the dataset (display only).
+    url = f"{CLASSIFY_URL}/?dataset={quote(name)}&root={quote(parent)}"
     body = (
         f'<div style="margin:6px 0 2px 0;font-size:14px;line-height:1.5">'
         f'<a href="{html.escape(url)}" target="_blank" rel="noopener" '

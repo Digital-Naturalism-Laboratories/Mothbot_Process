@@ -187,9 +187,10 @@ def _lift_nms_time_limit():
                 return
             if "NMS time limit" in msg:
                 print(
-                    f"  ⚠️  {msg}. ultralytics stopped NMS early, so some images in "
-                    f"this batch were returned with ZERO detections. Re-run detection "
-                    f"on this folder to recover them."
+                    f"  ⚠️  {msg}. Detection timed out partway through this batch, so "
+                    f"some images were cut short and may be MISSING insects they "
+                    f"actually have (they can look like they had fewer, or none). "
+                    f"Re-run detection on this folder to recover them."
                 )
 
     if not any(isinstance(h, _NmsTimeLimitToUser) for h in _ul_logger.handlers):

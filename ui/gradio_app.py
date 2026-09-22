@@ -351,6 +351,7 @@ def app():
                             refresh_btn = gr.Button(
                                 "↻ Refresh", size="sm", variant="secondary", scale=1, min_width=100,
                             )
+                        classify_link = gr.HTML(value="", visible=False)
                         with gr.Group():
                             status = gr.Textbox(
                                 label="Error", lines=3, interactive=False, visible=False
@@ -946,6 +947,12 @@ def app():
             inputs=[deployment_path],
             outputs=_scan_outputs,
         )
+        # Show the "open in Classify" handoff link whenever the dataset folder changes.
+        deployment_path.change(
+            fn=classify_handoff_html,
+            inputs=[deployment_path],
+            outputs=[classify_link],
+        )
         refresh_btn.click(
             fn=scan_deployment_folder_on_change,
             inputs=[deployment_path],
@@ -1387,6 +1394,41 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
         gr.update(interactive=any_legacy),  # lc_run_btn
         gr.update(choices=choices, value=[]),  # meta_manual_folder_choices
     )
+
+
+CLASSIFY_URL = "https://classify.mothbox.org"
+
+
+def classify_handoff_html(folder_path):
+    """Link that hands the chosen dataset folder off to Mothbot Classify.
+
+    A browser can't open a local folder from a URL, but Classify remembers the
+    user's *datasets folder* (the parent of this one) and auto-opens whichever
+    dataset the ``?dataset=<folder name>`` param names. So: the chosen folder's
+    basename is the Classify dataset name, and its parent is what the user should
+    pick as Classify's datasets folder the first time.
+    """
+    import html
+    from urllib.parse import quote
+
+    folder_path = (folder_path or "").strip()
+    if not folder_path or not os.path.isdir(folder_path):
+        return gr.update(value="", visible=False)
+
+    name = os.path.basename(os.path.normpath(folder_path))
+    parent = os.path.dirname(os.path.normpath(folder_path))
+    url = f"{CLASSIFY_URL}/?dataset={quote(name)}"
+    body = (
+        f'<div style="margin:6px 0 2px 0;font-size:14px;line-height:1.5">'
+        f'<a href="{html.escape(url)}" target="_blank" rel="noopener" '
+        f'style="font-weight:600;text-decoration:none">'
+        f'🦋 Open <b>{html.escape(name)}</b> in Mothbot Classify ↗</a>'
+        f'<div style="color:#888;font-size:12px;margin-top:2px">'
+        f'Classify auto-opens this dataset when its datasets folder is set to '
+        f'<code>{html.escape(parent)}</code>. First time? Choose that folder when Classify asks.'
+        f'</div></div>'
+    )
+    return gr.update(value=body, visible=True)
 
 
 def scan_deployment_folder_on_change(folder_path):

@@ -11,7 +11,7 @@ import importlib.util
 import os
 import sys
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules, copy_metadata
 
 
 def _resolve_project_dir():
@@ -66,6 +66,15 @@ for package in [
 # frozen build unless the package's .dist-info metadata is bundled too. Copying it
 # fixes "No package metadata was found for pymatting" during background removal.
 datas += copy_metadata("pymatting")
+
+# torchvision registers its compiled ops (torchvision::nms, roi_align, …) from a
+# native extension (_C.so / _C.pyd, plus image.so). If that library is missing
+# from the bundle, importing torchvision raises "operator torchvision::nms does
+# not exist" at startup — before the server even launches. The bundled
+# PyInstaller hooks normally collect it, but collect it explicitly so a hook gap
+# on a new torchvision release can't silently break the app again.
+binaries = collect_dynamic_libs("torchvision")
+hiddenimports += ["torchvision", "torchvision._C", "torchvision.extension"]
 
 
 def _package_dir(package_name):
@@ -153,7 +162,7 @@ if build_version_file:
 a = Analysis(
     [str(project_dir / "apps" / "desktop_main.py")],
     pathex=[str(project_dir)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

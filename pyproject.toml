@@ -25,7 +25,7 @@ dependencies = [
     "pytz==2025.2",
     "pyyaml==6.0.3",
     "regex==2025.9.1",
-    "timm",
+    "timm==1.0.27",
     "tqdm==4.67.1",
     "typing-extensions",
     "tzdata==2025.2",
@@ -37,9 +37,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Pinned to a known-good, mutually compatible pair (the one the dev .venv runs).
+# Left unpinned, a CI build silently picks up whatever torch/torchvision shipped
+# most recently; torch 2.14 / torchvision 0.29 (2026-09-02) broke the frozen
+# macOS/Linux app at import ("operator torchvision::nms does not exist" — the
+# native _C lib failed to load), which killed the v1.1.23 release before the
+# server even started. Bump these together, deliberately, and test a packaged build.
 cpu = [
-    "torch",
-    "torchvision",
+    "torch==2.12.1",
+    "torchvision==0.27.1",
 ]
 cuda118 = [
     "torch==2.7.1+cu118",

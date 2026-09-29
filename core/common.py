@@ -220,6 +220,36 @@ def get_device():
     return "cpu"
 
 
+def configure_torch_threads():
+    """Undo ultralytics' single-thread default so torch uses the CPU properly.
+
+    ``import ultralytics`` sets ``OMP_NUM_THREADS=1`` (meant to reduce CPU load
+    while *training*). Because the Process app imports it at startup, that pinned
+    every torch stage — YOLO detection, DINOv2 clustering, BioCLIP ID — to a
+    single core. Measured on a 4P+6E Apple Silicon Mac: YOLO 485 -> 215 ms/img and
+    DINOv2 178 -> 91 ms/patch going from 1 to 8 threads, identical results.
+
+    Uses physical cores (hyper-threads don't help torch's matmul-heavy work),
+    capped at 8 where gains flatten. ``MOTHBOT_TORCH_THREADS`` overrides.
+    Call at the start of each torch stage; cheap and idempotent.
+    """
+    import torch
+
+    override = os.environ.get("MOTHBOT_TORCH_THREADS", "").strip()
+    if override.isdigit() and int(override) > 0:
+        n = int(override)
+    else:
+        try:
+            import psutil
+            physical = psutil.cpu_count(logical=False)
+        except Exception:
+            physical = None
+        n = max(1, min(8, physical or os.cpu_count() or 1))
+    if torch.get_num_threads() != n:
+        torch.set_num_threads(n)
+    return n
+
+
 def has_accelerator():
     """Return True if a CUDA or XPU GPU is available (i.e. get_device() != 'cpu')."""
     return get_device() != "cpu"

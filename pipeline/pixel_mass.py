@@ -114,6 +114,11 @@ def _get_session(model_name: str = "birefnet-general-lite"):
     return _rembg_session
 
 
+def _is_identified(shape: dict) -> bool:
+    """True if a bot or a human has identified this detection."""
+    return bool(shape.get("identifier_bot") or shape.get("identifier_human"))
+
+
 def _format_eta(seconds: float) -> str:
     seconds = int(seconds)
     h, remainder = divmod(seconds, 3600)
@@ -180,6 +185,7 @@ def run(
     overwrite_nobg: bool = False,
     overwrite_pixmass: bool = True,
     model_name: str = "birefnet-general-lite",
+    only_identified: bool = False,
 ) -> None:
     """Calculate pixel mass for all patches in *input_path*.
 
@@ -196,6 +202,9 @@ def run(
         If False (default), skip patches that already have a _nobg.png on disk.
     overwrite_pixmass:
         If False, skip shapes that already have pixel_mass_pixels in the JSON.
+    only_identified:
+        If True, only measure patches that have an identification (bot or human),
+        e.g. to skip patches ID left unidentified because they were too blurry.
     """
     _dataset_root = dataset_root or input_path
 
@@ -238,6 +247,8 @@ def run(
         json_store[json_path] = data
 
         for shape in shapes:
+            if only_identified and not _is_identified(shape):
+                continue
             patch_rel = shape.get("patch_path", "")
             if not patch_rel:
                 continue
@@ -300,6 +311,8 @@ def run(
 
         changed = False
         for shape in data.get("shapes", []):
+            if only_identified and not _is_identified(shape):
+                continue
             if not overwrite_pixmass and "pixel_mass_pixels" in shape:
                 px_skipped += 1
                 continue

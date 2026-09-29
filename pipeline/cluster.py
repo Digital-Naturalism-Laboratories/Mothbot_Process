@@ -89,10 +89,12 @@ from core.common import (
     current_timestamp,
     get_rotated_rect_raw_coordinates,
     get_device,
+    configure_torch_threads,
     has_accelerator,
     print_device_info,
 )
 from core.paths import resolve_patch_path, get_processed_folder
+from core.blur import fill_missing_blur_scores
 
 
 # ~~~~Variables to Change~~~~~~~
@@ -991,6 +993,8 @@ def run(input_path, ID_Hum=True, ID_Bot=True, dataset_root=None):
     print("Starting script to cluster detections into meaningful groups")
 
     DEVICE = get_device()
+    # ultralytics' import pinned torch to 1 thread; restore it (see core.common).
+    print(f"CPU threads for torch: {configure_torch_threads()}")
     print_device_info(selected_device=DEVICE)
 
     # ~~~~~~~~~~~~~~~~ GATHERING DATA ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1016,6 +1020,11 @@ def run(input_path, ID_Hum=True, ID_Bot=True, dataset_root=None):
         hu_matched_img_json_pairs, bot_matched_img_json_pairs = (
             find_detection_matches_processed(DATASET_ROOT, source_folder=input_path)
         )
+
+    # Datasets detected before blur scoring existed: score their patches now
+    # (one-time, ~3 ms/patch; Detect scores new patches as it crops them).
+    fill_missing_blur_scores(bot_matched_img_json_pairs, DATASET_ROOT, label="bot patches")
+    fill_missing_blur_scores(hu_matched_img_json_pairs, DATASET_ROOT, label="human-detection patches")
 
     print(
         "Found ",

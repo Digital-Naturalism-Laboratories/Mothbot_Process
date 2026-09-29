@@ -93,10 +93,12 @@ from core.common import (
     current_timestamp,
     get_rotated_rect_raw_coordinates,
     get_device,
+    configure_torch_threads,
     has_accelerator,
     print_device_info,
 )
 from core.paths import resolve_patch_path
+from core.blur import fill_missing_blur_scores
 
 # ~~~~Variables to Change~~~~~~~
 
@@ -116,6 +118,10 @@ TAXONOMIC_RANK_FILTER_num = 3  #!!! change this number to change the taxonomic r
 
 # you can See if a json file has an existing ID by looking at identifier_bot: pybioclip
 OVERWRITE_EXISTING_IDs = True  # True
+
+# Patches with a blurriness score above this (0-100) are left unidentified.
+# None = identify everything.
+BLUR_THRESHOLD = None
 
 # you probably always want these below as true
 ID_HUMANDETECTIONS = True
@@ -386,18 +392,26 @@ def get_bioclip_prediction_PILimg(img, classifier):
     return winner, winnerprob, winningdict
 
 
-def read_cluster_id(json_path, shape_idx):
-    """Read clusterID from a shape in a JSON file. Returns None if not present."""
+def _shape_cluster_id(shape):
+    """clusterID of a shape as a float, or None if absent/invalid."""
+    value = shape.get("clusterID")
+    if value is None:
+        return None
     try:
-        with open(json_path, "r") as f:
-            data = json.load(f)
-        if 0 <= shape_idx < len(data["shapes"]):
-            cluster_val = data["shapes"][shape_idx].get("clusterID", None)
-            if cluster_val is not None:
-                return float(cluster_val)
-    except Exception:
-        pass
-    return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _shape_blur(shape):
+    """Blurriness score (0-100) of a shape, or None if it was never scored."""
+    value = shape.get("blur_score")
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+# Blurriness of every collected patch, keyed by (json_path, shape index).
+# Filled by collect_patches_for_detection_set; read by run_id_on_detection_set.
+_PATCH_BLUR = {}
 
 
 def apply_id_to_cluster(json_paths, idxes, pred, conf, winningdict):
@@ -622,6 +636,14 @@ def collect_patches_for_detection_set(matched_img_json_pairs, label):
             get_rotated_rect_raw_coordinates(json_path)
         )
         print(f"{index}/{numofpairs} | {len(coordinates_of_detections_list)} {label} detections in {json_path}")
+        # Parse the JSON once per file for cluster IDs and blur scores. (Reading it
+        # per patch re-parsed the whole file for every detection — quadratic on
+        # dense frames with thousands of detections.)
+        try:
+            with open(json_path, "r") as f:
+                shapes = json.load(f).get("shapes", [])
+        except Exception:
+            shapes = []
 
         for idx, coordinates in enumerate(coordinates_of_detections_list):
             if was_pre_ided_list[idx] and not OVERWRITE_EXISTING_IDs:
@@ -631,7 +653,9 @@ def collect_patches_for_detection_set(matched_img_json_pairs, label):
                 if DATASET_ROOT
                 else os.path.dirname(image_path) + "/" + thepatch_list[idx]
             )
-            cluster_id = read_cluster_id(json_path, idx)
+            shape = shapes[idx] if idx < len(shapes) else {}
+            cluster_id = _shape_cluster_id(shape)
+            _PATCH_BLUR[(json_path, idx)] = _shape_blur(shape)
             all_patches.append((patchfullpath, json_path, idx, cluster_id))
 
     return all_patches
@@ -748,9 +772,42 @@ def run_id_on_detection_set(matched_img_json_pairs, classifier, label):
 
     cluster_groups, clustered_count, individual_count = group_patches_by_cluster(all_patches)
 
+    def blur_of(member):
+        return _PATCH_BLUR.get((member[1], member[2]))
+
+    # Blurriness threshold: patches blurrier than it are left unidentified.
+    too_blurry = 0
+    if BLUR_THRESHOLD is not None:
+        for key in list(cluster_groups):
+            kept = []
+            for member in cluster_groups[key]:
+                blur = blur_of(member)
+                if blur is not None and blur > BLUR_THRESHOLD:
+                    too_blurry += 1
+                else:
+                    kept.append(member)  # unscored patches can't be judged, so keep them
+            if kept:
+                cluster_groups[key] = kept
+            else:
+                del cluster_groups[key]
+        print(
+            f"  🌫️  Blurriness threshold {BLUR_THRESHOLD:g}: {too_blurry} {label} patch(es) are too "
+            f"blurry and will be left unidentified."
+        )
+        if not cluster_groups:
+            print(f"  No {label} patches are sharp enough to identify at this threshold.")
+            return
+        individual_count = sum(1 for k in cluster_groups if str(k).startswith("__individual_"))
+        clustered_count = sum(
+            len(v) for k, v in cluster_groups.items() if not str(k).startswith("__individual_")
+        )
+
     representatives = []   # one per cluster — the image we actually run inference on
     cluster_members = []   # all members of that cluster (receives the same result)
     for members in cluster_groups.values():
+        # The sharpest member represents the cluster: BioCLIP identifies a crisp
+        # patch far better than a blurry one. Unscored patches sort last.
+        members = sorted(members, key=lambda m: (blur_of(m) is None, blur_of(m) or 0.0))
         representatives.append(members[0])
         cluster_members.append(members)
 
@@ -973,7 +1030,7 @@ def extract_doi_from_csv_path(csv_path: str) -> str:
 
 def run(
     input_path, taxa_csv, rank=3, ID_Hum=True, ID_Bot=True, overwrite_prev_bot_ID=True,
-    dataset_root=None,
+    dataset_root=None, blur_threshold=None,
 ):
     """Run the full ID pipeline programmatically.
 
@@ -996,7 +1053,7 @@ def run(
         *input_path* itself.
     """
     global TAXONOMIC_RANK_FILTER, OVERWRITE_EXISTING_IDs, ID_HUMANDETECTIONS
-    global ID_BOTDETECTIONS, INPUT_PATH, DOI, DEVICE, DATASET_ROOT
+    global ID_BOTDETECTIONS, INPUT_PATH, DOI, DEVICE, DATASET_ROOT, BLUR_THRESHOLD
 
     TAXONOMIC_RANK_FILTER = Rank(int(rank))
     OVERWRITE_EXISTING_IDs = bool(overwrite_prev_bot_ID)
@@ -1004,11 +1061,17 @@ def run(
     ID_BOTDETECTIONS = bool(ID_Bot)
     INPUT_PATH = input_path
     DATASET_ROOT = dataset_root or input_path
+    # 100 (the slider's max) means "identify everything", same as no threshold.
+    BLUR_THRESHOLD = (
+        float(blur_threshold) if blur_threshold is not None and float(blur_threshold) < 100 else None
+    )
 
     DOI = extract_doi_from_csv_path(taxa_csv)
     print("using species list: " + DOI)
 
     DEVICE = get_device()
+    # ultralytics' import pinned torch to 1 thread; restore it (see core.common).
+    print(f"CPU threads for torch: {configure_torch_threads()}")
 
     # TODO: Re-enable once pybioclip CUDA performance is fixed.
     #print("Note: CUDA temporarily disabled for ID while we figure out what's going on with bioclip and CUDA")
@@ -1022,6 +1085,10 @@ def run(
     hu_matched_img_json_pairs, bot_matched_img_json_pairs = (
         find_detection_matches_processed(DATASET_ROOT, source_folder=input_path)
     )
+    # Older datasets have no blur scores yet; they drive the threshold and pick
+    # each cluster's sharpest patch as its representative. No-op once scored.
+    fill_missing_blur_scores(bot_matched_img_json_pairs, DATASET_ROOT, label="bot patches")
+    fill_missing_blur_scores(hu_matched_img_json_pairs, DATASET_ROOT, label="human-detection patches")
 
     print(f"Found {len(hu_matched_img_json_pairs)} pairs of images and HUMAN detection data to try to ID")
     if hu_matched_img_json_pairs:

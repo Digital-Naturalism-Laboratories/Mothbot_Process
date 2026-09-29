@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 
 from core.common import find_date_folders, scan_for_images
+from core.blur import set_blur_on_shape
 
 INPUT_PATH = r"F:\Panama\PEA_PeaPorch_AdeptTurca_2024-09-01\2024-09-01"
 
@@ -85,6 +86,7 @@ def generateThumbnailPatches_JSON(
             rect = cv2.minAreaRect(points)
             img_crop = crop_rect(image, rect)
             cv2.imwrite(str(patchfullpath), img_crop)
+            set_blur_on_shape(shape, img_crop)  # patch is in memory: score it now
 
         updated_shapes.append(shape)
 

@@ -17,12 +17,14 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 from core.preview import emit_preview
+from core.blur import blur_score, BLUR_METHOD
 from core.common import (
     find_date_folders,
     find_images_recursive,
     scan_for_images,
     current_timestamp,
     get_device,
+    configure_torch_threads,
     print_device_info,
 )
 from core.paths import (
@@ -279,7 +281,7 @@ def _write_bot_json_data(orig_img, shapes, image_path, bot_json_path, model_name
         json.dump(data, f, indent=2)
 
 
-def _infer_onnx_single(image_path, bot_json_path, model_name, conf_thresh=0.25, iou_thresh=0.7):
+def _infer_onnx_single(image_path, bot_json_path, model_name, conf_thresh=0.25, iou_thresh=0.7, orig_img=None):
     """Run ONNX Runtime on one image, write the detection JSON, return (shapes, orig_img).
 
     Replicates the preprocessing / postprocessing that ultralytics would do,
@@ -289,7 +291,8 @@ def _infer_onnx_single(image_path, bot_json_path, model_name, conf_thresh=0.25, 
     Angle unit: ultralytics OBB ONNX exports store angles in radians.
     cv2.boxPoints expects degrees, so we convert.
     """
-    orig_img = cv2.imread(image_path)
+    if orig_img is None:  # not pre-decoded by the prefetch thread
+        orig_img = cv2.imread(image_path)
     if orig_img is None:
         return [], None
 
@@ -542,13 +545,16 @@ def _crop_obb_fast(img, points):
     return patch
 
 
-def _write_patches_for_image(orig_img, shapes, patch_folder_path):
+def _write_patches_for_image(orig_img, shapes, patch_folder_path, bot_json_path=None):
     """Extract and write patch images for all detections in one photo.
 
     Designed to run in a worker thread while the main thread runs the next
-    YOLO batch. Returns list of written paths for preview emission.
+    YOLO batch. Each patch is also scored for blurriness while it is still in
+    memory, and the scores are recorded in the detection JSON. Returns list of
+    written paths for preview emission.
     """
     written = []
+    blur_by_patch = {}
     patch_folder_path = Path(patch_folder_path)
     for shape in shapes:
         patch_filename = shape.get("patch_path", "")
@@ -560,14 +566,60 @@ def _write_patches_for_image(orig_img, shapes, patch_folder_path):
                 out_path = patch_folder_path / patch_filename
                 cv2.imwrite(str(out_path), patch)
                 written.append(str(out_path))
+                blur_by_patch[patch_filename] = blur_score(patch)
         except Exception as e:
             print(f"  ⚠️  patch crop failed for {patch_filename}: {e}")
+    if bot_json_path and blur_by_patch:
+        _record_blur_scores(bot_json_path, blur_by_patch)
     return written
+
+
+def _record_blur_scores(bot_json_path, blur_by_patch):
+    """Add blurriness scores to an already-written detection JSON.
+
+    The JSON is written on the main thread before its patches are cropped here,
+    and nothing else writes it during detection, so a read-modify-write is safe.
+    """
+    try:
+        with open(bot_json_path) as f:
+            data = json.load(f)
+        for shape in data.get("shapes", []):
+            score = blur_by_patch.get(shape.get("patch_path", ""))
+            if score is not None:
+                shape["blur_score"] = score
+                shape["blur_method"] = BLUR_METHOD
+        with open(bot_json_path, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"  ⚠️  could not record blur scores in {os.path.basename(bot_json_path)}: {e}")
 
 
 # Number of worker threads for concurrent patch writing.
 # IO-bound work — 4 threads is a good default for SSD + CPU crop.
 PATCH_WORKERS = min(4, os.cpu_count() or 2)
+
+# Patch jobs each hold a full-resolution frame (~190 MB for 64 MP). If patch
+# writing ever falls behind inference (very dense frames on a slow disk), cap the
+# backlog so memory can't grow without bound — inference waits instead.
+MAX_PENDING_PATCH_JOBS = 16
+
+
+def _decode_for_detection(image_path):
+    """Decode a source photo exactly as the active inference path would.
+
+    Runs on the prefetch thread so JPEG decoding (~40% of per-image time for
+    64 MP photos) overlaps the previous batch's inference instead of happening
+    serially inside predict(). Uses the same decoder each path used before, so
+    detections and patch pixels are unchanged: ultralytics' own ``imread`` for
+    .pt models, ``cv2.imread`` for the ONNX path. Returns None on failure.
+    """
+    try:
+        if _IS_ONNX_MODEL:
+            return cv2.imread(image_path)
+        from ultralytics.utils.patches import imread as _ultralytics_imread
+        return _ultralytics_imread(image_path, flags=cv2.IMREAD_COLOR)
+    except Exception:
+        return None
 
 
 def _save_result(result, image_path, bot_json_path, model_name):
@@ -762,12 +814,23 @@ def process_image_list(img_files, dataset_root=None):
     infer_start = time.monotonic()
     patch_futures = []  # (future, patch_folder_path, filename)
 
-    with ThreadPoolExecutor(max_workers=PATCH_WORKERS) as executor:
-        for batch_start in range(0, len(pending), _EFFECTIVE_BATCH_SIZE):
-            batch = pending[batch_start: batch_start + _EFFECTIVE_BATCH_SIZE]
-            batch_paths = [item[0] for item in batch]
+    batches = [
+        pending[i: i + _EFFECTIVE_BATCH_SIZE] for i in range(0, len(pending), _EFFECTIVE_BATCH_SIZE)
+    ]
 
-            print(f"  Batch {batch_start // _EFFECTIVE_BATCH_SIZE + 1}: predicting {len(batch)} image(s)...")
+    def _decode_batch(items):
+        return [_decode_for_detection(item[0]) for item in items]
+
+    # One decode thread stays one batch ahead of inference.
+    with ThreadPoolExecutor(max_workers=PATCH_WORKERS) as executor, \
+            ThreadPoolExecutor(max_workers=1) as decoder:
+        next_decoded = decoder.submit(_decode_batch, batches[0])
+        for batch_index, batch in enumerate(batches):
+            decoded = next_decoded.result()
+            if batch_index + 1 < len(batches):
+                next_decoded = decoder.submit(_decode_batch, batches[batch_index + 1])
+
+            print(f"  Batch {batch_index + 1}: predicting {len(batch)} image(s)...")
 
             # Collect (image_path, bot_json_path, patch_folder_path, shapes, orig_img)
             # shapes=None means the image failed; skip patch writing for that entry.
@@ -778,7 +841,7 @@ def process_image_list(img_files, dataset_root=None):
                 image_path, bot_json_path, patch_folder_path = batch[0]
                 try:
                     shapes, orig_img = _infer_onnx_single(
-                        image_path, bot_json_path, model_name
+                        image_path, bot_json_path, model_name, orig_img=decoded[0]
                     )
                     batch_outcomes.append(
                         (image_path, bot_json_path, patch_folder_path, shapes, orig_img)
@@ -796,21 +859,33 @@ def process_image_list(img_files, dataset_root=None):
                 # A torch.device object bypasses that parsing entirely.
                 # max_det caps detections *per image* (ultralytics default 300). Dense
                 # nights can exceed 4,000 insects in one frame, so give generous headroom.
-                _pkw = {"source": batch_paths, "device": torch.device(DEVICE), "verbose": False, "imgsz": IMGSZ, "max_det": MAX_DET_PER_IMAGE}
+                # Images are pre-decoded on the prefetch thread; unreadable ones
+                # are skipped here rather than failing the whole batch.
+                readable = []
+                for item, image in zip(batch, decoded):
+                    if image is None:
+                        print(f"❌ Skipping {os.path.basename(item[0])}: could not read image")
+                        batch_outcomes.append((*item, None, None))
+                    else:
+                        readable.append((item, image))
+                _pkw = {"device": torch.device(DEVICE), "verbose": False, "imgsz": IMGSZ, "max_det": MAX_DET_PER_IMAGE}
                 try:
-                    batch_results = model.predict(**_pkw)
+                    batch_results = (
+                        model.predict(source=[image for _, image in readable], **_pkw) if readable else []
+                    )
                 except Exception as e:
                     print(f"⚠️  Batch failed ({e}), retrying one image at a time.")
                     batch_results = []
-                    for img_path, _, _ in batch:
+                    for (img_path, _, _), image in readable:
                         try:
-                            res = model.predict(**{**_pkw, "source": img_path})
-                            batch_results.append(res[0])
+                            batch_results.append(model.predict(source=image, **_pkw)[0])
                         except Exception as e2:
                             print(f"❌ Skipping {os.path.basename(img_path)}: {e2}")
                             batch_results.append(None)
 
-                for result, (image_path, bot_json_path, patch_folder_path) in zip(batch_results, batch):
+                for result, (image_path, bot_json_path, patch_folder_path) in zip(
+                    batch_results, [item for item, _ in readable]
+                ):
                     if result is None:
                         batch_outcomes.append(
                             (image_path, bot_json_path, patch_folder_path, None, None)
@@ -837,10 +912,15 @@ def process_image_list(img_files, dataset_root=None):
                     continue
 
                 if GEN_THUMBNAILS and shapes:
+                    # No defensive .copy(): nothing mutates the frame after this,
+                    # and copying ~190 MB per image on the main thread cost up to
+                    # ~145 ms/img of inference time.
                     future = executor.submit(
-                        _write_patches_for_image, orig_img.copy(), shapes, patch_folder_path
+                        _write_patches_for_image, orig_img, shapes, patch_folder_path, bot_json_path
                     )
                     patch_futures.append((future, patch_folder_path, filename))
+                    while sum(1 for f, _, _ in patch_futures if not f.done()) > MAX_PENDING_PATCH_JOBS:
+                        patch_futures[0][0].result()  # wait for the oldest job; errors reported below
 
                 images_done += 1
                 elapsed = time.monotonic() - infer_start
@@ -948,6 +1028,7 @@ def run(
     YOLO_MODEL = yolo_model or DEFAULT_YOLO_MODEL
     IMGSZ = int(imgsz)
     DEVICE = get_device()
+    torch_threads = configure_torch_threads()
     GEN_THUMBNAILS = gen_thumbnails
     GEN_BOT_DET_EVENIF_HUMAN_EXISTS = gen_bot_det_evenif_human_exists
     OVERWRITE_PREV_BOT_DETECTIONS = overwrite_prev_bot_detections
@@ -957,6 +1038,7 @@ def run(
 
     print("Starting Mothbot Detection Script")
     print_device_info(selected_device=DEVICE)
+    print(f"CPU threads for inference: {torch_threads}")
     print(f"Processing {input_path} with model {YOLO_MODEL} and image size {IMGSZ}")
     print(f"Outputs will be written to: {DATASET_ROOT}/_processed/")
 

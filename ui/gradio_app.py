@@ -13,6 +13,7 @@ import json
 import os
 import re
 import glob
+import cv2
 import sys
 import platform
 import subprocess
@@ -317,6 +318,8 @@ def app():
                 "Stop Current Run", variant="stop", size="sm", scale=0, min_width=200,
                 visible=False,
             )
+            # Where the automatic "Process" run is (or where it stopped).
+            auto_run_status = gr.Markdown(value="", visible=False)
             gr.HTML("<div style='flex:1'></div>")  # spacer
             quit_btn = gr.Button("Quit Mothbot", variant="stop", size="sm", scale=0, min_width=160)
             quit_confirm_row = gr.Row(visible=False)
@@ -327,13 +330,6 @@ def app():
         with gr.Tabs(selected="setup", elem_id="mothbot-tabs") as main_tabs:
             # ~~~~~~~~~~~~ Setup TAB ~~~~~~~~~~~~~~~~~~~~~~
             with gr.Tab("Setup", id="setup"):
-                advanced_mode = gr.Checkbox(
-                        label="Advanced mode",
-                        value=False,
-                        scale=0,
-                        min_width=150,
-                        container=False,
-                    )
                 with gr.Row():
                     with gr.Column():
                         gr.Markdown(
@@ -372,7 +368,7 @@ def app():
                                 "Select All", size="sm", visible=False
                             )
                         continue_process_btn = gr.Button(
-                            "Continue to Process",
+                            "▶ Process all steps automatically",
                             variant="primary",
                             interactive=False,
                             visible=False,
@@ -442,21 +438,8 @@ def app():
                     inputs=[folder_choices, mapping_state, external_keys_state, dataset_root_state],
                     outputs=[selected_paths, continue_process_btn],
                 )
-            # ~~~~~~~~~~~~ PROCESS TAB ~~~~~~~~~~~~~~~~~~~~~~
-            with gr.Tab("Process", id="process") as process_tab:
-                with gr.Row():
-                    process_output_box = gr.Textbox(
-                        label="Process Output", lines=20, interactive=False, scale=2
-                    )
-                    process_preview_img = gr.Image(
-                        label="Live Detection Preview",
-                        visible=False,
-                        scale=1,
-                        show_download_button=False,
-                    )
-
             # ~~~~~~~~~~~~ DETECTION TAB ~~~~~~~~~~~~~~~~~~~~~~
-            with gr.Tab("Detect", id="detect", visible=False) as detect_tab:
+            with gr.Tab("Detect", id="detect") as detect_tab:
                 with gr.Row():
                     det_model_path_mirror = gr.Dropdown(
                         choices=BUNDLED_MODEL_CHOICES,
@@ -493,17 +476,19 @@ def app():
                     "Continue to Cluster", variant="primary", interactive=False
                 )
 
+                _det_inputs = [
+                    selected_paths,
+                    yolo_model_path,
+                    imgsz,
+                    OVERWRITE_PREV_BOT_DETECTIONS,
+                    DELETE_OLD_MODEL_PATCHES,
+                    external_keys_state,
+                ]
+                _det_outputs = [DET_output_box, continue_cluster_btn, stop_btn, DET_preview_img]
                 DET_run_btn.click(
-                    fn=run_detection_with_continue,
-                    inputs=[
-                        selected_paths,
-                        yolo_model_path,
-                        imgsz,
-                        OVERWRITE_PREV_BOT_DETECTIONS,
-                        DELETE_OLD_MODEL_PATCHES,
-                        external_keys_state,
-                    ],
-                    outputs=[DET_output_box, continue_cluster_btn, stop_btn, DET_preview_img],
+                    fn=_manual_run(run_detection_with_continue),
+                    inputs=_det_inputs,
+                    outputs=_det_outputs,
                 )
 
                 continue_cluster_btn.click(
@@ -513,16 +498,18 @@ def app():
                 )
 
             # ~~~~~~~~~~~~ Cluster Tab ~~~~~~~~~~~~~~~~~~~~~~
-            with gr.Tab("Cluster Perceptually", id="cluster", visible=False) as cluster_tab:
+            with gr.Tab("Cluster Perceptually", id="cluster") as cluster_tab:
                 cluster_run_btn = gr.Button("Cluster Perceptually", variant="primary")
                 cluster_output_box = gr.Textbox(label="Cluster Output", lines=20)
                 continue_id_btn = gr.Button(
                     "Continue to ID", variant="primary", interactive=False
                 )
+                _cluster_inputs = [selected_paths]
+                _cluster_outputs = [cluster_output_box, continue_id_btn, stop_btn]
                 cluster_run_btn.click(
-                    fn=run_cluster_with_continue,
-                    inputs=[selected_paths],
-                    outputs=[cluster_output_box, continue_id_btn, stop_btn],
+                    fn=_manual_run(run_cluster_with_continue),
+                    inputs=_cluster_inputs,
+                    outputs=_cluster_outputs,
                 )
 
                 continue_id_btn.click(
@@ -532,7 +519,7 @@ def app():
                 )
 
             # ~~~~~~~~~~~~ IDENTIFICATION TAB ~~~~~~~~~~~~~~~~~~~~~~
-            with gr.Tab("ID", id="id", visible=False) as id_tab:
+            with gr.Tab("ID", id="id") as id_tab:
                 with gr.Row():
                     with gr.Column():
                         radio = gr.Radio(
@@ -569,24 +556,54 @@ def app():
                         interactive=True,
                     )
                     id_species_browse_mirror = gr.Button("Browse", size="sm", scale=0, min_width=100)
+                with gr.Row():
+                    with gr.Column(scale=3):
+                        blur_threshold = gr.Slider(
+                            minimum=0, maximum=100, value=100, step=1,
+                            label="Blurriness threshold (0 = sharpest, 100 = blurriest)",
+                            info="Only identify patches at or below this blurriness; blurrier ones are "
+                                 "left unidentified. 100 identifies everything.",
+                        )
+                        blur_example_caption = gr.Markdown("")
+                    blur_example_img = gr.Image(
+                        label="Example patch near this blurriness",
+                        interactive=False, show_download_button=False,
+                        height=180, scale=1,
+                    )
+                blur_examples_state = gr.State([])
                 ID_run_btn = gr.Button("Run Identification", variant="primary")
                 ID_output_box = gr.Textbox(label="Identification Output", lines=20)
 
+                _id_inputs = [
+                    selected_paths,
+                    id_species_mirror,
+                    taxa_output,
+                    ID_HUMANDETECTIONS,
+                    ID_BOTDETECTIONS,
+                    OVERWRITE_PREV_BOT_IDENTIFICATIONS,
+                    blur_threshold,
+                ]
+                _id_outputs = [ID_output_box, stop_btn]
                 ID_run_btn.click(
-                    fn=run_ID,
-                    inputs=[
-                        selected_paths,
-                        id_species_mirror,
-                        taxa_output,
-                        ID_HUMANDETECTIONS,
-                        ID_BOTDETECTIONS,
-                        OVERWRITE_PREV_BOT_IDENTIFICATIONS,
-                    ],
-                    outputs=[ID_output_box, stop_btn],
+                    fn=_manual_run(run_ID),
+                    inputs=_id_inputs,
+                    outputs=_id_outputs,
+                )
+                # Sample example patches from the chosen collections when the tab
+                # opens, then show the one nearest the threshold as it moves.
+                id_tab.select(
+                    fn=load_blur_examples,
+                    inputs=[selected_paths, blur_threshold],
+                    outputs=[blur_examples_state, blur_example_img, blur_example_caption],
+                )
+                blur_threshold.change(
+                    fn=show_blur_example,
+                    inputs=[blur_examples_state, blur_threshold],
+                    outputs=[blur_example_img, blur_example_caption],
                 )
 
             # ~~~~~~~~~~~~ Metadata Tab ~~~~~~~~~~~~~~~~~~~~~~
-            with gr.Tab("Insert Metadata", id="metadata", visible=False) as metadata_tab:
+            with gr.Tab("Insert Metadata", id="metadata") as metadata_tab:
                 metadata_mode = gr.Radio(
                     choices=["CSV File", "Manual Entry"],
                     value="CSV File",
@@ -695,9 +712,7 @@ def app():
                     outputs=[meta_latitude, meta_longitude],
                 )
 
-                metadata_run_btn.click(
-                    fn=run_metadata,
-                    inputs=[
+                _metadata_inputs = [
                         selected_paths,
                         metadata_mode,
                         meta_csv_mirror,
@@ -724,23 +739,29 @@ def app():
                         meta_schedule,
                         meta_storage_loc,
                         meta_notes,
-                    ],
-                    outputs=[metadata_output_box, stop_btn],
+                ]
+                _metadata_outputs = [metadata_output_box, stop_btn]
+                metadata_run_btn.click(
+                    fn=_manual_run(run_metadata),
+                    inputs=_metadata_inputs,
+                    outputs=_metadata_outputs,
                 )
 
             # ~~~~~~~~~~~~ Exif Tab ~~~~~~~~~~~~~~~~~~~~~~
-            with gr.Tab("Insert Exif", id="exif", visible=False) as exif_tab:
+            with gr.Tab("Insert Exif", id="exif") as exif_tab:
                 exif_run_btn = gr.Button("Insert Exif (Optional)", variant="primary")
                 exif_output_box = gr.Textbox(label="Insert Exif Output", lines=20)
 
+                _exif_inputs = [selected_paths]
+                _exif_outputs = [exif_output_box, stop_btn]
                 exif_run_btn.click(
-                    fn=run_exif,
-                    inputs=[selected_paths],
-                    outputs=[exif_output_box, stop_btn],
+                    fn=_manual_run(run_exif),
+                    inputs=_exif_inputs,
+                    outputs=_exif_outputs,
                 )
 
             # ~~~~~~~~~~~~ Pixel Mass Tab ~~~~~~~~~~~~~~~~~~~~~~
-            with gr.Tab("Pixel Mass", id="pixel_mass", visible=False) as pixel_mass_tab:
+            with gr.Tab("Pixel Mass", id="pixel_mass") as pixel_mass_tab:
                 pm_source_img_state = gr.State(None)   # thumbnail PIL for fast redrawing
                 pm_point1_state     = gr.State(None)   # [x, y] of first click (thumbnail space)
                 pm_point2_state     = gr.State(None)   # [x, y] of second click (thumbnail space)
@@ -783,6 +804,10 @@ def app():
                     )
                     pm_overwrite_pixmass = gr.Checkbox(
                         label="Overwrite previous pixel mass", value=True
+                    )
+                    pm_only_identified = gr.Checkbox(
+                        label="Only measure identified patches (skip ones ID left unidentified, e.g. too blurry)",
+                        value=False,
                     )
                 pm_model_dropdown = gr.Dropdown(
                     label="Background removal model",
@@ -838,8 +863,8 @@ def app():
                 )
 
                 pm_run_btn.click(
-                    fn=run_pixel_mass_ui,
-                    inputs=[selected_paths, pm_pixels_per_mm, pm_overwrite_nobg, pm_overwrite_pixmass, pm_model_dropdown],
+                    fn=_manual_run(run_pixel_mass_ui),
+                    inputs=[selected_paths, pm_pixels_per_mm, pm_overwrite_nobg, pm_overwrite_pixmass, pm_model_dropdown, pm_only_identified],
                     outputs=[pm_output_box, stop_btn, pm_step1_accordion, pm_preview_img],
                 )
 
@@ -879,45 +904,42 @@ def app():
                     outputs=[lc_output_box, stop_btn],
                 )
 
-            advanced_mode.change(
-                fn=toggle_advanced_mode,
-                inputs=[advanced_mode],
-                outputs=[
-                    detect_tab,
-                    id_tab,
-                    metadata_tab,
-                    cluster_tab,
-                    exif_tab,
-                    pixel_mass_tab,
-                    process_tab,
-                    main_tabs,
-                ],
+            # ── "Process all steps automatically" ──────────────────────────────
+            # Drives the real stage tabs in order: switch to the tab, then run that
+            # tab's own handler with its own inputs and outputs — exactly what the
+            # user would get clicking through by hand. Each tab's log, preview and
+            # Run button stay live, and the run stops on the tab where it stopped
+            # (Stop, an error, or a missing metadata source).
+            _AUTO_STEPS = [
+                ("detect", "Detect", run_detection_with_continue, _det_inputs, _det_outputs),
+                ("cluster", "Cluster", run_cluster_with_continue, _cluster_inputs, _cluster_outputs),
+                ("id", "ID", run_ID, _id_inputs, _id_outputs),
+                ("metadata", "Insert Metadata", _auto_metadata_step, _metadata_inputs, _metadata_outputs),
+                ("exif", "Insert Exif", run_exif, _exif_inputs, _exif_outputs),
+            ]
+            _chain = continue_process_btn.click(
+                fn=_begin_auto_run,
+                inputs=[selected_paths],
+                outputs=[auto_run_status],
             )
-            continue_process_btn.click(
-                fn=go_to_process_tab,
-                inputs=[],
-                outputs=[main_tabs],
-            ).then(
-                fn=run_full_process,
-                inputs=[
-                    selected_paths,
-                    yolo_model_path,
-                    imgsz,
-                    OVERWRITE_PREV_BOT_DETECTIONS,
-                    DELETE_OLD_MODEL_PATCHES,
-                    species_path,
-                    taxa_output,
-                    ID_HUMANDETECTIONS,
-                    ID_BOTDETECTIONS,
-                    OVERWRITE_PREV_BOT_IDENTIFICATIONS,
-                    metadata_csv_file,
-                ],
-                outputs=[process_output_box, stop_btn, process_preview_img, main_tabs],
-            )
+            for _n, (_tab_id, _label, _handler, _inputs, _outputs) in enumerate(_AUTO_STEPS, start=1):
+                _chain = _chain.then(
+                    fn=_auto_goto(_tab_id, _label, _n, len(_AUTO_STEPS)),
+                    inputs=[],
+                    outputs=[main_tabs, auto_run_status],
+                ).then(
+                    fn=_auto_step(_handler, len(_outputs)),
+                    inputs=_inputs,
+                    outputs=_outputs,
+                )
+            _chain.then(fn=_end_auto_run, inputs=[], outputs=[auto_run_status, stop_btn])
 
         # ── Stop button ────────────────────────────────────────────────────────
         def do_cancel():
             request_cancel()
+            # run_in_thread clears its cancel flag once honored; this one persists
+            # so the remaining folders and automatic-run steps are skipped too.
+            _RUN_STATE["stop"] = True
             return gr.update(value="⛔ Stopping…", interactive=False)
 
         stop_btn.click(fn=do_cancel, inputs=[], outputs=[stop_btn])
@@ -1553,8 +1575,110 @@ def confirm_selection(selected_labels, mapping, external_keys=None, dataset_root
     return resolved, gr.update(interactive=bool(resolved))
 
 
-def go_to_process_tab():
-    return gr.Tabs(selected="process")
+# ──────────────────────────────────────────────────────────────
+#  Run state: Stop across folders, and the automatic "Process" run
+# ──────────────────────────────────────────────────────────────
+
+# stop  — user pressed Stop; skip remaining folders and remaining auto steps.
+# error — a stage hit an exception; the automatic run halts on that tab.
+# paused — the automatic run needs user input (e.g. a metadata source).
+# auto  — an automatic run is in progress.  step — its current step label.
+_RUN_STATE = {"stop": False, "error": False, "paused": None, "auto": False, "step": None}
+
+
+def _stop_requested():
+    return _RUN_STATE["stop"]
+
+
+def _note_stage_error():
+    _RUN_STATE["error"] = True
+
+
+def _manual_run(handler):
+    """Wrap a tab's own Run button: a fresh user-started run clears old stop/error state."""
+    def wrapped(*args):
+        _RUN_STATE.update(stop=False, error=False, paused=None, auto=False, step=None)
+        yield from handler(*args)
+    return wrapped
+
+
+def _auto_run_live():
+    return (
+        _RUN_STATE["auto"]
+        and not _RUN_STATE["stop"]
+        and not _RUN_STATE["error"]
+        and not _RUN_STATE["paused"]
+    )
+
+
+def _auto_step(handler, n_outputs):
+    """One step of the automatic run — runs the tab's handler, or does nothing once halted."""
+    def wrapped(*args):
+        if not _auto_run_live():
+            yield tuple(gr.update() for _ in range(n_outputs))
+            return
+        yield from handler(*args)
+    return wrapped
+
+
+def _auto_goto(tab_id, label, number, total):
+    """Switch to the next step's tab — unless the run halted, so the user stays where it stopped."""
+    def goto():
+        if not _auto_run_live():
+            return gr.update(), gr.update()
+        _RUN_STATE["step"] = label
+        return (
+            gr.Tabs(selected=tab_id),
+            gr.update(value=f"▶ **Automatic run** — step {number} of {total}: **{label}**", visible=True),
+        )
+    return goto
+
+
+def _begin_auto_run(selected_folders):
+    if not selected_folders:
+        _RUN_STATE.update(auto=False)
+        return gr.update(value="Select at least one image collection first.", visible=True)
+    _RUN_STATE.update(stop=False, error=False, paused=None, auto=True, step=None)
+    return gr.update(value="▶ **Automatic run** starting…", visible=True)
+
+
+def _end_auto_run():
+    step = _RUN_STATE["step"] or "the first step"
+    if not _RUN_STATE["auto"]:
+        message = gr.update()
+    elif _RUN_STATE["stop"]:
+        message = gr.update(
+            value=f"⛔ **Automatic run stopped** during **{step}** — continue from the {step} tab.",
+            visible=True,
+        )
+    elif _RUN_STATE["error"]:
+        message = gr.update(
+            value=f"❌ **Automatic run halted** at **{step}** because of an error — see the {step} tab.",
+            visible=True,
+        )
+    elif _RUN_STATE["paused"]:
+        message = gr.update(
+            value=f"⏸ **Automatic run paused** at **{_RUN_STATE['paused']}** — it needs your input there.",
+            visible=True,
+        )
+    else:
+        message = gr.update(value="✅ **Automatic run finished** — all steps completed.", visible=True)
+    _RUN_STATE.update(auto=False)
+    return message, gr.update(visible=False)
+
+
+def _auto_metadata_step(selected_folders, metadata_mode, metadata_csv, *rest):
+    """Insert Metadata for the automatic run; pauses there if no metadata source was chosen."""
+    if metadata_mode == "CSV File" and not (metadata_csv and str(metadata_csv).strip()):
+        _RUN_STATE["paused"] = "Insert Metadata"
+        yield (
+            "⏸ The automatic run paused here: no metadata CSV was chosen.\n"
+            "→ Choose a CSV above (or switch to Manual Entry), click Insert Metadata,\n"
+            "  then run the Insert Exif tab to finish.\n",
+            gr.update(visible=False),
+        )
+        return
+    yield from run_metadata(selected_folders, metadata_mode, metadata_csv, *rest)
 
 
 def go_to_id_tab():
@@ -1751,7 +1875,7 @@ def run_legacy_converter_ui(selected_folders, dataset_root, delete_originals):
     yield output_log, HIDE_STOP
 
 
-def run_pixel_mass_ui(selected_folders, pixels_per_mm, overwrite_nobg, overwrite_pixmass, model_name="birefnet-general"):
+def run_pixel_mass_ui(selected_folders, pixels_per_mm, overwrite_nobg, overwrite_pixmass, model_name="birefnet-general", only_identified=False):
     """Gradio generator that runs pixel_mass.run() for each selected collection."""
     SHOW_STOP  = gr.update(visible=True, value="Stop Current Run", interactive=True)
     HIDE_STOP  = gr.update(visible=False)
@@ -1781,6 +1905,7 @@ def run_pixel_mass_ui(selected_folders, pixels_per_mm, overwrite_nobg, overwrite
                 overwrite_nobg=bool(overwrite_nobg),
                 overwrite_pixmass=bool(overwrite_pixmass),
                 model_name=model_name or "birefnet-general",
+                only_identified=bool(only_identified),
             ):
                 output_log += chunk
                 preview_path = get_preview()
@@ -1792,28 +1917,18 @@ def run_pixel_mass_ui(selected_folders, pixels_per_mm, overwrite_nobg, overwrite
                 else:
                     preview_update = NO_PREVIEW
                 yield output_log, SHOW_STOP, COLLAPSE, preview_update
+            if _stop_requested():
+                output_log += f"⛔ Pixel Mass stopped during {folder} — remaining collections skipped.\n"
+                yield output_log, SHOW_STOP, COLLAPSE, NO_PREVIEW
+                break
             output_log += f"✅ Pixel Mass completed for {folder}\n"
         except Exception as exc:
+            _note_stage_error()
             output_log += f"\n❌ Exception: {exc}\n"
         yield output_log, SHOW_STOP, COLLAPSE, NO_PREVIEW
 
     output_log += "\n--- Pixel Mass finished ---"
     yield output_log, HIDE_STOP, EXPAND, NO_PREVIEW   # re-expand Step 1 when done
-
-
-def toggle_advanced_mode(enabled):
-    visible = bool(enabled)
-    selected_tab = "setup"
-    return (
-        gr.update(visible=visible),      # detect_tab
-        gr.update(visible=visible),      # id_tab
-        gr.update(visible=visible),      # metadata_tab
-        gr.update(visible=visible),      # cluster_tab
-        gr.update(visible=visible),      # exif_tab
-        gr.update(visible=visible),      # pixel_mass_tab
-        gr.update(visible=not visible),  # process_tab (inverted — basic mode only)
-        gr.Tabs(selected=selected_tab),
-    )
 
 
 def get_index(selected_word):
@@ -1890,9 +2005,14 @@ def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bo
                     yield output_log, gr.update(interactive=False), SHOW_STOP, (
                         _open_slide(slide_idx) if slide_patches else NO_IMG
                     )
+            if _stop_requested():
+                output_log += f"⛔ Detection stopped during {folder} — remaining collections skipped.\n"
+                yield output_log, gr.update(interactive=False), SHOW_STOP, NO_IMG
+                break
             output_log += f"✅ Detection completed for {folder}\n"
         except Exception as exc:
             had_error = True
+            _note_stage_error()
             output_log += f"\n❌ Exception while processing {folder}: {exc}\n"
         yield output_log, gr.update(interactive=False), SHOW_STOP, NO_IMG
 
@@ -1900,7 +2020,84 @@ def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bo
     yield output_log, gr.update(interactive=(not had_error)), HIDE_STOP, NO_IMG
 
 
-def run_ID(selected_folders, species_list, chosenrank, IDHum, IDBot, overwrite_bot):
+def _processed_dir_for(folder, dataset_root, is_external):
+    """Where a collection's detection JSONs and patches live (without creating it)."""
+    if is_external:
+        return folder
+    root = os.path.realpath(dataset_root or folder)
+    rel = os.path.relpath(os.path.realpath(folder), root)
+    return os.path.join(root, "_processed", "" if rel == "." else rel)
+
+
+def load_blur_examples(selected_folders, threshold, max_json=300, max_unscored=200):
+    """Sample patches with blurriness scores from the chosen collections for the ID-tab preview.
+
+    Uses scores recorded by Detect/Cluster; for older datasets not yet scored,
+    scores a limited sample on the fly (not written back — Cluster/ID do that).
+    """
+    import random
+    from core.blur import blur_score as _blur_score
+
+    examples = []
+    unscored = []
+    json_paths = []
+    for entry in selected_folders or []:
+        folder = entry["path"] if isinstance(entry, dict) else entry
+        is_ext = entry.get("external", False) if isinstance(entry, dict) else False
+        root = entry.get("dataset_root", folder) if isinstance(entry, dict) else folder
+        base = _processed_dir_for(folder, root, is_ext)
+        json_paths += glob.glob(os.path.join(base, "**", "*_botdetection.json"), recursive=True)
+    random.Random(0).shuffle(json_paths)
+
+    for json_path in json_paths[:max_json]:
+        try:
+            with open(json_path) as f:
+                shapes = json.load(f).get("shapes", [])
+        except Exception:
+            continue
+        for shape in shapes:
+            patch = shape.get("patch_path")
+            if not patch:
+                continue
+            patch_path = os.path.join(os.path.dirname(json_path), os.path.basename(patch))
+            score = shape.get("blur_score")
+            if isinstance(score, (int, float)):
+                examples.append((float(score), patch_path))
+            else:
+                unscored.append(patch_path)
+
+    for patch_path in unscored[:max_unscored]:
+        image = cv2.imread(patch_path) if os.path.isfile(patch_path) else None
+        if image is not None:
+            examples.append((_blur_score(image), patch_path))
+
+    examples.sort()
+    image, caption = show_blur_example(examples, threshold)
+    return examples, image, caption
+
+
+def show_blur_example(examples, threshold):
+    """Show the sampled patch whose blurriness is nearest the threshold."""
+    if not examples:
+        return None, "_No detection patches found in the chosen collections yet — run Detect first._"
+    threshold = float(threshold)
+    score, patch_path = min(examples, key=lambda e: abs(e[0] - threshold))
+    if threshold >= 100:
+        caption = (
+            f"Threshold **100**: every patch is identified. "
+            f"Showing a patch with blurriness **{score:.0f}**."
+        )
+    else:
+        skipped = sum(1 for s, _ in examples if s > threshold)
+        caption = (
+            f"This example has blurriness **{score:.0f}**. At threshold **{threshold:.0f}**, "
+            f"about **{100 * skipped / len(examples):.0f}%** of {len(examples):,} sampled patches "
+            f"would be left unidentified."
+        )
+    return patch_path, caption
+
+
+def run_ID(selected_folders, species_list, chosenrank, IDHum, IDBot, overwrite_bot, blur_threshold=100):
     yield from _run_batch_pipeline(
         selected_folders=selected_folders,
         runner=Mothbot_ID.run,
@@ -1915,6 +2112,7 @@ def run_ID(selected_folders, species_list, chosenrank, IDHum, IDBot, overwrite_b
             "ID_Bot": bool(IDBot),
             "overwrite_prev_bot_ID": bool(overwrite_bot),
             "dataset_root": dataset_root,
+            "blur_threshold": blur_threshold,
         },
     )
 
@@ -2035,9 +2233,14 @@ def run_cluster_with_continue(selected_folders):
             for chunk in run_in_thread(Mothbot_Cluster.run, input_path=folder, dataset_root=dataset_root):
                 output_log += chunk
                 yield output_log, gr.update(interactive=False), SHOW_STOP
+            if _stop_requested():
+                output_log += f"⛔ Cluster stopped during {folder} — remaining collections skipped.\n"
+                yield output_log, gr.update(interactive=False), SHOW_STOP
+                break
             output_log += f"✅ Cluster completed for {folder}\n"
         except Exception as exc:
             had_error = True
+            _note_stage_error()
             output_log += f"\n❌ Exception while processing {folder}: {exc}\n"
         yield output_log, gr.update(interactive=False), SHOW_STOP
 
@@ -2066,138 +2269,6 @@ def run_exif(selected_folders):
         kwargs_builder=lambda folder, dataset_root: {"input_path": folder, "dataset_root": dataset_root},
         skip_external=True,
     )
-
-
-def run_full_process(
-    selected_folders,
-    yolo_model,
-    imsz,
-    overwrite_bot_detections,
-    delete_old_patches=False,
-    species_list=None,
-    chosenrank=None,
-    id_hum=None,
-    id_bot=None,
-    overwrite_bot_ids=False,
-    metadata_csv=None,
-    external_keys=None,
-):
-    yolo_model = _resolve_model_path(yolo_model)
-    SHOW_STOP = gr.update(visible=True, value="Stop Current Run", interactive=True)
-    HIDE_STOP = gr.update(visible=False)
-    NO_TAB = gr.update()  # no-op tab navigation
-    NO_IMG = gr.update()
-    if not selected_folders:
-        yield "No image collections selected.\n", gr.update(visible=False), NO_IMG, NO_TAB
-        return
-
-    # Steps that cannot run on externally-processed collections (no source images)
-    source_only_steps = {"Detect", "Insert Exif"}
-
-    steps = [
-        (
-            "Detect",
-            Mothbot_Detect.run,
-            lambda folder, dr: {
-                "input_path": folder,
-                "yolo_model": yolo_model,
-                "imgsz": int(imsz),
-                "overwrite_prev_bot_detections": bool(overwrite_bot_detections),
-                "delete_old_model_patches": bool(delete_old_patches),
-                "dataset_root": dr,
-            },
-        ),
-        (
-            "Cluster",
-            Mothbot_Cluster.run,
-            lambda folder, dr: {"input_path": folder, "dataset_root": dr},
-        ),
-        (
-            "ID",
-            Mothbot_ID.run,
-            lambda folder, dr: {
-                "input_path": folder,
-                "taxa_csv": species_list,
-                "rank": int(chosenrank),
-                "ID_Hum": bool(id_hum),
-                "ID_Bot": bool(id_bot),
-                "overwrite_prev_bot_ID": bool(overwrite_bot_ids),
-                "dataset_root": dr,
-            },
-        ),
-        (
-            "Insert Metadata",
-            Mothbot_InsertMetadata.run,
-            lambda folder, dr: {
-                "input_path": folder,
-                "metadata_path": str(metadata_csv),
-                "dataset_root": dr,
-            },
-        ),
-        (
-            "Exif",
-            Mothbot_InsertExif.run,
-            lambda folder, dr: {"input_path": folder, "dataset_root": dr},
-        ),
-    ]
-
-    clear_preview()
-    output_log = ""
-    NO_IMG = gr.update()
-
-    def _poll_preview():
-        path = get_preview()
-        if path:
-            try:
-                from PIL import Image as PILImage
-                return gr.update(value=PILImage.open(path), visible=True)
-            except Exception:
-                pass
-        return NO_IMG
-
-    for step_name, runner, kwargs_builder in steps:
-        output_log += f"\n===== {step_name} =====\n"
-        yield output_log, SHOW_STOP, NO_IMG, NO_TAB
-
-        if step_name == "Insert Metadata" and not (metadata_csv and str(metadata_csv).strip()):
-            output_log += (
-                "⚠️  No metadata CSV selected — automatic metadata insertion is paused.\n"
-                "→ Go to the Metadata tab, choose your metadata source (CSV or manual entry),\n"
-                "  then click Insert Metadata there. Remaining pipeline steps were skipped.\n"
-            )
-            yield output_log, HIDE_STOP, NO_IMG, gr.Tabs(selected="metadata")
-            return
-
-        for entry in selected_folders:
-            folder       = entry["path"]                     if isinstance(entry, dict) else entry
-            is_ext       = entry.get("external", False)       if isinstance(entry, dict) else False
-            dataset_root = entry.get("dataset_root", folder) if isinstance(entry, dict) else folder
-
-            if is_ext and step_name in source_only_steps:
-                output_log += f"⚠️  Skipping {step_name} for externally-processed collection:\n    {folder}\n"
-                yield output_log, SHOW_STOP, NO_IMG, NO_TAB
-                continue
-
-            if is_ext and step_name == "Cluster":
-                output_log += f"  ℹ️  Building stub JSONs from patches before clustering {folder}...\n"
-                yield output_log, SHOW_STOP, NO_IMG, NO_TAB
-                output_log += build_stub_jsons_from_patches(folder)
-                yield output_log, SHOW_STOP, NO_IMG, NO_TAB
-
-            output_log += f"--- Running {step_name} for {folder} ---\n"
-            yield output_log, SHOW_STOP, NO_IMG, NO_TAB
-            try:
-                for chunk in run_in_thread(runner, **kwargs_builder(folder, dataset_root)):
-                    output_log += chunk
-                    img = _poll_preview() if step_name == "Detect" else NO_IMG
-                    yield output_log, SHOW_STOP, img, NO_TAB
-                output_log += f"✅ {step_name} completed for {folder}\n"
-            except Exception as exc:
-                output_log += f"\n❌ Exception while processing {folder} in {step_name}: {exc}\n"
-            yield output_log, SHOW_STOP, NO_IMG, NO_TAB
-
-    output_log += "\n------ Full processing finished ------"
-    yield output_log, HIDE_STOP, NO_IMG, NO_TAB
 
 
 # ──────────────────────────────────────────────────────────────
@@ -2377,8 +2448,13 @@ def _run_batch_pipeline(
             for chunk in run_in_thread(runner, **kwargs_builder(folder, dataset_root)):
                 output_log += chunk
                 yield output_log, SHOW_STOP
+            if _stop_requested():
+                output_log += f"⛔ Stopped during {folder} — remaining collections skipped.\n"
+                yield output_log, SHOW_STOP
+                break
             output_log += success_message.format(folder=folder)
         except Exception as exc:
+            _note_stage_error()
             output_log += f"\n❌ Exception while processing {folder}: {exc}\n"
         yield output_log, SHOW_STOP
 

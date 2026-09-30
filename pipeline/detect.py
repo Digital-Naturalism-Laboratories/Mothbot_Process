@@ -17,7 +17,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 from core.preview import emit_preview
-from core.blur import blur_score, BLUR_METHOD
+from core.blur import blur_fields
 from core.common import (
     find_date_folders,
     find_images_recursive,
@@ -566,7 +566,7 @@ def _write_patches_for_image(orig_img, shapes, patch_folder_path, bot_json_path=
                 out_path = patch_folder_path / patch_filename
                 cv2.imwrite(str(out_path), patch)
                 written.append(str(out_path))
-                blur_by_patch[patch_filename] = blur_score(patch)
+                blur_by_patch[patch_filename] = blur_fields(patch)
         except Exception as e:
             print(f"  ⚠️  patch crop failed for {patch_filename}: {e}")
     if bot_json_path and blur_by_patch:
@@ -584,10 +584,9 @@ def _record_blur_scores(bot_json_path, blur_by_patch):
         with open(bot_json_path) as f:
             data = json.load(f)
         for shape in data.get("shapes", []):
-            score = blur_by_patch.get(shape.get("patch_path", ""))
-            if score is not None:
-                shape["blur_score"] = score
-                shape["blur_method"] = BLUR_METHOD
+            fields = blur_by_patch.get(shape.get("patch_path", ""))
+            if fields is not None:
+                shape.update(fields)
         with open(bot_json_path, "w") as f:
             json.dump(data, f, indent=2)
     except Exception as e:

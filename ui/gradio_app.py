@@ -560,9 +560,11 @@ def app():
                     with gr.Column(scale=3):
                         blur_threshold = gr.Slider(
                             minimum=0, maximum=100, value=100, step=1,
-                            label="Blurriness threshold (0 = sharpest, 100 = blurriest)",
-                            info="Only identify patches at or below this blurriness; blurrier ones are "
-                                 "left unidentified. 100 identifies everything.",
+                            label="Blurriness threshold (0 = sharp, 100 = blurriest)",
+                            info="Blurriness is how wide the insect's edges are blurred, as a % of the insect's "
+                                 "size (so tiny or out-of-focus insects score high); motion streaks score 100. "
+                                 "Only patches at or below the threshold are identified; 100 identifies "
+                                 "everything. Around 15-20 skips most too-blurry patches and no sharp ones.",
                         )
                         blur_example_caption = gr.Markdown("")
                     blur_example_img = gr.Image(
@@ -2036,7 +2038,7 @@ def load_blur_examples(selected_folders, threshold, max_json=300, max_unscored=2
     scores a limited sample on the fly (not written back — Cluster/ID do that).
     """
     import random
-    from core.blur import blur_score as _blur_score
+    from core.blur import blur_score as _blur_score, shape_needs_blur as _needs_blur
 
     examples = []
     unscored = []
@@ -2060,9 +2062,8 @@ def load_blur_examples(selected_folders, threshold, max_json=300, max_unscored=2
             if not patch:
                 continue
             patch_path = os.path.join(os.path.dirname(json_path), os.path.basename(patch))
-            score = shape.get("blur_score")
-            if isinstance(score, (int, float)):
-                examples.append((float(score), patch_path))
+            if not _needs_blur(shape):  # scored, and by the current method
+                examples.append((float(shape["blur_score"]), patch_path))
             else:
                 unscored.append(patch_path)
 

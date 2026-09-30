@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blur Rater</title>
+<style>
+  :root { --bg: #f6f5f2; --panel: #fff; --ink: #1d1d1b; --muted: #6b6a66; --line: #dddbd5; --accent: #2f6f4f; --warn: #a3452c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1a1a19; --panel: #232322; --ink: #eeede9; --muted: #a09f9a; --line: #3a3a38; --accent: #7cc49b; --warn: #e08a6f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 -apple-system, system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .question { color: var(--muted); margin: 0 0 16px; }
+  .progress { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin-bottom: 16px; }
+  .progress > div { height: 100%; background: var(--accent); width: 0; transition: width .15s; }
+  .stage { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px;
+           display: flex; gap: 20px; align-items: center; justify-content: center; min-height: 460px; flex-wrap: wrap; }
+  .big { display: flex; align-items: center; justify-content: center; width: 420px; height: 420px; max-width: 100%; }
+  .big img { max-width: 100%; max-height: 100%; }
+  .actual { text-align: center; color: var(--muted); font-size: 12px; }
+  .actual img { display: block; margin: 0 auto 6px; max-width: 220px; max-height: 420px; }
+  .meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 13px; margin: 8px 2px 14px; }
+  .keys { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .keys.causes { grid-template-columns: repeat(4, 1fr); }
+  button { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+           padding: 10px 8px; cursor: pointer; text-align: left; }
+  button:hover { border-color: var(--accent); }
+  button b { display: inline-block; min-width: 1.4em; color: var(--accent); }
+  button small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .row2 { display: flex; gap: 8px; margin-top: 8px; }
+  .row2 button { flex: 1; }
+  .prompt { color: var(--warn); font-weight: 600; margin: 0 0 8px; }
+  .hidden { display: none !important; }
+  .done { text-align: center; padding: 60px 0; }
+  .saved { color: var(--muted); font-size: 12px; text-align: right; margin-top: 10px; min-height: 1em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Blur rating</h1>
+  <p class="question">For each patch: <strong>could someone identify this insect from this patch?</strong> Judge the patch, not the photo quality in general.</p>
+  <div class="progress"><div id="bar"></div></div>
+
+  <section id="rate">
+    <div class="stage">
+      <div class="big"><img id="big" alt="patch, enlarged"></div>
+      <div class="actual"><img id="small" alt="patch, actual pixels"><span id="small-label">actual pixels</span></div>
+    </div>
+    <div class="meta"><span id="count"></span><span id="dims"></span></div>
+
+    <div id="ratings">
+      <div class="keys">
+        <button data-rating="sharp"><b>1</b> Sharp<small>fine detail visible: antennae, legs, wing pattern</small></button>
+        <button data-rating="usable"><b>2</b> Soft but usable<small>detail is soft, but an ID to order/family is plausible</small></button>
+        <button data-rating="blurry"><b>3</b> Too blurry<small>streak, smear or blob: not worth trying to ID</small></button>
+      </div>
+      <div class="row2">
+        <button data-rating="not_insect"><b>N</b> Not an insect / empty patch</button>
+        <button id="back"><b>⌫</b> Back one</button>
+      </div>
+    </div>
+
+    <div id="causes" class="hidden">
+      <p class="prompt">Too blurry: mostly why?</p>
+      <div class="keys causes">
+        <button data-cause="motion"><b>M</b> Motion streak<small>incl. jagged rolling-shutter</small></button>
+        <button data-cause="focus"><b>F</b> Out of focus<small>off the focal plane</small></button>
+        <button data-cause="small"><b>S</b> Too small<small>too few pixels for detail</small></button>
+        <button data-cause=""><b>↵</b> Not sure<small>skip the reason</small></button>
+      </div>
+    </div>
+    <div class="saved" id="saved"></div>
+  </section>
+
+  <section id="done" class="done hidden">
+    <h1>All done. Thank you!</h1>
+    <p class="question">Your ratings are saved. Tell Claude you've finished. Press ⌫ to revisit the last one.</p>
+  </section>
+</main>
+<script>
+let items = [], labels = {}, pos = 0, awaitingCause = false;
+
+async function init() {
+  [items, labels] = await Promise.all([fetch('/sample').then(r => r.json()), fetch('/labels').then(r => r.json())]);
+  pos = items.findIndex(it => !labels[it.i]);
+  if (pos < 0) pos = items.length;
+  show();
+}
+
+function show() {
+  awaitingCause = false;
+  document.getElementById('causes').classList.add('hidden');
+  document.getElementById('ratings').classList.remove('hidden');
+  const done = Object.keys(labels).length;
+  document.getElementById('bar').style.width = (100 * done / items.length) + '%';
+  const finished = pos >= items.length;
+  document.getElementById('rate').classList.toggle('hidden', finished);
+  document.getElementById('done').classList.toggle('hidden', !finished);
+  if (finished) return;
+  const it = items[pos];
+  const big = document.getElementById('big');
+  // Enlarge to fit the box, but at most 10x so tiny patches aren't blown up past recognition.
+  const scale = Math.min(420 / Math.max(it.w, it.h), 10);
+  big.style.width = Math.round(it.w * scale) + 'px';
+  big.style.height = Math.round(it.h * scale) + 'px';
+  big.src = document.getElementById('small').src = '/img/' + it.i;
+  document.getElementById('count').textContent = `${pos + 1} / ${items.length}` + (labels[it.i] ? `  (rated: ${labels[it.i].rating})` : '');
+  document.getElementById('small-label').textContent = it.w <= 220 && it.h <= 420 ? 'actual pixels' : 'scaled down to fit';
+  document.getElementById('dims').textContent = `${it.w} × ${it.h} px`;
+  if (pos + 1 < items.length) new Image().src = '/img/' + items[pos + 1].i;
+}
+
+async function save(rating, cause) {
+  const it = items[pos];
+  labels[it.i] = { rating, cause: cause || null };
+  const r = await fetch('/label', { method: 'POST', body: JSON.stringify({ i: it.i, rating, cause: cause || null }) });
+  document.getElementById('saved').textContent = r.ok ? 'saved' : 'SAVE FAILED: is rater.py still running?';
+  pos += 1;
+  show();
+}
+
+function rate(rating) {
+  if (rating === 'blurry') {
+    awaitingCause = true;
+    document.getElementById('ratings').classList.add('hidden');
+    document.getElementById('causes').classList.remove('hidden');
+  } else save(rating, null);
+}
+
+function back() { if (pos > 0) { pos -= 1; show(); } }
+
+document.querySelectorAll('[data-rating]').forEach(b => b.onclick = () => rate(b.dataset.rating));
+document.querySelectorAll('[data-cause]').forEach(b => b.onclick = () => save('blurry', b.dataset.cause));
+document.getElementById('back').onclick = back;
+
+document.addEventListener('keydown', e => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const k = e.key.toLowerCase();
+  if (k === 'backspace') { e.preventDefault(); return awaitingCause ? show() : back(); }
+  if (pos >= items.length) return;
+  if (awaitingCause) {
+    if (k === 'm') save('blurry', 'motion');
+    else if (k === 'f') save('blurry', 'focus');
+    else if (k === 's') save('blurry', 'small');
+    else if (k === 'enter') save('blurry', '');
+    else if (k === 'escape') show();
+    return;
+  }
+  if (k === '1') rate('sharp');
+  else if (k === '2') rate('usable');
+  else if (k === '3') rate('blurry');
+  else if (k === 'n') rate('not_insect');
+});
+
+init();
+</script>
+</body>
+</html>

@@ -67,6 +67,7 @@ def generateThumbnailPatches_JSON(
 
     loaded_images = {}
     updated_shapes = []
+    skipped = 0
 
     for shape_index, shape in enumerate(json_data["shapes"]):
         filename = os.path.basename(image_path)
@@ -77,7 +78,7 @@ def generateThumbnailPatches_JSON(
         shape["patch_path"] = patchfilename
 
         if os.path.exists(patchfullpath) and skip_existing:
-            print("Thumbnail exists, skipping")
+            skipped += 1  # reported once per photo below: one line per patch flooded the UI log
         else:
             if image_path not in loaded_images:
                 loaded_images[image_path] = cv2.imread(image_path)
@@ -90,6 +91,8 @@ def generateThumbnailPatches_JSON(
 
         updated_shapes.append(shape)
 
+    if skipped:
+        print(f"{skipped} thumbnail(s) already exist for {os.path.basename(image_path)}, skipped")
     json_data["shapes"] = updated_shapes
     loaded_images.clear()
     return json_data

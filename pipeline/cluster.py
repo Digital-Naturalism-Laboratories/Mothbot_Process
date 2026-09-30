@@ -558,19 +558,26 @@ def cluster_embeddings(embeddings, patch_paths=None):
 # 4. Write cluster to JSON
 # --------------------------
 def write_cluster_to_json(filepaths, json_paths, idxes, labels):
+    # Group by JSON so each file is loaded and saved once. Writing one detection per
+    # read-modify-write re-saved a busy photo's whole JSON once per detection: with
+    # ~230 detections per photo that took ~70 ms per detection (8 min for 6,700).
+    by_file = {}
     for fname, json_path, i, label in zip(filepaths, json_paths, idxes, labels):
+        by_file.setdefault(json_path, []).append((fname, i, label))
+    for json_path, items in by_file.items():
         try:
             with open(json_path, "r") as f:
                 data = json.load(f)
-            if 0 <= i < len(data["shapes"]):
-                shape = data["shapes"][i]
-                shape["clusterID"] = float(label)
-                shape["timestamp_cluster"] = current_timestamp()
+            for _fname, i, label in items:
+                if 0 <= i < len(data["shapes"]):
+                    shape = data["shapes"][i]
+                    shape["clusterID"] = float(label)
+                    shape["timestamp_cluster"] = current_timestamp()
             with open(json_path, "w") as f:
                 json.dump(data, f, indent=4)
-
         except Exception as e:
-            print(f"⚠️ Could not update {fname}: {e}")
+            print(f"⚠️ Could not update {items[0][0]} (and {len(items) - 1} other detection(s) in "
+                  f"{os.path.basename(json_path)}): {e}")
     print("✅ Cluster IDs written into 'Json' field.")
 
 

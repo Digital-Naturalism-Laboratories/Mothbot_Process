@@ -1263,6 +1263,93 @@ def _check_pipeline_status(processed_mirror: str) -> dict:
     return status
 
 
+_PATCH_NAME = re.compile(r"_\d+_(.+?)\.jpe?g$", re.IGNORECASE)
+_ARCHIVED_RUN_JSON = re.compile(r"_botdetection_(.+)\.json$")
+
+
+def _run_slug(model_name):
+    """Detector name as used in archived-run file names (see detect._model_archive_path)."""
+    return model_name.removesuffix(".pt").replace(" ", "_")
+
+
+def _short_model(model_name):
+    return model_name.removesuffix(".pt").removeprefix("Mothbot_") or "unknown model"
+
+
+def _sample_run_status(folder, json_names, max_reads=40):
+    """(model, stage flags) from the first of *json_names* that has detections."""
+    flags = {"clustered": False, "identified": False, "pixel_mass": False}
+    model = None
+    for name in json_names[:max_reads]:
+        try:
+            with open(os.path.join(folder, name)) as fh:
+                data = json.load(fh)
+        except Exception:
+            continue
+        model = model or data.get("version")
+        shapes = data.get("shapes") or []
+        if shapes:
+            flags["clustered"] = any(sh.get("clusterID") is not None for sh in shapes)
+            flags["identified"] = any(sh.get("identifier_bot", "") not in ("", None) for sh in shapes)
+            flags["pixel_mass"] = any("pixel_mass_pixels" in sh for sh in shapes)
+            break
+    return model, flags
+
+
+def _detection_run_summaries(processed_mirror):
+    """Per detection run in a collection's processed folder: model, photos covered,
+    patches, and which later stages ran on it. Re-running Detect with another model
+    archives the previous run beside the current one, so counting every JSON and patch
+    together would add the runs up. Counts come from file names; stage flags from one
+    sampled JSON per run, so scanning stays fast.
+    """
+    summary = {"current": None, "archived": [], "human_patches": 0, "human_photos": 0}
+    if not os.path.isdir(processed_mirror):
+        return summary
+    try:
+        names = sorted(os.listdir(processed_mirror))
+    except OSError:
+        return summary
+
+    current_jsons = [n for n in names if n.endswith("_botdetection.json")]
+    archived_jsons = {}
+    for n in names:
+        m = _ARCHIVED_RUN_JSON.search(n)
+        if m:
+            archived_jsons.setdefault(m.group(1), []).append(n)
+    patches_by_slug = {}
+    human_photos = set()
+    for n in names:
+        if n.endswith("_HumanDetection.jpg"):
+            summary["human_patches"] += 1
+            human_photos.add(n.rsplit("_", 2)[0])  # <photo>_<i>_HumanDetection.jpg
+            continue
+        m = _PATCH_NAME.search(n)
+        if m:
+            slug = _run_slug(m.group(1))
+            patches_by_slug[slug] = patches_by_slug.get(slug, 0) + 1
+    summary["human_photos"] = len(human_photos)
+
+    if current_jsons:
+        model, flags = _sample_run_status(processed_mirror, current_jsons)
+        slug = _run_slug(model) if model else None
+        summary["current"] = {"model": model or "unknown model", "photos": len(current_jsons),
+                              "patches": patches_by_slug.get(slug, 0) if slug else 0, **flags}
+    for slug, jsons in sorted(archived_jsons.items()):
+        model, flags = _sample_run_status(processed_mirror, jsons)
+        summary["archived"].append({"model": model or slug, "photos": len(jsons),
+                                    "patches": patches_by_slug.get(slug, 0), **flags})
+    return summary
+
+
+def _format_run(run, total_photos, prefix=""):
+    stages = "  ".join(tag for flag, tag in ((run["clustered"], "✓ Cluster"), (run["identified"], "✓ ID"),
+                                             (run["pixel_mass"], "✓ PixMass")) if flag)
+    coverage = f" on {run['photos']}/{total_photos} photos" if total_photos and run["photos"] < total_photos else ""
+    text = f"{prefix}{_short_model(run['model'])}: 🦋 {run['patches']}{coverage}"
+    return f"{text}  {stages}" if stages else text
+
+
 def scan_deployment_folder(folder_path, picker_error_message=""):
     """Scan *folder_path* for image collections (raw and externally-processed)
     and return UI updates.
@@ -1350,29 +1437,24 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
 
         jpeg_count = _count_matching_files(p, ("*.jpg", "*.jpeg"))
 
-        if is_external:
-            # For external collections the folder IS the processed mirror.
-            json_count   = _count_matching_files(p, ("*.json",))
-            patch_count  = jpeg_count
-            ps = _check_pipeline_status(p)
-            counts = f"📄 {json_count}  🦋 {patch_count}"
-        else:
-            processed_mirror = os.path.join(folder_path, "_processed", os.path.relpath(p, folder_path))
-            json_count  = _count_matching_files(processed_mirror, ("*.json",))  if os.path.isdir(processed_mirror) else 0
-            patch_count = _count_matching_files(processed_mirror, ("*.jpg", "*.jpeg")) if os.path.isdir(processed_mirror) else 0
-            ps = _check_pipeline_status(processed_mirror)
-            counts = f"📷 {jpeg_count}  📄 {json_count}  🦋 {patch_count}"
+        # For external collections the folder IS the processed mirror.
+        processed_mirror = p if is_external else os.path.join(folder_path, "_processed", os.path.relpath(p, folder_path))
+        ps = _check_pipeline_status(processed_mirror)
+        runs = _detection_run_summaries(processed_mirror)
+        total_photos = 0 if is_external else jpeg_count
+        parts = [] if is_external else [f"📷 {jpeg_count}"]
+        if runs["current"]:
+            parts.append(_format_run(runs["current"], total_photos))
+        elif not is_external:
+            parts.append("not detected yet")
+        parts += [_format_run(run, total_photos, prefix="earlier ") for run in runs["archived"]]
+        if runs["human_patches"]:
+            photos = runs["human_photos"]
+            parts.append(f"human: 🦋 {runs['human_patches']} on {photos} photo{'' if photos == 1 else 's'}")
+        counts = "  |  ".join(parts)
 
-        pipeline_tags = "  ".join(
-            tag for flag, tag in [
-                (ps["clustered"],   "✓ Cluster"),
-                (ps["identified"],  "✓ ID"),
-                (ps["metadata"],    "✓ Meta"),
-                (ps["exif"],        "✓ Exif"),
-                (ps["pixel_mass"],  "✓ PixMass"),
-            ]
-            if flag
-        )
+        # Photo-level stages (the per-run ones are shown with each run above).
+        pipeline_tags = "  ".join(tag for flag, tag in ((ps["metadata"], "✓ Meta"), (ps["exif"], "✓ Exif")) if flag)
 
         if is_external:
             label = f"⚡ {label_prefix}  {counts}  [ext]"

@@ -561,10 +561,11 @@ def app():
                         blur_threshold = gr.Slider(
                             minimum=0, maximum=100, value=100, step=1,
                             label="Blurriness threshold (0 = sharp, 100 = blurriest)",
-                            info="Blurriness is how wide the insect's edges are blurred, as a % of the insect's "
-                                 "size (so tiny or out-of-focus insects score high); motion streaks score 100. "
-                                 "Only patches at or below the threshold are identified; 100 identifies "
-                                 "everything. Around 15-20 skips most too-blurry patches and no sharp ones.",
+                            info="Blurriness measures how little fine detail a patch has in its weakest "
+                                 "direction, at a standard size (so tiny, out-of-focus and motion-streaked "
+                                 "insects all score high). Only patches at or below the threshold are "
+                                 "identified; 100 identifies everything. Around 70-80 skips most too-blurry "
+                                 "patches and almost no sharp ones.",
                         )
                         blur_example_caption = gr.Markdown("")
                     blur_example_img = gr.Image(

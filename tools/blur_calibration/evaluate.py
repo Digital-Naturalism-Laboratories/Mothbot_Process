@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-from core.blur import STREAK_RATIO, blur_fields  # noqa: E402
+from core.blur import blur_fields  # noqa: E402
 
 RATED = ("sharp", "usable", "blurry")  # "not_insect" is left out
 
@@ -63,11 +63,8 @@ def main():
     print("AUC by dataset: " + "  ".join(
         f"{d} {auc(score[(dataset == d) & blurry], score[(dataset == d) & ~blurry]):.2f}"
         for d in sorted(set(dataset)) if ((dataset == d) & blurry).any() and ((dataset == d) & ~blurry).any()))
-    streak = np.array([r["motion_streak"] for r in rows]) > STREAK_RATIO
-    print(f"motion-streak rule: {int((streak & (cause == 'motion')).sum())}/{int((cause == 'motion').sum())} motion patches, "
-          f"{int((streak & ~blurry).sum())}/{int((~blurry).sum())} sharp+usable patches")
     print("threshold | too blurry skipped | usable skipped | sharp skipped")
-    for t in (10, 15, 20, 25, 30):
+    for t in (50, 60, 70, 80, 90):
         cells = [f"{np.mean(score[rating == k] > t):.0%}" for k in ("blurry", "usable", "sharp")]
         print(f"{t:9d} | {cells[0]:>18} | {cells[1]:>14} | {cells[2]:>13}")
 

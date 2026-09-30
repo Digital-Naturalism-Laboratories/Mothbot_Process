@@ -160,6 +160,15 @@ def parse_args():
 _dino_model = None
 _dino_transform = None
 
+# Side (px) DINOv2 sees each patch at. The released weights are for 518 px, but
+# most patches are only ~60-200 px, so 518 mostly enlarges them. 392 (a multiple of
+# DINOv2's 14-px tiles) is 2.1x faster (46 vs 96 ms/patch). On a 3,159-patch night
+# it kept 92% of the patch pairs clustered together at 518 (13% new pairs, ARI
+# 0.65) -- about the same reshuffling as 504 px (92%, 10%, ARI 0.72), i.e. mostly
+# HDBSCAN's normal sensitivity to small changes. The model adapts its position
+# embedding to the size (dynamic_img_size; identical output to before at 518).
+DINO_SIZE = 392
+
 
 def _get_bundled_weights_path():
     if getattr(sys, "frozen", False):
@@ -184,7 +193,7 @@ def _ensure_dino_loaded():
             "Please ensure dinov2_vits14_pretrain.pth is in the assets/ folder."
         )
 
-    model = timm.create_model("vit_small_patch14_dinov2.lvd142m", pretrained=False)
+    model = timm.create_model("vit_small_patch14_dinov2.lvd142m", pretrained=False, dynamic_img_size=True)
     #model = timm.create_model("vit_small_patch14_dinov2.lvd142m", pretrained=False, img_size=224) # this model gets grumpy if not 518
     state_dict = torch.load(weights_path, map_location=device)
     model.load_state_dict(state_dict, strict=False)
@@ -193,8 +202,8 @@ def _ensure_dino_loaded():
     _dino_model = model
 
     _dino_transform = T.Compose([
-        T.Resize(518),
-        T.CenterCrop(518),
+        T.Resize(DINO_SIZE),
+        T.CenterCrop(DINO_SIZE),
         T.ToTensor(),
         T.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
     ])
@@ -366,7 +375,8 @@ def cluster_with_size_groups(all_patch_paths, batch_size=8):
         groups.append(("noise", np.where(size_labels == -1)[0]))
 
     # ---- 3. Per-group DINOv2 embedding + visual HDBSCAN with checkpointing ----
-    path_hash = hashlib.md5("\n".join(str(p) for p in all_patch_paths).encode()).hexdigest()[:16]
+    # The embedding size is part of the key, so a resumed run never mixes embeddings made at different sizes.
+    path_hash = hashlib.md5(("\n".join(str(p) for p in all_patch_paths) + f"\ndino:{DINO_SIZE}").encode()).hexdigest()[:16]
     cache_dir = Path.home() / ".mothbot" / "embed_cache" / path_hash
     cache_dir.mkdir(parents=True, exist_ok=True)
     print(f"  Checkpoint cache: {cache_dir}")

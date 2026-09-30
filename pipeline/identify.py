@@ -81,6 +81,7 @@ def _set_hf_offline_if_unreachable():
 _set_hf_offline_if_unreachable()
 
 from bioclip import TreeOfLifeClassifier, Rank
+from bioclip.predict import PRED_FILENAME_KEY, PRED_SCORE_KEY, create_classification_dict, join_names
 import importlib.metadata
 
 VERSION = "pybioclip_" + importlib.metadata.version("pybioclip")
@@ -423,10 +424,81 @@ def _shape_blur(shape):
 _PATCH_BLUR = {}
 
 
+def _rank_groups(classifier, rank):
+    """(group index per species as a tensor, classification dict per group) for `rank`,
+    computed once per classifier: which order/family/... each species belongs to."""
+    cache = classifier.__dict__.setdefault("_mothbot_rank_groups", {})
+    names = classifier.get_current_txt_names()
+    cache_key = (rank, id(names), len(names))
+    if cache_key not in cache:
+        group_of_name, group_dicts, group_ids = {}, [], []
+        for name_ary in names:
+            d = create_classification_dict(name_ary, rank)
+            joined = join_names(d)
+            if joined not in group_of_name:
+                group_of_name[joined] = len(group_dicts)
+                group_dicts.append(d)
+            group_ids.append(group_of_name[joined])
+        cache[cache_key] = (torch.tensor(group_ids, dtype=torch.long), group_dicts)
+    return cache[cache_key]
+
+
+def predict_grouped(classifier, images, rank, k=1, batch_size=8, callback=None, min_prob=1e-9):
+    """Same results as classifier.predict(images, rank=rank, k=k, ...), much faster above species.
+
+    BioCLIP groups species probabilities into the chosen rank with a Python loop over
+    every species in the list, per image: with a worldwide insect list that took ~0.4 s
+    per image, three times longer than the model itself. Here the species -> rank
+    mapping is built once and each image's probabilities are summed with one
+    index_add. Same probability filter (> min_prob), same naming, same output format.
+    """
+    if rank == Rank.SPECIES:
+        return list(classifier.predict(images, rank=rank, k=k, batch_size=batch_size, callback=callback))
+    probs = classifier.create_batched_probabilities_for_images(
+        images, classifier.get_txt_embeddings(), batch_size=batch_size, callback=callback)
+    group_ids, group_dicts = _rank_groups(classifier, rank)
+    results = []
+    for i, image in enumerate(images):
+        key = classifier.make_key(image, i)
+        image_probs = probs[key].cpu()
+        kept = torch.where(image_probs > min_prob, image_probs, torch.zeros_like(image_probs))
+        sums = torch.zeros(len(group_dicts), dtype=image_probs.dtype).index_add_(0, group_ids, kept)
+        top = torch.topk(sums, min(k, len(group_dicts)))
+        for gi, score in zip(top.indices.tolist(), top.values.tolist()):
+            if score <= 0:
+                continue
+            item = {PRED_FILENAME_KEY: key}
+            item.update(group_dicts[gi])
+            item[PRED_SCORE_KEY] = score
+            results.append(item)
+    classifier.record_event(images=images, rank=rank.get_label(), min_prob=min_prob, k=k, batch_size=batch_size)
+    return results
+
+
 def apply_id_to_cluster(json_paths, idxes, pred, conf, winningdict):
     """Write the same ID result to every member of a cluster."""
-    for json_path, idx in zip(json_paths, idxes):
-        update_json_labels_and_scores(json_path, idx, pred, conf, winningdict)
+    apply_ids_to_files([(json_path, idx, pred, conf, winningdict) for json_path, idx in zip(json_paths, idxes)])
+
+
+def apply_ids_to_files(updates):
+    """Write many ID results, loading and saving each detection JSON only once.
+
+    updates: (json_path, shape index, pred, conf, winningdict) tuples. Writing one
+    result per read-modify-write re-saved a busy photo's whole JSON once per
+    detection, which made saving results slower than identifying them.
+    """
+    by_file = {}
+    for json_path, index, pred, conf, winningdict in updates:
+        by_file.setdefault(json_path, []).append((index, pred, conf, winningdict))
+    for json_path, items in by_file.items():
+        with open(json_path, "r") as f:
+            data = json.load(f)
+        shapes = data.get("shapes", [])
+        for index, pred, conf, winningdict in items:
+            if 0 <= index < len(shapes):
+                _apply_id_to_shape(shapes[index], pred, conf, winningdict)
+        with open(json_path, "w") as f:
+            json.dump(data, f, indent=4)
 
 
 def update_json_labels_and_scores(json_path, index, pred, conf, winningdict):
@@ -439,45 +511,41 @@ def update_json_labels_and_scores(json_path, index, pred, conf, winningdict):
         conf: The new score value.
         winningdict: Full prediction dict containing taxonomic rank values.
     """
-    with open(json_path, "r") as f:
-        data = json.load(f)
+    apply_ids_to_files([(json_path, index, pred, conf, winningdict)])
 
-    if 0 <= index < len(data["shapes"]):
-        shape = data["shapes"][index]
 
-        # Archive previous bot ID if it was from a different model or species list.
-        old_identifier = shape.get("identifier_bot", "")
-        old_doi = shape.get("species_list", "")
-        if old_identifier and (old_identifier != VERSION or old_doi != DOI):
-            BOT_ID_FIELDS = ["identifier_bot", "species_list", "timestamp_ID_bot",
-                             "confidence_ID", "label",
-                             "kingdom", "phylum", "class", "order", "family", "genus", "species"]
-            snapshot = {k: shape[k] for k in BOT_ID_FIELDS if k in shape}
-            shape.setdefault("bot_id_history", []).append(snapshot)
+def _apply_id_to_shape(shape, pred, conf, winningdict):
+    """Set one detection shape's bot ID fields (archiving a previous model's ID)."""
+    # Archive previous bot ID if it was from a different model or species list.
+    old_identifier = shape.get("identifier_bot", "")
+    old_doi = shape.get("species_list", "")
+    if old_identifier and (old_identifier != VERSION or old_doi != DOI):
+        BOT_ID_FIELDS = ["identifier_bot", "species_list", "timestamp_ID_bot",
+                         "confidence_ID", "label",
+                         "kingdom", "phylum", "class", "order", "family", "genus", "species"]
+        snapshot = {k: shape[k] for k in BOT_ID_FIELDS if k in shape}
+        shape.setdefault("bot_id_history", []).append(snapshot)
 
-        shape["identifier_bot"] = VERSION
-        shape["species_list"] = DOI
-        shape["timestamp_ID_bot"] = current_timestamp()
-        shape["confidence_ID"] = conf
+    shape["identifier_bot"] = VERSION
+    shape["species_list"] = DOI
+    shape["timestamp_ID_bot"] = current_timestamp()
+    shape["confidence_ID"] = conf
 
-        predstring = str(pred).strip().lower()
-        if predstring in ["hole", "background", "wall", "floor", "blank", "sky"]:
-            shape["label"] = "ERROR_" + pred
-        else:
-            shape["label"] = (
-                str(TAXONOMIC_RANK_FILTER).replace("Rank.", "") + "_" + pred
-            )
+    predstring = str(pred).strip().lower()
+    if predstring in ["hole", "background", "wall", "floor", "blank", "sky"]:
+        shape["label"] = "ERROR_" + pred
+    else:
+        shape["label"] = (
+            str(TAXONOMIC_RANK_FILTER).replace("Rank.", "") + "_" + pred
+        )
 
-        # Add taxonomic ranks only if they exist in the winningdict
-        for rank in ["kingdom", "phylum", "class", "order", "family", "genus", "species"]:
-            if rank in winningdict:
-                if winningdict[rank].strip().lower() in ["hole", "background", "wall", "floor", "blank", "sky"]:
-                    shape[rank] = "ERROR_" + winningdict[rank]
-                else:
-                    shape[rank] = winningdict[rank]
-
-    with open(json_path, "w") as f:
-        json.dump(data, f, indent=4)
+    # Add taxonomic ranks only if they exist in the winningdict
+    for rank in ["kingdom", "phylum", "class", "order", "family", "genus", "species"]:
+        if rank in winningdict:
+            if winningdict[rank].strip().lower() in ["hole", "background", "wall", "floor", "blank", "sky"]:
+                shape[rank] = "ERROR_" + winningdict[rank]
+            else:
+                shape[rank] = winningdict[rank]
 
 
 def add_metadata_to_json(json_path, metadata_path):
@@ -901,11 +969,12 @@ def run_id_on_detection_set(matched_img_json_pairs, classifier, label):
     start_time = time.time()
     processed = 0          # representatives predicted so far
     written_dets = 0       # detections (cluster members) written so far
+    banked_time = 0.0      # seconds from start until the last chunk was fully banked
     pending_imgs, pending_members = [], []
 
     def flush_chunk():
         """Predict on the accumulated chunk, write every result to disk, report."""
-        nonlocal processed, written_dets
+        nonlocal processed, written_dets, banked_time
         if not pending_imgs:
             return
         base = processed  # representatives finished before this chunk
@@ -915,35 +984,40 @@ def run_id_on_detection_set(matched_img_json_pairs, classifier, label):
             if done_in_chunk > 0 and (
                 done_in_chunk % (batch_size * 5) == 0 or done_in_chunk == total_in_chunk
             ):
-                elapsed = time.time() - start_time
                 overall = base + done_in_chunk
-                rate = overall / elapsed if elapsed > 0 else 0
+                if base > 0 and banked_time > 0:
+                    # Pace over whole chunks (identifying AND writing results to disk),
+                    # measured at the last bank: counting identification alone made the
+                    # estimate dip after every bank and drift optimistic in between.
+                    rate = base / banked_time
+                    note = ""
+                else:
+                    elapsed = time.time() - start_time
+                    rate = overall / elapsed if elapsed > 0 else 0
+                    note = " (settles after the first chunk is saved)"
                 remaining = (total_to_do - overall) / rate if rate > 0 else 0
                 print(
                     f"   🧠 {overall}/{total_to_do} IDs — "
-                    f"{rate:.1f} IDs/s — ~{remaining/60:.1f} min remaining"
+                    f"{rate:.1f} IDs/s — ~{remaining/60:.1f} min remaining{note}"
                 )
 
-        preds = list(classifier.predict(
-            pending_imgs, rank=TAXONOMIC_RANK_FILTER, k=1,
+        preds = predict_grouped(
+            classifier, pending_imgs, TAXONOMIC_RANK_FILTER, k=1,
             batch_size=batch_size, callback=chunk_callback,
-        ))
+        )
 
         chunk_dets = 0
         done_this_chunk = []
+        updates = []
         for members, pred in zip(pending_members, preds):
             winner = pred.get(rank_label, "")
             winnerprob = pred.get("score", 0.0)
-            # Write the representative (members[0]) LAST so that a rep recorded in
-            # the checkpoint reliably means the whole cluster was banked — even if
-            # a crash interrupts this cluster's write loop.
-            ordered = members[1:] + members[:1]
-            apply_id_to_cluster(
-                [m[1] for m in ordered], [m[2] for m in ordered],
-                winner, winnerprob, pred,
-            )
+            updates.extend((m[1], m[2], winner, winnerprob, pred) for m in members)
             chunk_dets += len(members)
             done_this_chunk.append(_rep_key(members[0]))
+        # One read-modify-write per JSON for the whole chunk. The checkpoint below is
+        # only written after every file is saved, so a crash can only under-count.
+        apply_ids_to_files(updates)
 
         # Record this chunk's reps AFTER their JSONs are written, so a crash can
         # only ever under-count what's done (harmless re-work), never over-count.
@@ -968,6 +1042,7 @@ def run_id_on_detection_set(matched_img_json_pairs, classifier, label):
 
         processed += len(pending_imgs)
         written_dets += chunk_dets
+        banked_time = time.time() - start_time
         pending_imgs.clear()
         pending_members.clear()
         print(

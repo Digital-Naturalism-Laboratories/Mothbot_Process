@@ -10,6 +10,7 @@ Key changes from the subprocess-based original:
 """
 
 import json
+import random
 import os
 import re
 import glob
@@ -1141,7 +1142,16 @@ def app():
                     fn=_auto_goto(_tab_id, _label, _n, len(_AUTO_STEPS)),
                     inputs=[],
                     outputs=[main_tabs, auto_run_status],
-                ).then(
+                )
+                if _tab_id == "id":
+                    # Switching tabs in code doesn't fire id_tab.select, so refresh the
+                    # blurriness example here (Detect/Cluster have just scored the patches).
+                    _chain = _chain.then(
+                        fn=load_blur_examples,
+                        inputs=[selected_paths, blur_threshold],
+                        outputs=[blur_examples_state, blur_example_img, blur_example_caption],
+                    )
+                _chain = _chain.then(
                     fn=_auto_step(_handler, len(_outputs)),
                     inputs=_inputs,
                     outputs=_outputs,
@@ -2306,6 +2316,9 @@ def run_detection_with_continue(selected_folders, yolo_model, imsz, overwrite_bo
                             break
                         new_patches.append(p)
                     if new_patches:
+                        # Shuffled, or the slideshow would keep restarting on the same
+                        # (first) photo of each batch.
+                        random.shuffle(new_patches)
                         slide_patches = new_patches
                         slide_idx = 0
                     yield output_log, gr.update(interactive=False), SHOW_STOP, (
@@ -2399,7 +2412,10 @@ def show_blur_example(examples, threshold):
             f"about **{100 * skipped / len(examples):.0f}%** of {len(examples):,} sampled patches "
             f"would be left unidentified."
         )
-    return patch_path, caption
+    # Return the image itself, not its path: Gradio only serves files from its own
+    # allowed folders, and patches live in the user's dataset folders.
+    image = cv2.imread(patch_path)
+    return (cv2.cvtColor(image, cv2.COLOR_BGR2RGB) if image is not None else None), caption
 
 
 def run_ID(selected_folders, species_list, chosenrank, IDHum, IDBot, overwrite_bot, blur_threshold=100):

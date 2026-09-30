@@ -4,6 +4,7 @@ import cv2
 from ultralytics import YOLO
 import numpy as np
 import os
+import random
 import re
 import json
 import PIL.Image
@@ -932,14 +933,16 @@ def process_image_list(img_files, dataset_root=None):
             # After each batch, emit previews for patch jobs already finished.
             # Workers run concurrently with inference, so many patches are done
             # by the time we reach here — no need to wait until the very end.
-            # We emit the last written patch per image (one Gradio update per image).
+            # One preview per image, a random one of its patches: the same insects sit in
+            # the same spots photo after photo, so always showing e.g. the last detection
+            # would show the same insect over and over.
             still_pending = []
             for fut, pf_path, fname in patch_futures:
                 if fut.done():
                     try:
                         paths = fut.result()
                         if paths:
-                            emit_preview(paths[-1])
+                            emit_preview(random.choice(paths))
                     except Exception as e:
                         print(f"❌ Patch write error for {fname}: {e}")
                 else:
@@ -953,7 +956,7 @@ def process_image_list(img_files, dataset_root=None):
             try:
                 paths = future.result()
                 if paths:
-                    emit_preview(paths[-1])
+                    emit_preview(random.choice(paths))
             except Exception as e:
                 print(f"❌ Patch write error for {filename}: {e}")
 

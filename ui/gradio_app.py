@@ -610,11 +610,11 @@ def app():
                         blur_threshold = gr.Slider(
                             minimum=0, maximum=100, value=100, step=1,
                             label="Blurriness threshold (0 = sharp, 100 = blurriest)",
-                            info="Blurriness measures how little fine detail a patch has in its weakest "
-                                 "direction, at a standard size (so tiny, out-of-focus and motion-streaked "
-                                 "insects all score high). Only patches at or below the threshold are "
-                                 "identified; 100 identifies everything. Around 70-80 skips most too-blurry "
-                                 "patches and almost no sharp ones.",
+                            info="Blurriness is whichever is worse: how little fine detail the insect has "
+                                 "for its size (out of focus or too small), or how much its edges all run one "
+                                 "way (motion streaks). Only patches at or below the threshold are identified; "
+                                 "100 identifies everything. Around 70-80 skips most too-blurry patches and "
+                                 "almost no sharp ones.",
                         )
                         blur_example_caption = gr.Markdown("")
                     blur_example_img = gr.Image(
@@ -815,13 +815,16 @@ def app():
             # ~~~~~~~~~~~~ Pixel Mass Tab ~~~~~~~~~~~~~~~~~~~~~~
             with gr.Tab("Pixel Mass", id="pixel_mass") as pixel_mass_tab:
                 pm_source_img_state = gr.State(None)   # thumbnail PIL for fast redrawing
-                pm_point1_state     = gr.State(None)   # [x, y] of first click (thumbnail space)
-                pm_point2_state     = gr.State(None)   # [x, y] of second click (thumbnail space)
-                pm_scale_state      = gr.State(1.0)    # thumbnail / original ratio (for px/mm conversion)
+                pm_full_img_state   = gr.State(None)   # full-res PIL for the close-ups
+                pm_point1_state     = gr.State(None)   # [x, y] of point 1 (original-image pixels)
+                pm_point2_state     = gr.State(None)   # [x, y] of point 2 (original-image pixels)
+                pm_centers_state    = gr.State(None)   # [c1, c2] close-up view centres
+                pm_scale_state      = gr.State(1.0)    # thumbnail / original ratio
 
                 with gr.Accordion("Step 1: Set Scale Calibration", open=True) as pm_step1_accordion:
                     gr.Markdown(
-                        "Click two points on a ruler or known object in the source image below. "
+                        "Click two points on a ruler or known object in the source image below, "
+                        "then click in each **close-up** to place the point exactly. "
                         "Enter the real-world distance and click **Apply Calibration**. "
                         "Or type a known **pixels per mm** value directly and apply."
                     )
@@ -848,6 +851,21 @@ def app():
                             pm_calib_status = gr.Textbox(
                                 label="Calibration status", value="", interactive=False, lines=1, max_lines=1
                             )
+                    with gr.Row():
+                        pm_loupe1_img = gr.Image(
+                            label="Point 1 close-up — click to fine-tune",
+                            interactive=False, height=_LOUPE_PX, width=_LOUPE_PX,
+                            show_download_button=False, show_fullscreen_button=False,
+                        )
+                        pm_loupe2_img = gr.Image(
+                            label="Point 2 close-up — click to fine-tune",
+                            interactive=False, height=_LOUPE_PX, width=_LOUPE_PX,
+                            show_download_button=False, show_fullscreen_button=False,
+                        )
+                        pm_zoom = gr.Slider(
+                            label="Close-up zoom (× actual image pixels)",
+                            minimum=1, maximum=16, step=1, value=4,
+                        )
 
                 gr.Markdown("### Step 2: Calculate Pixel Mass")
                 with gr.Row():
@@ -886,7 +904,8 @@ def app():
                     pm_calib_img, pm_source_img_state, pm_calib_status,
                     pm_point1_state, pm_point2_state,
                     pm_point1_label, pm_point2_label, pm_pixel_dist_label,
-                    pm_scale_state,
+                    pm_scale_state, pm_full_img_state, pm_centers_state,
+                    pm_loupe1_img, pm_loupe2_img,
                 ]
                 pixel_mass_tab.select(
                     fn=load_image_for_calibration,
@@ -900,17 +919,34 @@ def app():
                     outputs=_pm_load_outputs,
                 )
 
+                _pm_view_outputs = [
+                    pm_point1_state, pm_point2_state, pm_centers_state,
+                    pm_calib_img, pm_loupe1_img, pm_loupe2_img,
+                    pm_point1_label, pm_point2_label, pm_pixel_dist_label,
+                ]
                 pm_calib_img.select(
                     fn=mark_calibration_point,
-                    inputs=[pm_point1_state, pm_point2_state, pm_source_img_state],
-                    outputs=[pm_point1_state, pm_point2_state, pm_calib_img,
-                             pm_point1_label, pm_point2_label, pm_pixel_dist_label],
+                    inputs=[pm_point1_state, pm_point2_state, pm_source_img_state,
+                            pm_full_img_state, pm_scale_state, pm_zoom],
+                    outputs=_pm_view_outputs,
+                )
+                for _which, _loupe in enumerate((pm_loupe1_img, pm_loupe2_img)):
+                    _loupe.select(
+                        fn=refine_calibration_point(_which),
+                        inputs=[pm_point1_state, pm_point2_state, pm_centers_state,
+                                pm_source_img_state, pm_full_img_state, pm_scale_state, pm_zoom],
+                        outputs=_pm_view_outputs,
+                    )
+                pm_zoom.change(
+                    fn=rezoom_calibration,
+                    inputs=[pm_point1_state, pm_point2_state, pm_centers_state, pm_full_img_state, pm_zoom],
+                    outputs=[pm_loupe1_img, pm_loupe2_img],
                 )
 
                 pm_calibrate_btn.click(
                     fn=apply_calibration,
                     inputs=[selected_paths, pm_point1_state, pm_point2_state,
-                            pm_real_dist, pm_pixels_per_mm, pm_scale_state],
+                            pm_real_dist, pm_pixels_per_mm],
                     outputs=[pm_pixels_per_mm, pm_calib_status],
                 )
 
@@ -1822,73 +1858,137 @@ def go_to_cluster_tab():
     return gr.Tabs(selected="cluster")
 
 _CALIB_MAX_PX = 1200   # longest edge of the working thumbnail
+_LOUPE_PX = 360        # edge of the square close-up views
 
 
-def load_image_for_calibration(selected_folders):
-    """Load the first source image, downsample to a working thumbnail, return scale factor."""
-    _RESET = ("–", "–", "–")
-    _FAIL  = (None, None, "–", None, None, *_RESET, 1.0)
+def _calib_labels(p1, p2):
+    """Point / distance readouts. Points are in original-image pixels."""
+    import math
+    p1_str = f"({p1[0]}, {p1[1]})" if p1 else "–"
+    p2_str = f"({p2[0]}, {p2[1]})" if p2 else "–"
+    dist_str = f"{math.dist(p1, p2):.1f} px" if p1 and p2 else "–"
+    return p1_str, p2_str, dist_str
+
+
+def _loupe_box(center, zoom, size):
+    """(x0, y0, side) of the original-image square shown in a close-up at this zoom."""
+    w, h = size
+    side = max(4, min(int(round(_LOUPE_PX / zoom)), w, h))
+    x0 = min(max(0, int(round(center[0] - side / 2))), w - side)
+    y0 = min(max(0, int(round(center[1] - side / 2))), h - side)
+    return x0, y0, side
+
+
+def _render_loupe(full, point, center, zoom, color):
+    """Full-resolution close-up around center with a crosshair on point."""
+    from PIL import Image as PILImage, ImageDraw
+    if full is None or point is None:
+        return None
+    x0, y0, side = _loupe_box(center or point, zoom, full.size)
+    view = full.crop((x0, y0, x0 + side, y0 + side)).resize((_LOUPE_PX, _LOUPE_PX), PILImage.NEAREST)
+    k = _LOUPE_PX / side
+    cx, cy = (point[0] - x0 + 0.5) * k, (point[1] - y0 + 0.5) * k
+    draw = ImageDraw.Draw(view)
+    gap = max(4, k)   # leave the marked pixel itself visible
+    for a, b in (((cx - _LOUPE_PX, cy), (cx - gap, cy)), ((cx + gap, cy), (cx + _LOUPE_PX, cy)),
+                 ((cx, cy - _LOUPE_PX), (cx, cy - gap)), ((cx, cy + gap), (cx, cy + _LOUPE_PX))):
+        draw.line([a, b], fill=color, width=1)
+    return view
+
+
+def _render_calibration(thumb, full, scale, p1, p2, centers, zoom):
+    """Redraw the overview + both close-ups. Returns (overview, loupe1, loupe2, p1, p2, dist labels)."""
+    from PIL import ImageDraw
+    if thumb is None:
+        return (None, None, None, "–", "–", "–")
+    overview = thumb.copy()
+    draw = ImageDraw.Draw(overview)
+    r = 7
+    t1 = [c * scale for c in p1] if p1 else None
+    t2 = [c * scale for c in p2] if p2 else None
+    if t1 and t2:
+        draw.line([*t1, *t2], fill="yellow", width=2)
+    for t, color in ((t1, "red"), (t2, "blue")):
+        if t:   # hollow ring so the marked spot stays visible
+            draw.ellipse([t[0] - r, t[1] - r, t[0] + r, t[1] + r], outline=color, width=2)
+            draw.ellipse([t[0] - 1, t[1] - 1, t[0] + 1, t[1] + 1], fill=color)
+    c1, c2 = centers or (None, None)
+    return (
+        overview,
+        _render_loupe(full, p1, c1, zoom, "red"),
+        _render_loupe(full, p2, c2, zoom, "blue"),
+        *_calib_labels(p1, p2),
+    )
+
+
+def load_image_for_calibration(selected_folders, zoom=4):
+    """Load the first source image: full-res for the close-ups plus a downsampled overview.
+
+    Returns (overview, thumb_state, status, p1, p2, p1_label, p2_label, dist_label,
+    scale, full_state, centers, loupe1, loupe2).
+    """
+    _EMPTY = (None, None, "–", "–", "–", 1.0, None, None, None, None)
     if not selected_folders:
-        return (None, None, "No collection selected.", *_FAIL[3:])
+        return (None, None, "No collection selected.", *_EMPTY)
     entry = selected_folders[0]
     folder = entry["path"] if isinstance(entry, dict) else entry
     images = find_images_recursive(folder)
     if not images:
-        return (None, None, "No source images found in collection.", *_FAIL[3:])
+        return (None, None, "No source images found in collection.", *_EMPTY)
     from PIL import Image as PILImage
-    img = PILImage.open(images[0]).convert("RGB")
-    w, h = img.size
+    full = PILImage.open(images[0]).convert("RGB")
+    w, h = full.size
     scale = min(1.0, _CALIB_MAX_PX / max(w, h))
-    if scale < 1.0:
-        img = img.resize((int(w * scale), int(h * scale)), PILImage.LANCZOS)
+    thumb = full.resize((int(w * scale), int(h * scale)), PILImage.LANCZOS) if scale < 1.0 else full.copy()
     status = f"Loaded: {os.path.basename(images[0])} ({w}×{h})"
-    return img, img.copy(), status, None, None, *_RESET, scale
+    return (thumb, thumb, status, None, None, "–", "–", "–", scale, full, None, None, None)
 
 
-def mark_calibration_point(evt: gr.SelectData, p1, p2, orig_pil):
-    """Cycle through first-click → second-click → reset on the calibration thumbnail."""
-    import math
-    from PIL import ImageDraw
+def mark_calibration_point(evt: gr.SelectData, p1, p2, thumb, full, scale, zoom):
+    """Overview click: first click → point 1, second → point 2, third starts over.
 
-    if orig_pil is None:
-        return p1, p2, None, "–", "–", "–"
-
-    x, y = int(evt.index[0]), int(evt.index[1])
-
-    if p1 is None:
-        new_p1, new_p2 = [x, y], None
-    elif p2 is None:
-        new_p1, new_p2 = p1, [x, y]
+    Points are stored in original-image pixels; each close-up centres on its point.
+    Returns (p1, p2, centers, overview, loupe1, loupe2, p1_label, p2_label, dist_label).
+    """
+    if thumb is None:
+        return (p1, p2, None, None, None, None, "–", "–", "–")
+    pt = [int(evt.index[0] / scale), int(evt.index[1] / scale)]
+    if p1 is None or p2 is not None:
+        p1, p2 = pt, None   # first click, or third click resets
     else:
-        new_p1, new_p2 = [x, y], None   # third click resets
-
-    annotated = orig_pil.copy()
-    draw = ImageDraw.Draw(annotated)
-    r, lw = 6, 2   # small fixed-pixel markers on the ~1200px thumbnail
-
-    if new_p1:
-        px1, py1 = new_p1
-        draw.ellipse([px1 - r, py1 - r, px1 + r, py1 + r], fill="red", outline="white", width=lw)
-
-    px_dist_str = "–"
-    if new_p2:
-        px2, py2 = new_p2
-        draw.line([new_p1[0], new_p1[1], px2, py2], fill="yellow", width=lw)
-        draw.ellipse([px2 - r, py2 - r, px2 + r, py2 + r], fill="blue", outline="white", width=lw)
-        dist = math.sqrt((new_p1[0] - px2) ** 2 + (new_p1[1] - py2) ** 2)
-        px_dist_str = f"{dist:.1f} px (thumbnail)"
-
-    p1_str = f"({new_p1[0]}, {new_p1[1]})" if new_p1 else "–"
-    p2_str = f"({new_p2[0]}, {new_p2[1]})" if new_p2 else "–"
-
-    return new_p1, new_p2, annotated, p1_str, p2_str, px_dist_str
+        p2 = pt
+    centers = [p1, p2]
+    return (p1, p2, centers, *_render_calibration(thumb, full, scale, p1, p2, centers, zoom))
 
 
-def apply_calibration(selected_folders, p1, p2, real_dist_mm, manual_ppm, scale=1.0):
+def refine_calibration_point(which):
+    """Close-up click handler factory: moves point `which` (0 or 1) to the clicked pixel.
+
+    The close-up keeps its framing so repeated clicks land where you expect.
+    """
+    def handler(evt: gr.SelectData, p1, p2, centers, thumb, full, scale, zoom):
+        points = [p1, p2]
+        if full is None or points[which] is None:
+            return (p1, p2, centers, *_render_calibration(thumb, full, scale, p1, p2, centers, zoom))
+        centers = list(centers or points)
+        x0, y0, side = _loupe_box(centers[which] or points[which], zoom, full.size)
+        k = side / _LOUPE_PX
+        points[which] = [int(x0 + evt.index[0] * k), int(y0 + evt.index[1] * k)]
+        p1, p2 = points
+        return (p1, p2, centers, *_render_calibration(thumb, full, scale, p1, p2, centers, zoom))
+    return handler
+
+
+def rezoom_calibration(p1, p2, centers, full, zoom):
+    """Zoom slider moved: redraw just the close-ups."""
+    c1, c2 = centers or (None, None)
+    return _render_loupe(full, p1, c1, zoom, "red"), _render_loupe(full, p2, c2, zoom, "blue")
+
+
+def apply_calibration(selected_folders, p1, p2, real_dist_mm, manual_ppm):
     """Compute pixels_per_mm from the marked line (or use manual value) and save calibration.json.
 
-    Points p1/p2 are in thumbnail coordinate space; scale (thumbnail/original) converts
-    the measured pixel distance back to original-image pixels before dividing by real_dist_mm.
+    Points p1/p2 are in original-image pixels.
     """
     import math
     from core.paths import get_processed_folder
@@ -1897,9 +1997,7 @@ def apply_calibration(selected_folders, p1, p2, real_dist_mm, manual_ppm, scale=
 
     ppm = None
     if p1 and p2 and real_dist_mm and real_dist_mm > 0:
-        px_dist_thumb = math.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
-        px_dist_orig  = px_dist_thumb / (scale or 1.0)   # convert to original-image pixels
-        ppm = px_dist_orig / real_dist_mm
+        ppm = math.dist(p1, p2) / real_dist_mm
     elif manual_ppm and manual_ppm > 0:
         ppm = float(manual_ppm)
 
@@ -2639,11 +2737,21 @@ def _ensure_bundled_species_csv() -> str:
 
     csv_path = csv_dir / csv_name
 
-    if csv_path.exists():
-        return str(csv_path)
-
     if not zip_path.exists():
-        return ""
+        return str(csv_path) if csv_path.exists() else ""
+
+    # Re-extract if the unpacked CSV doesn't match the zip — e.g. it was
+    # extracted before the bundled list was cleaned of non-insect species.
+    if csv_path.exists():
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zipped_size = next(i.file_size for i in zf.infolist()
+                                   if i.filename.endswith(".csv") and not i.filename.startswith("__"))
+            if csv_path.stat().st_size == zipped_size:
+                return str(csv_path)
+            print("Bundled species list was updated — replacing the old extracted copy.")
+        except Exception:
+            return str(csv_path)
 
     try:
         csv_dir.mkdir(parents=True, exist_ok=True)

@@ -17,7 +17,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
 from core.preview import emit_preview
-from core.blur import blur_fields
+from core.blur import blur_fields, record_blur_fields
 from core.common import (
     find_date_folders,
     find_images_recursive,
@@ -586,7 +586,7 @@ def _record_blur_scores(bot_json_path, blur_by_patch):
         for shape in data.get("shapes", []):
             fields = blur_by_patch.get(shape.get("patch_path", ""))
             if fields is not None:
-                shape.update(fields)
+                record_blur_fields(shape, fields)
         with open(bot_json_path, "w") as f:
             json.dump(data, f, indent=2)
     except Exception as e:

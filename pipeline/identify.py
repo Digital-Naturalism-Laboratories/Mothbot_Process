@@ -227,7 +227,12 @@ def load_taxon_keys(
         return set()
 
     print(f"Reading {taxa_path!s}, extracting {taxon_rank} values.")
+    return _taxa_column_values(_read_taxa_table(taxa_path), taxon_rank, taxa_cols)
 
+
+def _read_taxa_table(taxa_path):
+    """Read a species-list CSV (path, bytes, or file-like) into a Polars DataFrame,
+    robust to encoding issues and tab/comma delimiters."""
     # encodings to try in order (utf-8 first, then common windows/latin fallbacks)
     encodings = ("utf-8", "utf-8-sig", "utf-16", "cp1252", "latin-1")
 
@@ -289,7 +294,11 @@ def load_taxon_keys(
 
             df_pd = pd.read_csv(io.StringIO(text), sep="\t")
             df = pl.from_pandas(df_pd)
+    return df
 
+
+def _taxa_column_values(df, taxon_rank, taxa_cols=None):
+    """Unique, lowercased, non-blank values of the taxon_rank column of a species list."""
     # If user provided a taxa_cols mapping/dictionary, prefer it for column lookup
     chosen_col = None
     if taxa_cols and isinstance(taxa_cols, dict):
@@ -527,6 +536,17 @@ def _build_classifier_from_embedding_cache(txt_embeddings, txt_names, device):
     return classifier
 
 
+# Bump when the filtering logic in build_classifier changes, so caches built
+# the old way are rebuilt.
+_TAXA_FILTER_VERSION = 2
+
+
+def _taxa_cache_fingerprint(taxa_path):
+    """Identify the exact species-list file (and filter logic) a cache was built from."""
+    st = os.stat(taxa_path)
+    return {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "filter": _TAXA_FILTER_VERSION}
+
+
 def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_errors):
     """Build (or load from cache) a TreeOfLifeClassifier filtered to the given taxa.
 
@@ -563,15 +583,19 @@ def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_erro
         except Exception:
             cache = {}
 
-        if "txt_embeddings" in cache and "txt_names" in cache:
+        if "txt_embeddings" in cache and cache.get("source") != _taxa_cache_fingerprint(taxa_path):
+            # Built from a different version of the species list (e.g. before the
+            # bundled worldwide list was cleaned of non-insects) — it would keep
+            # predicting taxa that are no longer in the list.
+            print("ℹ️  Species list changed since the filter cache was built — rebuilding it.")
+        elif "txt_embeddings" in cache and "txt_names" in cache:
             n = cache["txt_embeddings"].shape[1]
             print(f"Loading BioCLIP model with cached filter ({n} filtered labels) — skipping full TOL embedding load")
             classifier = _build_classifier_from_embedding_cache(
                 cache["txt_embeddings"], cache["txt_names"], device
             )
             return classifier
-
-        if "keep_labels_ary" in cache:
+        elif "keep_labels_ary" in cache:
             print("ℹ️  Old-style bool-mask cache found — running full load once to upgrade cache format.")
         else:
             print("⚠️  Unrecognised cache — rebuilding from scratch.")
@@ -580,19 +604,34 @@ def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_erro
     print("Loading TOL classifier (slow first run — result will be cached for next time)...")
     classifier = TreeOfLifeClassifier(device=device)
 
-    taxon_keys = load_taxon_keys(
-        taxa_path=taxa_path,
-        taxa_cols=taxa_cols,
-        taxon_rank=taxon_rank.lower(),
-        flag_det_errors=flag_the_det_errors,
-    )
+    print(f"Reading {taxa_path!s}, extracting {taxon_rank} values.")
+    taxa_df = _read_taxa_table(taxa_path)
+    taxon_keys = _taxa_column_values(taxa_df, taxon_rank.lower(), taxa_cols)
 
     print(f"Filtering TOL embeddings to {len(taxon_keys)} {taxon_rank} values...")
     label_data = classifier.get_label_data()
 
     # Use isin() rather than create_taxa_filter() — GBIF lists contain taxa not
     # in TOL, and create_taxa_filter() raises on unknown values.
-    keep_labels_ary = label_data[taxon_rank].str.lower().isin(taxon_keys).tolist()
+    keep_mask = label_data[taxon_rank].str.lower().isin(taxon_keys)
+
+    # Names aren't unique across kingdoms (a plant and a beetle can share a
+    # binomial), so also require the TOL label's class to be one the list
+    # contains. TOL labels with a blank class are kept — many real insects have
+    # incomplete TOL taxonomy.
+    try:
+        list_classes = _taxa_column_values(taxa_df, "class", taxa_cols)
+    except KeyError:
+        list_classes = set()
+    if list_classes and "class" in label_data:
+        tol_class = label_data["class"].fillna("").str.lower()
+        class_ok = tol_class.isin(list_classes) | (tol_class == "")
+        dropped = int((keep_mask & ~class_ok).sum())
+        if dropped:
+            print(f"Dropping {dropped} TOL labels whose class isn't in the species list (name clashes)")
+        keep_mask &= class_ok
+
+    keep_labels_ary = keep_mask.tolist()
     matched = sum(keep_labels_ary)
     print(f"Keeping {matched} of {len(keep_labels_ary)} TOL embeddings")
 
@@ -610,6 +649,7 @@ def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_erro
         {
             "txt_embeddings": classifier._subset_txt_embeddings.cpu(),
             "txt_names": classifier._subset_txt_names,
+            "source": _taxa_cache_fingerprint(taxa_path),
         },
         cache_path,
     )

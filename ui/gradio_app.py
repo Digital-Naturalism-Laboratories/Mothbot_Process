@@ -153,6 +153,50 @@ def app():
             tagPixelMassTab();
             new MutationObserver(tagPixelMassTab).observe(document.body, { childList: true, subtree: true });
 
+            // ── Collection labels: bold folder name, smaller "earlier" runs ─────
+            // Checkbox labels are plain text in Gradio, so format a copy beside
+            // Gradio's own text (kept, hidden) rather than editing it: Gradio keeps
+            // updating its text node when choices change, and the copy follows.
+            function _escape(t) {
+                return t.replace(/[&<>"]/g, function(c) {
+                    return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c];
+                });
+            }
+            function _formatCollectionLabel(text) {
+                var parts = text.split('  |  ');
+                var head = parts[0];
+                var gap = head.indexOf('  ');
+                var path = gap >= 0 ? head.slice(0, gap) : head;
+                var rest = gap >= 0 ? head.slice(gap) : '';
+                var slash = path.lastIndexOf('/');
+                var html = _escape(path.slice(0, slash + 1)) + '<b>' + _escape(path.slice(slash + 1)) + '</b>' + _escape(rest);
+                for (var i = 1; i < parts.length; i++) {
+                    var part = _escape(parts[i]);
+                    html += '  |  ' + (parts[i].indexOf('earlier ') === 0
+                        ? '<span class="mb-earlier-run">' + part + '</span>' : part);
+                }
+                return html;
+            }
+            function formatCollectionLabels() {
+                var spans = document.querySelectorAll('#collection-choices label > span:not(.mb-formatted-label)');
+                spans.forEach(function(span) {
+                    var text = span.textContent;
+                    var copy = span.nextElementSibling;
+                    if (!copy || !copy.classList.contains('mb-formatted-label')) {
+                        copy = document.createElement('span');
+                        copy.className = span.className + ' mb-formatted-label';
+                        span.after(copy);
+                        span.classList.add('mb-source-label');
+                    }
+                    if (copy.dataset.source !== text) {
+                        copy.dataset.source = text;
+                        copy.innerHTML = _formatCollectionLabel(text);
+                    }
+                });
+            }
+            formatCollectionLabels();
+            new MutationObserver(formatCollectionLabels).observe(document.body, { childList: true, subtree: true, characterData: true });
+
             // ── Sleep / reconnect recovery banner ──────────────────────────────
             // When the laptop wakes from sleep (lid opens, screen-on, etc.) the
             // browser fires visibilitychange: hidden → visible.  If a pipeline
@@ -230,6 +274,10 @@ def app():
         }
         """,
         css="""
+            /* Collection labels (formatted by the js above) */
+            #collection-choices .mb-source-label { display: none; }
+            #collection-choices .mb-formatted-label { white-space: pre-wrap; }
+            #collection-choices .mb-earlier-run { font-size: 0.85em; opacity: 0.75; }
             /* Setup - neutral white */
             button.svelte-1tcem6n:nth-child(1).selected {
                 background-color: #e0e0e0 !important;
@@ -359,6 +407,7 @@ def app():
                             )
                             folder_choices = gr.CheckboxGroup(
                                 label="Image Collections Found (select which to process)",
+                                elem_id="collection-choices",
                                 choices=[],
                                 value=[],
                                 interactive=True,

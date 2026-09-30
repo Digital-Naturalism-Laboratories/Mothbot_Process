@@ -197,6 +197,155 @@ def app():
             formatCollectionLabels();
             new MutationObserver(formatCollectionLabels).observe(document.body, { childList: true, subtree: true, characterData: true });
 
+            // ── Pixel Mass calibration viewer ──────────────────────────────────
+            // Zoom / pan / point placement all happen here in the browser on the
+            // full-resolution image. Points (original-image pixels) are reported
+            // to Python by writing JSON into the hidden #pm-calib-points textbox.
+            function initCalibViewer() {
+                var root = document.getElementById('pm-calib-viewer');
+                if (!root || root.dataset.ready === root.dataset.src) return;
+                root.dataset.ready = root.dataset.src;
+                var canvas = root.querySelector('canvas');
+                var ctx = canvas.getContext('2d');
+                var img = new Image();
+                var pts = [], s = 1, tx = 0, ty = 0, fitS = 1, fitted = false;
+                var cw = 0, ch = 0, drag = null;
+                var MAX_ZOOM = 64, HIT_PX = 12, CLICK_SLOP = 4;
+                var COLORS = ['#ff3b30', '#2f7bff'];
+
+                function report() {
+                    var box = document.querySelector('#pm-calib-points textarea, #pm-calib-points input');
+                    if (!box) return;
+                    box.value = JSON.stringify(pts.map(function(p) {
+                        return [Math.round(p[0] * 100) / 100, Math.round(p[1] * 100) / 100];
+                    }));
+                    box.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+                function resize() {
+                    if (!img.naturalWidth || !root.clientWidth) return;
+                    var dpr = window.devicePixelRatio || 1;
+                    cw = root.clientWidth;
+                    ch = Math.min(cw * img.naturalHeight / img.naturalWidth, window.innerHeight * 0.75);
+                    canvas.style.height = ch + 'px';
+                    canvas.width = Math.round(cw * dpr);
+                    canvas.height = Math.round(ch * dpr);
+                    fitS = Math.min(cw / img.naturalWidth, ch / img.naturalHeight);
+                    if (!fitted) { fit(); fitted = true; } else { draw(); }
+                }
+                function fit() {
+                    s = fitS;
+                    tx = (cw - img.naturalWidth * s) / 2;
+                    ty = (ch - img.naturalHeight * s) / 2;
+                    draw();
+                }
+                function zoomAt(cx, cy, factor) {
+                    var ns = Math.min(MAX_ZOOM, Math.max(fitS * 0.5, s * factor));
+                    tx = cx - (cx - tx) * ns / s;
+                    ty = cy - (cy - ty) * ns / s;
+                    s = ns;
+                    draw();
+                }
+                function toScreen(p) { return [p[0] * s + tx, p[1] * s + ty]; }
+                function local(e) {
+                    var r = canvas.getBoundingClientRect();
+                    return [e.clientX - r.left, e.clientY - r.top];
+                }
+                function hitPoint(xy) {
+                    for (var i = pts.length - 1; i >= 0; i--) {
+                        var q = toScreen(pts[i]);
+                        if (Math.hypot(q[0] - xy[0], q[1] - xy[1]) <= HIT_PX) return i;
+                    }
+                    return -1;
+                }
+                function draw() {
+                    var dpr = window.devicePixelRatio || 1;
+                    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                    ctx.clearRect(0, 0, cw, ch);
+                    // Show real pixels (no smoothing) once zoomed past 2x.
+                    ctx.imageSmoothingEnabled = s < 2;
+                    ctx.drawImage(img, tx, ty, img.naturalWidth * s, img.naturalHeight * s);
+                    var sp = pts.map(toScreen);
+                    if (sp.length === 2) {
+                        ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+                        ctx.beginPath(); ctx.moveTo(sp[0][0], sp[0][1]); ctx.lineTo(sp[1][0], sp[1][1]); ctx.stroke();
+                        ctx.lineWidth = 1.5; ctx.strokeStyle = '#ffd60a';
+                        ctx.beginPath(); ctx.moveTo(sp[0][0], sp[0][1]); ctx.lineTo(sp[1][0], sp[1][1]); ctx.stroke();
+                    }
+                    sp.forEach(function(q, i) {
+                        // Ring + crosshair with a gap, so the marked spot stays visible.
+                        var arms = [[-22, -5], [5, 22]];
+                        [['rgba(255,255,255,0.9)', 3], [COLORS[i], 1.5]].forEach(function(st) {
+                            ctx.strokeStyle = st[0]; ctx.lineWidth = st[1];
+                            ctx.beginPath(); ctx.arc(q[0], q[1], 9, 0, 2 * Math.PI); ctx.stroke();
+                            arms.forEach(function(a) {
+                                ctx.beginPath(); ctx.moveTo(q[0] + a[0], q[1]); ctx.lineTo(q[0] + a[1], q[1]); ctx.stroke();
+                                ctx.beginPath(); ctx.moveTo(q[0], q[1] + a[0]); ctx.lineTo(q[0], q[1] + a[1]); ctx.stroke();
+                            });
+                        });
+                        ctx.font = 'bold 13px sans-serif';
+                        ctx.lineWidth = 3; ctx.strokeStyle = 'white'; ctx.strokeText(String(i + 1), q[0] + 11, q[1] - 11);
+                        ctx.fillStyle = COLORS[i]; ctx.fillText(String(i + 1), q[0] + 11, q[1] - 11);
+                    });
+                }
+
+                canvas.addEventListener('wheel', function(e) {
+                    e.preventDefault();
+                    var xy = local(e);
+                    // ctrlKey = trackpad pinch, which sends small deltas.
+                    zoomAt(xy[0], xy[1], Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)));
+                }, { passive: false });
+                canvas.addEventListener('pointerdown', function(e) {
+                    if (e.button !== 0) return;
+                    var xy = local(e);
+                    var hit = hitPoint(xy);
+                    canvas.setPointerCapture(e.pointerId);
+                    drag = { idx: hit, x0: xy[0], y0: xy[1], tx0: tx, ty0: ty, moved: false };
+                });
+                canvas.addEventListener('pointermove', function(e) {
+                    var xy = local(e);
+                    if (!drag) {
+                        canvas.style.cursor = hitPoint(xy) >= 0 ? 'move' : 'crosshair';
+                        return;
+                    }
+                    var dx = xy[0] - drag.x0, dy = xy[1] - drag.y0;
+                    if (!drag.moved && Math.hypot(dx, dy) < CLICK_SLOP) return;
+                    drag.moved = true;
+                    if (drag.idx >= 0) {
+                        pts[drag.idx] = [(xy[0] - tx) / s, (xy[1] - ty) / s];
+                    } else {
+                        canvas.style.cursor = 'grabbing';
+                        tx = drag.tx0 + dx; ty = drag.ty0 + dy;
+                    }
+                    draw();
+                });
+                canvas.addEventListener('pointerup', function(e) {
+                    if (!drag) return;
+                    var xy = local(e);
+                    if (drag.idx >= 0 && drag.moved) {
+                        report();
+                    } else if (drag.idx < 0 && !drag.moved) {
+                        // Click: 1st → point 1, 2nd → point 2, 3rd starts over.
+                        var p = [(xy[0] - tx) / s, (xy[1] - ty) / s];
+                        pts = pts.length >= 2 ? [p] : pts.concat([p]);
+                        report(); draw();
+                    }
+                    drag = null;
+                    canvas.style.cursor = 'crosshair';
+                });
+                root.querySelectorAll('.pm-calib-tools button').forEach(function(btn) {
+                    btn.addEventListener('click', function() {
+                        var act = btn.dataset.act;
+                        if (act === 'fit') fit();
+                        else zoomAt(cw / 2, ch / 2, act === 'in' ? 1.6 : 1 / 1.6);
+                    });
+                });
+                new ResizeObserver(resize).observe(root);
+                img.onload = resize;
+                img.src = root.dataset.src;
+                report();   // new image → no points yet
+            }
+            new MutationObserver(initCalibViewer).observe(document.body, { childList: true, subtree: true });
+
             // ── Sleep / reconnect recovery banner ──────────────────────────────
             // When the laptop wakes from sleep (lid opens, screen-on, etc.) the
             // browser fires visibilitychange: hidden → visible.  If a pipeline
@@ -278,6 +427,21 @@ def app():
             #collection-choices .mb-source-label { display: none; }
             #collection-choices .mb-formatted-label { white-space: pre-wrap; }
             #collection-choices .mb-earlier-run { font-size: 0.85em; opacity: 0.75; }
+            /* Pixel Mass calibration viewer (driven by the js above) */
+            #pm-calib-points { display: none !important; }
+            #pm-calib-viewer { position: relative; width: 100%; background: #111; border-radius: 8px; overflow: hidden; }
+            #pm-calib-viewer canvas { display: block; width: 100%; touch-action: none; cursor: crosshair; }
+            #pm-calib-viewer .pm-calib-tools { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; }
+            #pm-calib-viewer .pm-calib-tools button {
+                min-width: 32px; height: 28px; padding: 0 8px; border: none; border-radius: 6px;
+                background: rgba(0,0,0,0.6); color: #fff; font: 600 14px sans-serif; cursor: pointer;
+            }
+            #pm-calib-viewer .pm-calib-tools button:hover { background: rgba(0,0,0,0.8); }
+            #pm-calib-viewer .pm-calib-hint {
+                position: absolute; left: 8px; bottom: 8px; padding: 3px 8px; border-radius: 6px;
+                background: rgba(0,0,0,0.55); color: #fff; font: 12px sans-serif; pointer-events: none;
+            }
+            .pm-calib-empty { padding: 48px 16px; text-align: center; opacity: 0.7; border: 1px dashed #888; border-radius: 8px; }
             /* Setup - neutral white */
             button.svelte-1tcem6n:nth-child(1).selected {
                 background-color: #e0e0e0 !important;
@@ -814,26 +978,22 @@ def app():
 
             # ~~~~~~~~~~~~ Pixel Mass Tab ~~~~~~~~~~~~~~~~~~~~~~
             with gr.Tab("Pixel Mass", id="pixel_mass") as pixel_mass_tab:
-                pm_source_img_state = gr.State(None)   # thumbnail PIL for fast redrawing
-                pm_full_img_state   = gr.State(None)   # full-res PIL for the close-ups
                 pm_point1_state     = gr.State(None)   # [x, y] of point 1 (original-image pixels)
                 pm_point2_state     = gr.State(None)   # [x, y] of point 2 (original-image pixels)
-                pm_centers_state    = gr.State(None)   # [c1, c2] close-up view centres
-                pm_scale_state      = gr.State(1.0)    # thumbnail / original ratio
 
                 with gr.Accordion("Step 1: Set Scale Calibration", open=True) as pm_step1_accordion:
                     gr.Markdown(
-                        "Click two points on a ruler or known object in the source image below, "
-                        "then click in each **close-up** to place the point exactly. "
+                        "Zoom in on a ruler or known object in the source image below and click two points "
+                        "(drag a point to fine-tune it). "
                         "Enter the real-world distance and click **Apply Calibration**. "
                         "Or type a known **pixels per mm** value directly and apply."
                     )
                     with gr.Row():
-                        pm_calib_img = gr.Image(
-                            label="Source image — click two points to mark a known distance",
-                            interactive=False,
-                            scale=2,
-                        )
+                        with gr.Column(scale=2):
+                            pm_calib_viewer = gr.HTML(_calib_viewer_html())
+                            # Written by the viewer's JS; hidden with CSS (a
+                            # visible=False component isn't in the page at all).
+                            pm_calib_points = gr.Textbox(value="[]", elem_id="pm-calib-points")
                         with gr.Column(scale=1):
                             pm_load_img_btn = gr.Button("Load Different Image", size="sm")
                             pm_point1_label = gr.Textbox(
@@ -851,21 +1011,6 @@ def app():
                             pm_calib_status = gr.Textbox(
                                 label="Calibration status", value="", interactive=False, lines=1, max_lines=1
                             )
-                    with gr.Row():
-                        pm_loupe1_img = gr.Image(
-                            label="Point 1 close-up — click to fine-tune",
-                            interactive=False, height=_LOUPE_PX, width=_LOUPE_PX,
-                            show_download_button=False, show_fullscreen_button=False,
-                        )
-                        pm_loupe2_img = gr.Image(
-                            label="Point 2 close-up — click to fine-tune",
-                            interactive=False, height=_LOUPE_PX, width=_LOUPE_PX,
-                            show_download_button=False, show_fullscreen_button=False,
-                        )
-                        pm_zoom = gr.Slider(
-                            label="Close-up zoom (× actual image pixels)",
-                            minimum=1, maximum=16, step=1, value=4,
-                        )
 
                 gr.Markdown("### Step 2: Calculate Pixel Mass")
                 with gr.Row():
@@ -901,11 +1046,9 @@ def app():
                 # ── Calibration event handlers ──────────────────────────────
                 # Auto-load source image when this tab is opened.
                 _pm_load_outputs = [
-                    pm_calib_img, pm_source_img_state, pm_calib_status,
+                    pm_calib_viewer, pm_calib_status,
                     pm_point1_state, pm_point2_state,
                     pm_point1_label, pm_point2_label, pm_pixel_dist_label,
-                    pm_scale_state, pm_full_img_state, pm_centers_state,
-                    pm_loupe1_img, pm_loupe2_img,
                 ]
                 pixel_mass_tab.select(
                     fn=load_image_for_calibration,
@@ -919,28 +1062,11 @@ def app():
                     outputs=_pm_load_outputs,
                 )
 
-                _pm_view_outputs = [
-                    pm_point1_state, pm_point2_state, pm_centers_state,
-                    pm_calib_img, pm_loupe1_img, pm_loupe2_img,
-                    pm_point1_label, pm_point2_label, pm_pixel_dist_label,
-                ]
-                pm_calib_img.select(
-                    fn=mark_calibration_point,
-                    inputs=[pm_point1_state, pm_point2_state, pm_source_img_state,
-                            pm_full_img_state, pm_scale_state, pm_zoom],
-                    outputs=_pm_view_outputs,
-                )
-                for _which, _loupe in enumerate((pm_loupe1_img, pm_loupe2_img)):
-                    _loupe.select(
-                        fn=refine_calibration_point(_which),
-                        inputs=[pm_point1_state, pm_point2_state, pm_centers_state,
-                                pm_source_img_state, pm_full_img_state, pm_scale_state, pm_zoom],
-                        outputs=_pm_view_outputs,
-                    )
-                pm_zoom.change(
-                    fn=rezoom_calibration,
-                    inputs=[pm_point1_state, pm_point2_state, pm_centers_state, pm_full_img_state, pm_zoom],
-                    outputs=[pm_loupe1_img, pm_loupe2_img],
+                pm_calib_points.change(
+                    fn=calibration_points_changed,
+                    inputs=[pm_calib_points],
+                    outputs=[pm_point1_state, pm_point2_state,
+                             pm_point1_label, pm_point2_label, pm_pixel_dist_label],
                 )
 
                 pm_calibrate_btn.click(
@@ -1857,132 +1983,80 @@ def go_to_id_tab():
 def go_to_cluster_tab():
     return gr.Tabs(selected="cluster")
 
-_CALIB_MAX_PX = 1200   # longest edge of the working thumbnail
-_LOUPE_PX = 360        # edge of the square close-up views
+# The calibration viewer (zoom/pan/click, all in the browser — see pmCalibViewer
+# in the Blocks js) loads the source image from here. Only a copy of the one
+# image being calibrated is ever put in this folder.
+_CALIB_VIEW_DIR = Path.home() / ".mothbot" / "calib_view"
+_CALIB_VIEW_DIR.mkdir(parents=True, exist_ok=True)
+gr.set_static_paths([_CALIB_VIEW_DIR])
+
+_CALIB_HINT = "Scroll or pinch to zoom · drag to pan · click to place points · drag a point to move it"
+
+
+def _calib_viewer_html(url=None, message="Open this tab with a collection selected to load an image."):
+    if not url:
+        return f'<div class="pm-calib-empty">{message}</div>'
+    return (
+        f'<div id="pm-calib-viewer" data-src="{url}">'
+        '<canvas></canvas>'
+        '<div class="pm-calib-tools"><button data-act="in">+</button>'
+        '<button data-act="out">−</button><button data-act="fit">Fit</button></div>'
+        f'<div class="pm-calib-hint">{_CALIB_HINT}</div>'
+        '</div>'
+    )
 
 
 def _calib_labels(p1, p2):
     """Point / distance readouts. Points are in original-image pixels."""
     import math
-    p1_str = f"({p1[0]}, {p1[1]})" if p1 else "–"
-    p2_str = f"({p2[0]}, {p2[1]})" if p2 else "–"
+    p1_str = f"({p1[0]:.1f}, {p1[1]:.1f})" if p1 else "–"
+    p2_str = f"({p2[0]:.1f}, {p2[1]:.1f})" if p2 else "–"
     dist_str = f"{math.dist(p1, p2):.1f} px" if p1 and p2 else "–"
     return p1_str, p2_str, dist_str
 
 
-def _loupe_box(center, zoom, size):
-    """(x0, y0, side) of the original-image square shown in a close-up at this zoom."""
-    w, h = size
-    side = max(4, min(int(round(_LOUPE_PX / zoom)), w, h))
-    x0 = min(max(0, int(round(center[0] - side / 2))), w - side)
-    y0 = min(max(0, int(round(center[1] - side / 2))), h - side)
-    return x0, y0, side
+def load_image_for_calibration(selected_folders):
+    """Put a copy of the first source image where the browser viewer can load it.
 
-
-def _render_loupe(full, point, center, zoom, color):
-    """Full-resolution close-up around center with a crosshair on point."""
-    from PIL import Image as PILImage, ImageDraw
-    if full is None or point is None:
-        return None
-    x0, y0, side = _loupe_box(center or point, zoom, full.size)
-    view = full.crop((x0, y0, x0 + side, y0 + side)).resize((_LOUPE_PX, _LOUPE_PX), PILImage.NEAREST)
-    k = _LOUPE_PX / side
-    cx, cy = (point[0] - x0 + 0.5) * k, (point[1] - y0 + 0.5) * k
-    draw = ImageDraw.Draw(view)
-    gap = max(4, k)   # leave the marked pixel itself visible
-    for a, b in (((cx - _LOUPE_PX, cy), (cx - gap, cy)), ((cx + gap, cy), (cx + _LOUPE_PX, cy)),
-                 ((cx, cy - _LOUPE_PX), (cx, cy - gap)), ((cx, cy + gap), (cx, cy + _LOUPE_PX))):
-        draw.line([a, b], fill=color, width=1)
-    return view
-
-
-def _render_calibration(thumb, full, scale, p1, p2, centers, zoom):
-    """Redraw the overview + both close-ups. Returns (overview, loupe1, loupe2, p1, p2, dist labels)."""
-    from PIL import ImageDraw
-    if thumb is None:
-        return (None, None, None, "–", "–", "–")
-    overview = thumb.copy()
-    draw = ImageDraw.Draw(overview)
-    r = 7
-    t1 = [c * scale for c in p1] if p1 else None
-    t2 = [c * scale for c in p2] if p2 else None
-    if t1 and t2:
-        draw.line([*t1, *t2], fill="yellow", width=2)
-    for t, color in ((t1, "red"), (t2, "blue")):
-        if t:   # hollow ring so the marked spot stays visible
-            draw.ellipse([t[0] - r, t[1] - r, t[0] + r, t[1] + r], outline=color, width=2)
-            draw.ellipse([t[0] - 1, t[1] - 1, t[0] + 1, t[1] + 1], fill=color)
-    c1, c2 = centers or (None, None)
-    return (
-        overview,
-        _render_loupe(full, p1, c1, zoom, "red"),
-        _render_loupe(full, p2, c2, zoom, "blue"),
-        *_calib_labels(p1, p2),
-    )
-
-
-def load_image_for_calibration(selected_folders, zoom=4):
-    """Load the first source image: full-res for the close-ups plus a downsampled overview.
-
-    Returns (overview, thumb_state, status, p1, p2, p1_label, p2_label, dist_label,
-    scale, full_state, centers, loupe1, loupe2).
+    Returns (viewer_html, status, p1, p2, p1_label, p2_label, dist_label).
     """
-    _EMPTY = (None, None, "–", "–", "–", 1.0, None, None, None, None)
+    import shutil
+    import time
+    _RESET = (None, None, "–", "–", "–")
     if not selected_folders:
-        return (None, None, "No collection selected.", *_EMPTY)
+        return (_calib_viewer_html(), "No collection selected.", *_RESET)
     entry = selected_folders[0]
     folder = entry["path"] if isinstance(entry, dict) else entry
     images = find_images_recursive(folder)
     if not images:
-        return (None, None, "No source images found in collection.", *_EMPTY)
+        return (_calib_viewer_html(message="No source images found in collection."),
+                "No source images found in collection.", *_RESET)
     from PIL import Image as PILImage
-    full = PILImage.open(images[0]).convert("RGB")
-    w, h = full.size
-    scale = min(1.0, _CALIB_MAX_PX / max(w, h))
-    thumb = full.resize((int(w * scale), int(h * scale)), PILImage.LANCZOS) if scale < 1.0 else full.copy()
-    status = f"Loaded: {os.path.basename(images[0])} ({w}×{h})"
-    return (thumb, thumb, status, None, None, "–", "–", "–", scale, full, None, None, None)
+    src = images[0]
+    with PILImage.open(src) as img:
+        w, h = img.size
+    ext = Path(src).suffix.lower()
+    # Replace the previous copy (only files named calib_source.* live here).
+    for old in _CALIB_VIEW_DIR.glob("calib_source.*"):
+        old.unlink(missing_ok=True)
+    view_path = _CALIB_VIEW_DIR / f"calib_source{ext}"
+    shutil.copyfile(src, view_path)
+    # Cache-bust: the copy always has the same name.
+    url = f"/gradio_api/file={view_path.as_posix()}?v={time.time_ns()}"
+    status = f"Loaded: {os.path.basename(src)} ({w}×{h})"
+    return (_calib_viewer_html(url), status, *_RESET)
 
 
-def mark_calibration_point(evt: gr.SelectData, p1, p2, thumb, full, scale, zoom):
-    """Overview click: first click → point 1, second → point 2, third starts over.
-
-    Points are stored in original-image pixels; each close-up centres on its point.
-    Returns (p1, p2, centers, overview, loupe1, loupe2, p1_label, p2_label, dist_label).
-    """
-    if thumb is None:
-        return (p1, p2, None, None, None, None, "–", "–", "–")
-    pt = [int(evt.index[0] / scale), int(evt.index[1] / scale)]
-    if p1 is None or p2 is not None:
-        p1, p2 = pt, None   # first click, or third click resets
-    else:
-        p2 = pt
-    centers = [p1, p2]
-    return (p1, p2, centers, *_render_calibration(thumb, full, scale, p1, p2, centers, zoom))
-
-
-def refine_calibration_point(which):
-    """Close-up click handler factory: moves point `which` (0 or 1) to the clicked pixel.
-
-    The close-up keeps its framing so repeated clicks land where you expect.
-    """
-    def handler(evt: gr.SelectData, p1, p2, centers, thumb, full, scale, zoom):
-        points = [p1, p2]
-        if full is None or points[which] is None:
-            return (p1, p2, centers, *_render_calibration(thumb, full, scale, p1, p2, centers, zoom))
-        centers = list(centers or points)
-        x0, y0, side = _loupe_box(centers[which] or points[which], zoom, full.size)
-        k = side / _LOUPE_PX
-        points[which] = [int(x0 + evt.index[0] * k), int(y0 + evt.index[1] * k)]
-        p1, p2 = points
-        return (p1, p2, centers, *_render_calibration(thumb, full, scale, p1, p2, centers, zoom))
-    return handler
-
-
-def rezoom_calibration(p1, p2, centers, full, zoom):
-    """Zoom slider moved: redraw just the close-ups."""
-    c1, c2 = centers or (None, None)
-    return _render_loupe(full, p1, c1, zoom, "red"), _render_loupe(full, p2, c2, zoom, "blue")
+def calibration_points_changed(points_json):
+    """The browser viewer reports its points as JSON: [] / [[x, y]] / [[x, y], [x, y]]
+    in original-image pixels. Returns (p1, p2, p1_label, p2_label, dist_label)."""
+    try:
+        pts = [[round(float(v), 1) for v in pt[:2]] for pt in json.loads(points_json or "[]")]
+    except (ValueError, TypeError):
+        pts = []
+    p1 = pts[0] if len(pts) > 0 else None
+    p2 = pts[1] if len(pts) > 1 else None
+    return (p1, p2, *_calib_labels(p1, p2))
 
 
 def apply_calibration(selected_folders, p1, p2, real_dist_mm, manual_ppm):

@@ -57,7 +57,7 @@ to 2x scored the same): 200 patches rated from 10 datasets, AUC 0.93 for
 "too blurry" (focus 0.91, motion 0.92); bowedBarbo 2026-06-24, fully
 reviewed in Classify, ERROR_Blur + Error:Motion vs untouched, AUC 0.955
 (motion alone 0.95); ERROR_Blur vs identified in KrkCreate, AUC 0.95.
-Re-check with tools/blur_calibration/evaluate.py. ~0.4 ms per typical patch.
+Re-check with tools/blur_calibration/evaluate.py. ~0.3-1 ms per patch.
 """
 
 import json
@@ -66,6 +66,7 @@ from functools import lru_cache
 
 import cv2
 import numpy as np
+import scipy.fft  # float32 FFT (numpy's is always float64); scipy ships with hdbscan/scikit-learn
 
 BLUR_METHOD = "ugly-max-detail-fft/v8"
 
@@ -86,11 +87,14 @@ def _full_gray(patch_bgr):
     replaced by the patch's median colour first, so its artificial edge doesn't count."""
     if patch_bgr.ndim == 2:
         patch_bgr = cv2.cvtColor(patch_bgr, cv2.COLOR_GRAY2BGR)
-    fill = patch_bgr.max(axis=2) == 0
-    if fill.any() and not fill.all():
-        patch_bgr = patch_bgr.copy()
-        patch_bgr[fill] = np.median(patch_bgr[~fill], axis=0)
-    return cv2.cvtColor(patch_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gray = cv2.cvtColor(patch_bgr, cv2.COLOR_BGR2GRAY)
+    if cv2.countNonZero(gray) < gray.size:  # has pure-black pixels: look for fill (rare, so checked only then)
+        fill = patch_bgr.max(axis=2) == 0
+        if fill.any() and not fill.all():
+            patch_bgr = patch_bgr.copy()
+            patch_bgr[fill] = np.median(patch_bgr[~fill], axis=0)
+            gray = cv2.cvtColor(patch_bgr, cv2.COLOR_BGR2GRAY)
+    return gray.astype(np.float32)
 
 
 def _standard_gray(patch_bgr, gray=None):
@@ -151,8 +155,9 @@ def fft_sunshine(gray):
     if h < 8 or w < 8:
         return 1.0
     band, bins, weight, window = _fft_bins(h, w)
-    power = np.abs(np.fft.rfft2((gray - float(gray.mean())) * window)) ** 2
-    hist = np.bincount(bins, weights=power.ravel()[band] * weight, minlength=_FFT_BINS)
+    spectrum = scipy.fft.rfft2((gray - np.float32(gray.mean())) * window)
+    power = (spectrum.real ** 2 + spectrum.imag ** 2).ravel()
+    hist = np.bincount(bins, weights=power[band] * weight, minlength=_FFT_BINS)
     total = hist.sum()
     if total <= 0:
         return 1.0

@@ -38,6 +38,30 @@ from pipeline import insert_metadata as Mothbot_InsertMetadata
 from pipeline import legacy_converter as Mothbot_LegacyConverter
 from pipeline import pixel_mass as Mothbot_PixelMass
 
+def _keep_session_state_after_disconnect():
+    """Keep each page's gr.State values for as long as the app runs.
+
+    Gradio marks a page's session closed whenever its heartbeat connection drops
+    (laptop sleep, a Wi-Fi blip) and never reopens it, even after the page
+    reconnects. From then on each gr.State value is deleted an hour after it was
+    set, e.g. the scanned label -> folder mapping: picking a collection after a
+    long run then resolved to nothing and left the Process button greyed out until
+    the folder was reloaded. This is a local single-user app and these values are
+    small, so closed sessions simply keep them.
+    """
+    from gradio.state_holder import SessionState
+
+    original_init = SessionState.__init__
+
+    def __init__(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self.STATE_TTL_WHEN_CLOSED = float("inf")
+
+    SessionState.__init__ = __init__
+
+
+_keep_session_state_after_disconnect()
+
 TAXA_COLS = ["kingdom", "phylum", "class", "order", "family", "genus", "species"]
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ARTIFACTS_DIR = Path(
@@ -1032,8 +1056,16 @@ def app():
                         ("birefnet-general-lite — good quality, faster", "birefnet-general-lite"),
                         ("isnet-general-use — medium quality, faster", "isnet-general-use"),
                         ("u2netp — lowest quality, fastest", "u2netp"),
+                        ("Ultra-speed — colour mask, no AI model (rough, ~1000× faster)", Mothbot_PixelMass.COLOUR_MASK),
                     ],
                     value="birefnet-general-lite",
+                )
+                pm_hybrid = gr.Checkbox(
+                    label="Enable hybrid optimization",
+                    value=True,
+                    info="Small patches (no side over 150 px) and blurry ones (blurriness over 70) use the "
+                         "Ultra-speed colour mask; the rest use the model above. The models can't outline "
+                         "those much better, and take ~6 s per patch on a CPU.",
                 )
                 pm_run_btn = gr.Button("Run Pixel Mass", variant="primary")
                 with gr.Row():
@@ -1079,7 +1111,7 @@ def app():
 
                 pm_run_btn.click(
                     fn=_manual_run(run_pixel_mass_ui),
-                    inputs=[selected_paths, pm_pixels_per_mm, pm_overwrite_nobg, pm_overwrite_pixmass, pm_model_dropdown, pm_only_identified],
+                    inputs=[selected_paths, pm_pixels_per_mm, pm_overwrite_nobg, pm_overwrite_pixmass, pm_model_dropdown, pm_only_identified, pm_hybrid],
                     outputs=[pm_output_box, stop_btn, pm_step1_accordion, pm_preview_img],
                 )
 
@@ -2191,7 +2223,7 @@ def run_legacy_converter_ui(selected_folders, dataset_root, delete_originals):
     yield output_log, HIDE_STOP
 
 
-def run_pixel_mass_ui(selected_folders, pixels_per_mm, overwrite_nobg, overwrite_pixmass, model_name="birefnet-general", only_identified=False):
+def run_pixel_mass_ui(selected_folders, pixels_per_mm, overwrite_nobg, overwrite_pixmass, model_name="birefnet-general-lite", only_identified=False, hybrid=True):
     """Gradio generator that runs pixel_mass.run() for each selected collection."""
     SHOW_STOP  = gr.update(visible=True, value="Stop Current Run", interactive=True)
     HIDE_STOP  = gr.update(visible=False)
@@ -2220,8 +2252,9 @@ def run_pixel_mass_ui(selected_folders, pixels_per_mm, overwrite_nobg, overwrite
                 pixels_per_mm=float(pixels_per_mm) if pixels_per_mm else None,
                 overwrite_nobg=bool(overwrite_nobg),
                 overwrite_pixmass=bool(overwrite_pixmass),
-                model_name=model_name or "birefnet-general",
+                model_name=model_name or "birefnet-general-lite",
                 only_identified=bool(only_identified),
+                hybrid=bool(hybrid),
             ):
                 output_log += chunk
                 preview_path = get_preview()

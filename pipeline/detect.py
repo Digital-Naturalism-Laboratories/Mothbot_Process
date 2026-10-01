@@ -810,6 +810,7 @@ def process_image_list(img_files, dataset_root=None):
     # submitted to a thread pool so it overlaps with the next YOLO batch rather
     # than blocking it.
     images_done = 0
+    detections_done = 0
     total_pending = len(pending)
     infer_start = time.monotonic()
     patch_futures = []  # (future, patch_folder_path, filename)
@@ -905,6 +906,10 @@ def process_image_list(img_files, dataset_root=None):
                         )
 
             # Shared: schedule patch writing and emit progress for this batch.
+            # Rough rate: detections so far over the time since inference started
+            # (patch writing overlaps it); the same for every line of a batch.
+            detections_done += sum(len(outcome[3]) for outcome in batch_outcomes if outcome[3])
+            rate = detections_done / max(time.monotonic() - infer_start, 1e-6)
             for image_path, bot_json_path, patch_folder_path, shapes, orig_img in batch_outcomes:
                 filename = os.path.basename(image_path)
                 if shapes is None:
@@ -928,7 +933,7 @@ def process_image_list(img_files, dataset_root=None):
                 eta_secs = avg * (total_pending - images_done)
                 eta_str = _format_eta(eta_secs) if images_done < total_pending else "done"
                 print(f"  ✓ {filename}: {len(shapes)} detection(s) — "
-                      f"{images_done}/{total_pending} images — ETA {eta_str}")
+                      f"{images_done}/{total_pending} images — ~{rate:.1f} detections/s — ETA {eta_str}")
 
             # After each batch, emit previews for patch jobs already finished.
             # Workers run concurrently with inference, so many patches are done

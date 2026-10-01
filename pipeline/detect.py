@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from core.preview import emit_preview
 from core.blur import blur_fields, record_blur_fields
+from pipeline.pixel_mass import load_calibration, quick_nobg
 from core.common import (
     find_date_folders,
     find_images_recursive,
@@ -550,12 +551,13 @@ def _write_patches_for_image(orig_img, shapes, patch_folder_path, bot_json_path=
     """Extract and write patch images for all detections in one photo.
 
     Designed to run in a worker thread while the main thread runs the next
-    YOLO batch. Each patch is also scored for blurriness while it is still in
-    memory, and the scores are recorded in the detection JSON. Returns list of
-    written paths for preview emission.
+    YOLO batch. While each patch is still in memory it is scored for blurriness
+    and given a quick colour-mask _nobg.png with its pixel count; both are
+    recorded in the detection JSON. Returns list of written paths for preview
+    emission.
     """
     written = []
-    blur_by_patch = {}
+    fields_by_patch = {}
     patch_folder_path = Path(patch_folder_path)
     for shape in shapes:
         patch_filename = shape.get("patch_path", "")
@@ -567,16 +569,21 @@ def _write_patches_for_image(orig_img, shapes, patch_folder_path, bot_json_path=
                 out_path = patch_folder_path / patch_filename
                 cv2.imwrite(str(out_path), patch)
                 written.append(str(out_path))
-                blur_by_patch[patch_filename] = blur_fields(patch)
+                fields = blur_fields(patch)
+                try:
+                    fields.update(quick_nobg(patch, str(out_path), _PIXELS_PER_MM))
+                except Exception as e:
+                    print(f"  ⚠️  quick background removal failed for {patch_filename}: {e}")
+                fields_by_patch[patch_filename] = fields
         except Exception as e:
             print(f"  ⚠️  patch crop failed for {patch_filename}: {e}")
-    if bot_json_path and blur_by_patch:
-        _record_blur_scores(bot_json_path, blur_by_patch)
+    if bot_json_path and fields_by_patch:
+        _record_patch_fields(bot_json_path, fields_by_patch)
     return written
 
 
-def _record_blur_scores(bot_json_path, blur_by_patch):
-    """Add blurriness scores to an already-written detection JSON.
+def _record_patch_fields(bot_json_path, fields_by_patch):
+    """Add blurriness and pixel-mass fields to an already-written detection JSON.
 
     The JSON is written on the main thread before its patches are cropped here,
     and nothing else writes it during detection, so a read-modify-write is safe.
@@ -585,14 +592,18 @@ def _record_blur_scores(bot_json_path, blur_by_patch):
         with open(bot_json_path) as f:
             data = json.load(f)
         for shape in data.get("shapes", []):
-            fields = blur_by_patch.get(shape.get("patch_path", ""))
+            fields = fields_by_patch.get(shape.get("patch_path", ""))
             if fields is not None:
                 record_blur_fields(shape, fields)
         with open(bot_json_path, "w") as f:
             json.dump(data, f, indent=2)
     except Exception as e:
-        print(f"  ⚠️  could not record blur scores in {os.path.basename(bot_json_path)}: {e}")
+        print(f"  ⚠️  could not record patch measurements in {os.path.basename(bot_json_path)}: {e}")
 
+
+# The collection's calibration (px/mm), if it has one, so Detect can give each
+# patch its area in mm² straight away. Set by run().
+_PIXELS_PER_MM = None
 
 # Number of worker threads for concurrent patch writing.
 # IO-bound work — 4 threads is a good default for SSD + CPU crop.
@@ -741,7 +752,7 @@ def process_image_list(img_files, dataset_root=None):
                 with open(effective_human_json, "r") as f:
                     json_data = json.load(f)
                 if GEN_THUMBNAILS:
-                    json_data = generateThumbnailPatches_JSON(image_path, json_data, patch_folder_path)
+                    json_data = generateThumbnailPatches_JSON(image_path, json_data, patch_folder_path, pixels_per_mm=_PIXELS_PER_MM)
                     with open(human_json_path, "w") as f:
                         json.dump(json_data, f, indent=4)
                 if GEN_HUMAN_DET_PATCHES:
@@ -761,7 +772,7 @@ def process_image_list(img_files, dataset_root=None):
                     json_data = json.load(f)
                 if not OVERWRITE_PREV_BOT_DETECTIONS:
                     if GEN_THUMBNAILS:
-                        json_data = generateThumbnailPatches_JSON(image_path, json_data, patch_folder_path)
+                        json_data = generateThumbnailPatches_JSON(image_path, json_data, patch_folder_path, pixels_per_mm=_PIXELS_PER_MM)
                         with open(bot_json_path, "w") as f:
                             json.dump(json_data, f, indent=4)
                     print("skipping previously generated detection files that were able to be opened")
@@ -780,7 +791,7 @@ def process_image_list(img_files, dataset_root=None):
                         if GEN_THUMBNAILS:
                             with open(bot_json_path, "r") as f:
                                 restored_data = json.load(f)
-                            restored_data = generateThumbnailPatches_JSON(image_path, restored_data, patch_folder_path)
+                            restored_data = generateThumbnailPatches_JSON(image_path, restored_data, patch_folder_path, pixels_per_mm=_PIXELS_PER_MM)
                             with open(bot_json_path, "w") as f:
                                 json.dump(restored_data, f, indent=4)
                         continue  # skip YOLO inference
@@ -1030,7 +1041,7 @@ def run(
     """
     global YOLO_MODEL, IMGSZ, DEVICE, GEN_THUMBNAILS
     global GEN_BOT_DET_EVENIF_HUMAN_EXISTS, OVERWRITE_PREV_BOT_DETECTIONS
-    global GEN_HUMAN_DET_PATCHES, DELETE_OLD_MODEL_PATCHES, DATASET_ROOT
+    global GEN_HUMAN_DET_PATCHES, DELETE_OLD_MODEL_PATCHES, DATASET_ROOT, _PIXELS_PER_MM
 
     YOLO_MODEL = yolo_model or DEFAULT_YOLO_MODEL
     IMGSZ = int(imgsz)
@@ -1042,6 +1053,7 @@ def run(
     GEN_HUMAN_DET_PATCHES = gen_human_det_patches
     DELETE_OLD_MODEL_PATCHES = delete_old_model_patches
     DATASET_ROOT = dataset_root or input_path
+    _PIXELS_PER_MM = (load_calibration(get_processed_folder(input_path, DATASET_ROOT)) or {}).get("pixels_per_mm")
 
     print("Starting Mothbot Detection Script")
     print_device_info(selected_device=DEVICE)

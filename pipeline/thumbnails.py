@@ -8,6 +8,7 @@ import numpy as np
 
 from core.common import find_date_folders, scan_for_images
 from core.blur import set_blur_on_shape
+from pipeline.pixel_mass import _nobg_path, quick_nobg
 
 INPUT_PATH = r"F:\Panama\PEA_PeaPorch_AdeptTurca_2024-09-01\2024-09-01"
 
@@ -36,7 +37,7 @@ def crop_rect(
 
 # TODO - save patch_img width and height along with file path
 def generateThumbnailPatches_JSON(
-    image_path, json_data, output_folder, skip_existing=True
+    image_path, json_data, output_folder, skip_existing=True, pixels_per_mm=None
 ):
     """Crop detections from *image_path* and write patches into *output_folder*.
 
@@ -57,6 +58,8 @@ def generateThumbnailPatches_JSON(
         doesn't care either way.
     skip_existing : bool
         Skip writing a patch if the file already exists.
+    pixels_per_mm : float | None
+        The collection's calibration, for the area of newly measured patches.
     """
     model_name = json_data.get("version")
     if not model_name.startswith("Mothbot"):
@@ -88,6 +91,10 @@ def generateThumbnailPatches_JSON(
             img_crop = crop_rect(image, rect)
             cv2.imwrite(str(patchfullpath), img_crop)
             set_blur_on_shape(shape, img_crop)  # patch is in memory: score it now
+            # ...and give it the quick colour-mask _nobg.png, unless one is already
+            # there (same detection, so it still fits — maybe refined by a model).
+            if model_name.startswith("Mothbot") and not os.path.exists(_nobg_path(str(patchfullpath))):
+                shape.update(quick_nobg(img_crop, str(patchfullpath), pixels_per_mm))
 
         updated_shapes.append(shape)
 

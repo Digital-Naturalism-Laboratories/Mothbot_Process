@@ -2,6 +2,12 @@
 """
 pixel_mass.py — Background removal and pixel-mass measurement for patches.
 
+Detect already gives every patch a quick colour-mask _nobg.png and its pixel count
+(``quick_nobg``). This module then:
+  * applies a calibration (``apply_calibration``): colour-masks any patch that has
+    no _nobg.png yet (older datasets) and sets every detection's area in mm²;
+  * refines (``run``): re-does larger, sharper patches with an AI model.
+
 Phase 1 — Background removal:
     For each patch, run BiRefNet (via rembg) or the quick border-colour mask
     (core/colour_mask.py) and save *_nobg.png alongside it. With hybrid
@@ -40,13 +46,39 @@ from core.preview import emit_preview, clear_preview
 _CALIB_FILENAME = "calibration.json"
 _ALPHA_THRESHOLD = 50  # pixels with alpha below this (0–255) are treated as background
 
-COLOUR_MASK = "colour-mask"  # model_name for the Ultra-speed border-colour mask (no AI model)
+COLOUR_MASK = "colour-mask"  # model_name for the quick border-colour mask (no AI model)
+
+# BiRefNet-lite re-exported with a dynamic input size and ONNX Runtime's native
+# DeformConv op (huggingface.co/senty-au/BiRefNet_lite-ONNX-dynamic; MIT, weights
+# ZhengPeng7/BiRefNet_lite). At 1024 it matches rembg's fixed-1024 lite export
+# (median mask IoU 0.99 on our patches) about 2x faster; 512 is ~5x faster again.
+_DYNAMIC_LITE_NAME = "birefnet-lite-dynamic"
+_DYNAMIC_LITE_URL = "https://huggingface.co/senty-au/BiRefNet_lite-ONNX-dynamic/resolve/main/onnx/model.onnx"
+_DYNAMIC_LITE_SHA256 = "1e0da42f0fde010e32e938bad388457ecefe35806fde9d923421997861ae9391"
+# Model choices that run on it, and the square input size each uses.
+DYNAMIC_LITE_SIZES = {"birefnet-general-lite": 1024, "birefnet-lite-512": 512}
+DEFAULT_MODEL = "birefnet-lite-512"
+# "Fast, Split Model Approach": the lite model at 512 px, with a patch redone at
+# 1024 px when the 512 px result
+#   * has less than half the pixels the colour mask found (it lost most of the
+#     insect — often one against a dark background), or
+#   * is mostly semi-transparent (a faint haze rather than an outline).
+# On 180 large, sharp bowedBarbo patches this redid 21% of them and caught 27 of
+# the 35 where 512 and 1024 px disagreed badly; it averages ~1 s/patch vs ~2 s
+# for 1024 px everywhere.
+_FALLBACK_SHARE = 0.5
+_FALLBACK_MAX_SEMI = 0.8   # share of the found pixels that are semi-transparent
+_SEMI_ALPHA = 235          # alpha below this (and >= _ALPHA_THRESHOLD) counts as semi-transparent
+_FALLBACK_MODEL = "birefnet-general-lite"  # the lite model at 1024 px
+_MEAN = (0.485, 0.456, 0.406)
+_STD = (0.229, 0.224, 0.225)
 _HYBRID_MAX_BLUR = 70        # hybrid: patches blurrier than this use the colour mask...
 _HYBRID_MAX_SIDE = 150       # ...and so do patches with no side longer than this (px)
 _METHOD_KEY = "mothbot_mask"  # PNG text chunk naming the method that made a _nobg.png
 
 _rembg_session = None
 _rembg_model_name: str | None = None
+_dynamic_session = None
 
 
 def _u2net_home() -> Path:
@@ -89,14 +121,8 @@ def _ensure_bundled_model(model_name: str) -> None:
         print(f"  ⚠️ Could not install bundled model ({e}); rembg will download it instead.")
 
 
-def _get_session(model_name: str = "birefnet-general-lite"):
-    global _rembg_session, _rembg_model_name
-    if _rembg_session is not None and _rembg_model_name == model_name:
-        return _rembg_session
-
-    _ensure_bundled_model(model_name)
-    print(f"Loading {model_name} background-removal model (first use may download weights)...")
-    from rembg import new_session
+def _providers() -> list:
+    """ONNX Runtime providers: a GPU when there is one, else the CPU."""
     import onnxruntime as _ort
 
     available = _ort.get_available_providers()
@@ -116,6 +142,69 @@ def _get_session(model_name: str = "birefnet-general-lite"):
         print("  ⚡ OpenVINO acceleration active (Intel GPU/XPU)")
     else:
         providers = ["CPUExecutionProvider"]
+    return providers
+
+
+def _ensure_dynamic_lite() -> Path:
+    """Path to the dynamic BiRefNet-lite model: bundled with the app, cached, or
+    downloaded once (181 MB) and checked against its published checksum."""
+    _ensure_bundled_model(_DYNAMIC_LITE_NAME)
+    dest = _u2net_home() / f"{_DYNAMIC_LITE_NAME}.onnx"
+    if dest.is_file():
+        return dest
+
+    import hashlib
+    import urllib.request
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    partial = dest.with_suffix(".download")
+    print("  Downloading the BiRefNet-lite model (181 MB, first use only)...")
+    reported = [-1]
+
+    def report(blocks, block_size, total):
+        pct = int(100 * blocks * block_size / total) if total > 0 else 0
+        if pct // 10 > reported[0] and pct < 100:
+            reported[0] = pct // 10
+            print(f"    {pct}%")
+
+    urllib.request.urlretrieve(_DYNAMIC_LITE_URL, partial, reporthook=report)
+    digest = hashlib.sha256()
+    with open(partial, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != _DYNAMIC_LITE_SHA256:
+        partial.unlink(missing_ok=True)
+        raise RuntimeError("The downloaded BiRefNet-lite model failed its checksum — please try again.")
+    partial.replace(dest)
+    return dest
+
+
+def _get_dynamic_session():
+    global _dynamic_session
+    if _dynamic_session is None:
+        import onnxruntime as _ort
+
+        path = _ensure_dynamic_lite()
+        print("Loading BiRefNet-lite background-removal model...")
+        # Own SessionOptions: ONNX Runtime's default threads (all physical cores),
+        # whatever OMP_NUM_THREADS ultralytics set.
+        _dynamic_session = _ort.InferenceSession(str(path), _ort.SessionOptions(), providers=_providers())
+        print("  BiRefNet-lite model ready.")
+    return _dynamic_session
+
+
+def _get_session(model_name: str = DEFAULT_MODEL):
+    global _rembg_session, _rembg_model_name
+    if model_name in DYNAMIC_LITE_SIZES:
+        return _get_dynamic_session()
+    if _rembg_session is not None and _rembg_model_name == model_name:
+        return _rembg_session
+
+    _ensure_bundled_model(model_name)
+    print(f"Loading {model_name} background-removal model (first use may download weights)...")
+    from rembg import new_session
+
+    providers = _providers()
 
     # rembg sizes its thread pool from OMP_NUM_THREADS, which ultralytics sets
     # to 1 on import. Hide it so ONNX Runtime uses its own default (all
@@ -182,25 +271,93 @@ def _nobg_path(patch_path: str) -> str:
     return str(p.parent / f"{p.stem}_nobg.png")
 
 
-def _remove_background(patch_path: str, model_name: str = "birefnet-general-lite") -> Image.Image:
-    from rembg import remove as rembg_remove
+def _dynamic_lite_cutout(img: Image.Image, size: int) -> Image.Image:
+    """Dynamic BiRefNet-lite at size x size, with rembg's exact BiRefNet pre- and
+    post-processing and cutout, so results are comparable to its lite export."""
+    from rembg.bg import naive_cutout
+
+    sess = _get_dynamic_session()
+    arr = np.array(img.resize((size, size), Image.Resampling.LANCZOS))
+    arr = arr / max(np.max(arr), 1e-6)
+    x = ((arr - np.array(_MEAN)) / np.array(_STD)).transpose(2, 0, 1)[None].astype(np.float32)
+    pred = 1 / (1 + np.exp(-sess.run(None, {sess.get_inputs()[0].name: x})[0][:, 0, :, :]))
+    lo, hi = np.min(pred), np.max(pred)
+    pred = np.squeeze((pred - lo) / max(hi - lo, 1e-12))
+    mask = Image.fromarray((pred * 255).astype("uint8"), mode="L").resize(img.size, Image.Resampling.LANCZOS)
+    return naive_cutout(img, mask)
+
+
+def _model_cutout(patch_path: str, model_name: str = DEFAULT_MODEL) -> tuple[Image.Image, str]:
+    """Background removal with *model_name*, and the method to record for it.
+    Below 1024 px, a patch the model mostly misses is redone at 1024 px."""
     with Image.open(patch_path) as img:
         img_rgb = img.convert("RGB")
-    return rembg_remove(img_rgb, session=_get_session(model_name))
+    size = DYNAMIC_LITE_SIZES.get(model_name)
+    if size is None:
+        from rembg import remove as rembg_remove
+        return rembg_remove(img_rgb, session=_get_session(model_name)), _method_id(model_name)
+    rgba = _dynamic_lite_cutout(img_rgb, size)
+    if size < DYNAMIC_LITE_SIZES[_FALLBACK_MODEL] and _missed_insect(rgba, img_rgb):
+        return _dynamic_lite_cutout(img_rgb, DYNAMIC_LITE_SIZES[_FALLBACK_MODEL]), _method_id(_FALLBACK_MODEL)
+    return rgba, _method_id(model_name)
+
+
+def _missed_insect(rgba: Image.Image, img_rgb: Image.Image) -> bool:
+    """True when a low-resolution model result lost most of the insect or is mostly
+    a semi-transparent haze (see _FALLBACK_SHARE / _FALLBACK_MAX_SEMI)."""
+    alpha = np.asarray(rgba)[:, :, 3]
+    found = np.count_nonzero(alpha >= _ALPHA_THRESHOLD)
+    if found and np.count_nonzero((alpha >= _ALPHA_THRESHOLD) & (alpha < _SEMI_ALPHA)) > _FALLBACK_MAX_SEMI * found:
+        return True
+    expected = np.count_nonzero(insect_mask(cv2.cvtColor(np.asarray(img_rgb), cv2.COLOR_RGB2BGR)))
+    return bool(expected) and found < _FALLBACK_SHARE * expected
+
+
+def _method_id(model_name: str) -> str:
+    """What a _nobg.png records as the method that made it."""
+    if model_name == COLOUR_MASK:
+        return COLOUR_MASK_METHOD
+    if model_name in DYNAMIC_LITE_SIZES:
+        return f"{_DYNAMIC_LITE_NAME}@{DYNAMIC_LITE_SIZES[model_name]}"
+    return model_name
+
+
+def _colour_mask_rgba(bgr: np.ndarray) -> Image.Image:
+    alpha = np.where(insect_mask(bgr), 255, 0).astype(np.uint8)
+    return Image.fromarray(np.dstack([cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), alpha]), "RGBA")
 
 
 def _colour_mask_background(patch_path: str) -> Image.Image:
     bgr = cv2.imread(patch_path)
     if bgr is None:
         raise ValueError("could not read patch image")
-    alpha = np.where(insect_mask(bgr), 255, 0).astype(np.uint8)
-    return Image.fromarray(np.dstack([cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), alpha]), "RGBA")
+    return _colour_mask_rgba(bgr)
 
 
-def _save_nobg(rgba: Image.Image, nobg_path: str, method: str) -> None:
+def _area_mm2(pixels: int, pixels_per_mm: float | None) -> float | None:
+    return round(pixels / (pixels_per_mm ** 2), 4) if pixels_per_mm else None
+
+
+def quick_nobg(patch_bgr: np.ndarray, patch_path: str, pixels_per_mm: float | None = None) -> dict:
+    """Colour-mask a patch that is already in memory, save its _nobg.png and return
+    the pixel-mass fields for its detection shape. Detect calls this for every patch
+    (a few ms each); the area in mm² is None until the collection is calibrated."""
+    rgba = _colour_mask_rgba(patch_bgr)
+    # Fast compression: ~3x quicker to write than the default, files ~1.7x bigger.
+    _save_nobg(rgba, _nobg_path(patch_path), COLOUR_MASK_METHOD, compress_level=1)
+    pixels = int(np.count_nonzero(np.asarray(rgba)[:, :, 3]))
+    return {
+        "pixel_mass_pixels": pixels,
+        "pixel_mass_mm2": _area_mm2(pixels, pixels_per_mm),
+        "pixel_mass_method": COLOUR_MASK_METHOD,
+        "timestamp_pixel_mass": current_timestamp(),
+    }
+
+
+def _save_nobg(rgba: Image.Image, nobg_path: str, method: str, compress_level: int = 6) -> None:
     info = PngInfo()
     info.add_text(_METHOD_KEY, method)
-    rgba.save(nobg_path, pnginfo=info)
+    rgba.save(nobg_path, pnginfo=info, compress_level=compress_level)
 
 
 def _nobg_method(nobg_path: str) -> str | None:
@@ -240,19 +397,22 @@ def _format_rate(seconds: float) -> str:
 def _make_nobgs(patches: list[str], method: str) -> tuple[int, int]:
     """Write a _nobg.png for each patch with *method*; prints progress every ~2 s. Returns (done, errors)."""
     if method == COLOUR_MASK:
-        make, method_id = _colour_mask_background, COLOUR_MASK_METHOD
+        make = lambda p: (_colour_mask_background(p), COLOUR_MASK_METHOD)  # noqa: E731
     else:
-        make, method_id = (lambda p: _remove_background(p, model_name=method)), method
+        make = lambda p: _model_cutout(p, method)  # noqa: E731
+    primary = _method_id(method)
 
     total = len(patches)
-    done = errors = 0
+    done = errors = fallbacks = 0
     t_start = time.monotonic()
     last_report = 0.0  # progress is printed every ~2 s: one line per patch flooded the UI log
     for patch_abs in patches:
         nobg = _nobg_path(patch_abs)
         try:
-            _save_nobg(make(patch_abs), nobg, method_id)
+            rgba, method_id = make(patch_abs)
+            _save_nobg(rgba, nobg, method_id)
             done += 1
+            fallbacks += method_id != primary
         except Exception as e:
             errors += 1
             print(f"  ❌ [{done + errors}/{total}] {os.path.basename(patch_abs)}: {e}")
@@ -265,6 +425,8 @@ def _make_nobgs(patches: list[str], method: str) -> tuple[int, int]:
             avg = (now - t_start) / done
             eta_str = _format_eta(avg * remaining) if remaining else "done"
             print(f"  ✓ [{done}/{total}] {os.path.basename(patch_abs)} — {_format_rate(avg)} — ETA {eta_str}")
+    if fallbacks:
+        print(f"  ↻ {fallbacks} patch(es) redone at 1024 px: the 512 px result missed most of the insect or was mostly see-through")
     return done, errors
 
 
@@ -286,7 +448,7 @@ def run(
     pixels_per_mm: float | None = None,
     overwrite_nobg: bool = False,
     overwrite_pixmass: bool = True,
-    model_name: str = "birefnet-general-lite",
+    model_name: str = DEFAULT_MODEL,
     only_identified: bool = False,
     hybrid: bool = True,
 ) -> None:
@@ -420,6 +582,7 @@ def run(
     px_done = 0
     px_skipped = 0
     px_errors = 0
+    px_area = 0  # kept counts whose area changed with the calibration
 
     for image_path, json_path in bot_pairs:
         data = json_store.get(json_path)
@@ -438,6 +601,12 @@ def run(
             nobg = _nobg_path(patch_abs)
 
             if not overwrite_pixmass and "pixel_mass_pixels" in shape and nobg not in remade:
+                # Count kept, but the area follows the current calibration.
+                area = _area_mm2(shape["pixel_mass_pixels"], pixels_per_mm)
+                if pixels_per_mm and shape.get("pixel_mass_mm2") != area:
+                    shape["pixel_mass_mm2"] = area
+                    changed = True
+                    px_area += 1
                 px_skipped += 1
                 continue
             if not os.path.isfile(nobg):
@@ -450,9 +619,7 @@ def run(
                     shape["pixel_mass_method"] = method
                 else:
                     shape.pop("pixel_mass_method", None)
-                shape["pixel_mass_mm2"] = (
-                    round(px_count / (pixels_per_mm ** 2), 4) if pixels_per_mm else None
-                )
+                shape["pixel_mass_mm2"] = _area_mm2(px_count, pixels_per_mm)
                 shape["timestamp_pixel_mass"] = current_timestamp()
                 changed = True
                 px_done += 1
@@ -468,4 +635,31 @@ def run(
 
     print(f"\n✅ Pixel Mass complete")
     print(f"   Phase 1 (bg removal): {bg_done} done, {skipped_bg} skipped, {bg_errors} errors")
-    print(f"   Phase 2 (px count):   {px_done} done, {px_skipped} skipped, {px_errors} errors")
+    print(f"   Phase 2 (px count):   {px_done} counted, {px_skipped} kept, {px_errors} errors")
+    if px_area:
+        print(f"   Areas (mm²) updated from the calibration for {px_area} kept counts")
+
+
+def apply_calibration(input_path: str, dataset_root: str | None, pixels_per_mm: float) -> None:
+    """Give every detection in *input_path* its real-world area from a calibration.
+
+    Detect already colour-masks every patch and records its pixel count; patches
+    that predate that (older datasets) get the quick colour mask first. Existing
+    _nobg.png files and counts are kept (including ones refined with a model), and
+    pixel_mass_mm2 is set from each count. The calibration is saved for the
+    collection if it has none, so later refinements use it too.
+    """
+    processed_root = get_processed_folder(input_path, dataset_root or input_path)
+    calib = load_calibration(processed_root) or {}
+    if calib.get("pixels_per_mm") != pixels_per_mm:
+        save_calibration(processed_root, {**calib, "pixels_per_mm": pixels_per_mm,
+                                          "calibration_date": current_timestamp()})
+    run(
+        input_path=input_path,
+        dataset_root=dataset_root,
+        pixels_per_mm=pixels_per_mm,
+        overwrite_nobg=False,
+        overwrite_pixmass=False,
+        model_name=COLOUR_MASK,
+        hybrid=False,
+    )

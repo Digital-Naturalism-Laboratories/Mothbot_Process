@@ -133,11 +133,11 @@ dino_weights = project_dir / "assets" / "dinov2_vits14_pretrain.pth"
 if dino_weights.exists():
     datas.append((str(dino_weights), "assets"))
 
-# Bundle the default birefnet background-removal model (~224 MB) into models/ so
-# the app never has to download it on first use. Too large for git, so it is
+# Bundle the default BiRefNet-lite background-removal model (~181 MB) into models/
+# so the app never has to download it on first use. Too large for git, so it is
 # fetched into assets/ at build time by apps/scripts/fetch_bundled_models.py.
 # At runtime pixel_mass._ensure_bundled_model copies it into the rembg cache.
-birefnet_model = project_dir / "assets" / "birefnet-general-lite.onnx"
+birefnet_model = project_dir / "assets" / "birefnet-lite-dynamic.onnx"
 if birefnet_model.exists():
     datas.append((str(birefnet_model), "models"))
 

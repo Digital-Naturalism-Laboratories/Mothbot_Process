@@ -12,8 +12,9 @@ prefers copying from a local rembg cache (~/.u2net or $U2NET_HOME) over a networ
 download so repeat/local builds are fast.
 
 Currently bundles:
-  - birefnet-general-lite.onnx  (~224 MB) — default background-removal model, so
-    the packaged app never has to download it on first use.
+  - birefnet-lite-dynamic.onnx  (~181 MB) — BiRefNet-lite with a dynamic input size,
+    behind Pixel Mass's default refinement models (lite at 512 and at 1024), so the
+    packaged app never has to download it on first use.
 """
 import hashlib
 import os
@@ -26,9 +27,9 @@ ASSETS = Path(__file__).resolve().parents[2] / "assets"
 
 MODELS = [
     {
-        "dest": "birefnet-general-lite.onnx",
-        "url": "https://github.com/danielgatis/rembg/releases/download/v0.0.0/BiRefNet-general-bb_swin_v1_tiny-epoch_232.onnx",
-        "md5": "4fab47adc4ff364be1713e97b7e66334",
+        "dest": "birefnet-lite-dynamic.onnx",
+        "url": "https://huggingface.co/senty-au/BiRefNet_lite-ONNX-dynamic/resolve/main/onnx/model.onnx",
+        "md5": "e5200597db49689810846d09fddc0dbd",
     },
 ]
 

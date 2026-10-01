@@ -1015,7 +1015,10 @@ def app():
                         "Zoom in on a ruler or known object in the source image below and click two points "
                         "(drag a point to fine-tune it). "
                         "Enter the real-world distance and click **Apply Calibration**. "
-                        "Or type a known **pixels per mm** value directly and apply."
+                        "Or type a known **pixels per mm** value directly and apply.  \n"
+                        "Applying gives every detection in the selected collections its real-world area. "
+                        "Detect has already removed each patch's background (quick colour mask) and counted "
+                        "its pixels; collections detected before that get the quick mask first."
                     )
                     with gr.Row():
                         # Half the width (and ~3/4 the size it was at 2:1): it zooms, so it
@@ -1045,36 +1048,40 @@ def app():
                                 label="Calibration status", value="", interactive=False, lines=1, max_lines=1
                             )
 
-                gr.Markdown("### Step 2: Calculate Pixel Mass")
+                gr.Markdown(
+                    "### Step 2: Refine background subtraction (optional)\n"
+                    "Every patch already has a quick colour-mask background removal and pixel count from "
+                    "Detect. Re-process patches here with an AI model for cleaner outlines; their areas "
+                    "use the calibration above."
+                )
                 with gr.Row():
                     pm_overwrite_nobg = gr.Checkbox(
-                        label="Overwrite previous transparent images", value=False
+                        label="Redo patches already refined with a model", value=False
                     )
                     pm_overwrite_pixmass = gr.Checkbox(
-                        label="Overwrite previous pixel mass", value=True
+                        label="Recount pixels of every patch (not only re-processed ones)", value=False
                     )
                     pm_only_identified = gr.Checkbox(
-                        label="Only measure identified patches (skip ones ID left unidentified, e.g. too blurry)",
+                        label="Only refine identified patches (skip ones ID left unidentified, e.g. too blurry)",
                         value=False,
                     )
                 pm_model_dropdown = gr.Dropdown(
-                    label="Background removal model",
+                    label="Refinement model",
                     choices=[
                         ("birefnet-general — best quality, slowest", "birefnet-general"),
-                        ("birefnet-general-lite — good quality, faster", "birefnet-general-lite"),
-                        ("isnet-general-use — medium quality, faster", "isnet-general-use"),
-                        ("Ultra-speed — colour mask, no AI model (rough, ~1000× faster)", Mothbot_PixelMass.COLOUR_MASK),
+                        ("birefnet-general-lite — fine edges, ~4× slower than the split approach", "birefnet-general-lite"),
+                        ("Fast, Split Model Approach — BiRefNet-lite at 512 px, redone at 1024 px when it misses the insect or comes out see-through", "birefnet-lite-512"),
                     ],
-                    value="birefnet-general-lite",
+                    value=Mothbot_PixelMass.DEFAULT_MODEL,
                 )
                 pm_hybrid = gr.Checkbox(
                     label="Enable hybrid optimization",
                     value=True,
-                    info="Small patches (no side over 150 px) and blurry ones (blurriness over 70) use the "
-                         "Ultra-speed colour mask; the rest use the model above. The models can't outline "
-                         "those much better, and take ~6 s per patch on a CPU.",
+                    info="Only re-process patches with a side over 150 px and blurriness of 70 or less; "
+                         "smaller or blurrier patches keep their colour mask (a model can't outline those "
+                         "much better). Uncheck to re-process every patch.",
                 )
-                pm_run_btn = gr.Button("Run Pixel Mass", variant="primary")
+                pm_run_btn = gr.Button("Refine Background Subtraction", variant="primary")
                 with gr.Row():
                     pm_output_box = gr.Textbox(
                         label="Pixel Mass Output", lines=15, interactive=False, scale=2
@@ -1113,7 +1120,7 @@ def app():
                     fn=apply_calibration,
                     inputs=[selected_paths, pm_point1_state, pm_point2_state,
                             pm_real_dist, pm_pixels_per_mm],
-                    outputs=[pm_pixels_per_mm, pm_calib_status],
+                    outputs=[pm_pixels_per_mm, pm_calib_status, pm_output_box],
                 )
 
                 pm_run_btn.click(
@@ -1505,7 +1512,7 @@ def _check_pipeline_status(processed_mirror: str) -> dict:
         # detect.py writes identifier_bot="" (empty); identify.py sets it to the
         # version string, so a non-empty value means identification has been run.
         status["identified"] = any(s.get("identifier_bot", "") not in ("", None) for s in shapes)
-        status["pixel_mass"] = any("pixel_mass_pixels" in s for s in shapes)
+        status["pixel_mass"] = any(isinstance(s.get("pixel_mass_mm2"), (int, float)) for s in shapes)
 
     # Exif: check whether the first patch JPG in the mirror has GPS EXIF data.
     for root, _dirs, files in os.walk(processed_mirror):
@@ -1551,7 +1558,7 @@ def _sample_run_status(folder, json_names, max_reads=40):
         if shapes:
             flags["clustered"] = any(sh.get("clusterID") is not None for sh in shapes)
             flags["identified"] = any(sh.get("identifier_bot", "") not in ("", None) for sh in shapes)
-            flags["pixel_mass"] = any("pixel_mass_pixels" in sh for sh in shapes)
+            flags["pixel_mass"] = any(isinstance(sh.get("pixel_mass_mm2"), (int, float)) for sh in shapes)
             break
     return model, flags
 
@@ -2109,7 +2116,9 @@ def calibration_points_changed(points_json):
 
 
 def apply_calibration(selected_folders, p1, p2, real_dist_mm, manual_ppm):
-    """Compute pixels_per_mm from the marked line (or use manual value) and save calibration.json.
+    """Compute pixels_per_mm from the marked line (or use manual value), save
+    calibration.json, and give every detection in the selected collections its
+    real-world area (colour-masking any patch that has no _nobg.png yet).
 
     Points p1/p2 are in original-image pixels.
     """
@@ -2125,26 +2134,41 @@ def apply_calibration(selected_folders, p1, p2, real_dist_mm, manual_ppm):
         ppm = float(manual_ppm)
 
     if ppm is None:
-        return manual_ppm, "⚠️  Mark two points + enter distance, or type px/mm directly."
+        yield manual_ppm, "⚠️  Mark two points + enter distance, or type px/mm directly.", gr.update()
+        return
 
     if not selected_folders:
-        return ppm, f"Computed {ppm:.4f} px/mm (no collection selected — not saved)"
+        yield ppm, f"Computed {ppm:.4f} px/mm (no collection selected — not saved)", gr.update()
+        return
 
-    saved = 0
-    for entry in selected_folders:
+    log = ""
+    total = len(selected_folders)
+    for number, entry in enumerate(selected_folders, start=1):
         folder = entry["path"] if isinstance(entry, dict) else entry
         dr = entry.get("dataset_root", folder) if isinstance(entry, dict) else folder
-        processed_folder = get_processed_folder(folder, dr)
-        save_calibration(processed_folder, {
+        save_calibration(get_processed_folder(folder, dr), {
             "pixels_per_mm": ppm,
             "point1": p1,
             "point2": p2,
             "real_distance_mm": real_dist_mm,
             "calibration_date": current_timestamp(),
         })
-        saved += 1
+        status = f"{ppm:.4f} px/mm saved — applying areas to collection {number}/{total}…"
+        log += f"--- Applying {ppm:.4f} px/mm to {folder} ---\n"
+        yield ppm, status, log
+        try:
+            for chunk in run_in_thread(
+                Mothbot_PixelMass.apply_calibration,
+                input_path=folder, dataset_root=dr, pixels_per_mm=ppm,
+            ):
+                log += chunk
+                yield ppm, status, log
+        except Exception as e:
+            log += f"❌ {e}\n"
+            yield ppm, f"⚠️ {ppm:.4f} px/mm saved, but applying it to {folder} failed — see the output below", log
+            return
 
-    return ppm, f"✅ {ppm:.4f} px/mm saved to {saved} collection(s)"
+    yield ppm, f"✅ {ppm:.4f} px/mm applied to every detection in {total} collection(s)", log
 
 
 def _nobg_preview(path: str):
@@ -2230,7 +2254,7 @@ def run_legacy_converter_ui(selected_folders, dataset_root, delete_originals):
     yield output_log, HIDE_STOP
 
 
-def run_pixel_mass_ui(selected_folders, pixels_per_mm, overwrite_nobg, overwrite_pixmass, model_name="birefnet-general-lite", only_identified=False, hybrid=True):
+def run_pixel_mass_ui(selected_folders, pixels_per_mm, overwrite_nobg, overwrite_pixmass, model_name=Mothbot_PixelMass.DEFAULT_MODEL, only_identified=False, hybrid=True):
     """Gradio generator that runs pixel_mass.run() for each selected collection."""
     SHOW_STOP  = gr.update(visible=True, value="Stop Current Run", interactive=True)
     HIDE_STOP  = gr.update(visible=False)
@@ -2259,7 +2283,7 @@ def run_pixel_mass_ui(selected_folders, pixels_per_mm, overwrite_nobg, overwrite
                 pixels_per_mm=float(pixels_per_mm) if pixels_per_mm else None,
                 overwrite_nobg=bool(overwrite_nobg),
                 overwrite_pixmass=bool(overwrite_pixmass),
-                model_name=model_name or "birefnet-general-lite",
+                model_name=model_name or Mothbot_PixelMass.DEFAULT_MODEL,
                 only_identified=bool(only_identified),
                 hybrid=bool(hybrid),
             ):

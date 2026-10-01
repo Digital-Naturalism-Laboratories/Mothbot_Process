@@ -250,7 +250,7 @@ def app():
                     if (!img.naturalWidth || !root.clientWidth) return;
                     var dpr = window.devicePixelRatio || 1;
                     cw = root.clientWidth;
-                    ch = Math.min(cw * img.naturalHeight / img.naturalWidth, window.innerHeight * 0.75);
+                    ch = Math.min(cw * img.naturalHeight / img.naturalWidth, window.innerHeight * 0.56);
                     canvas.style.height = ch + 'px';
                     canvas.width = Math.round(cw * dpr);
                     canvas.height = Math.round(ch * dpr);
@@ -1018,24 +1018,28 @@ def app():
                         "Or type a known **pixels per mm** value directly and apply."
                     )
                     with gr.Row():
-                        with gr.Column(scale=2):
+                        # Half the width (and ~3/4 the size it was at 2:1): it zooms, so it
+                        # doesn't need to be big, and the readouts get room to sit side by side.
+                        with gr.Column(scale=1):
                             pm_calib_viewer = gr.HTML(_calib_viewer_html())
                             # Written by the viewer's JS; hidden with CSS (a
                             # visible=False component isn't in the page at all).
                             pm_calib_points = gr.Textbox(value="[]", elem_id="pm-calib-points")
                         with gr.Column(scale=1):
                             pm_load_img_btn = gr.Button("Load Different Image", size="sm")
-                            pm_point1_label = gr.Textbox(
-                                label="Point 1", value="–", interactive=False, lines=1, max_lines=1
-                            )
-                            pm_point2_label = gr.Textbox(
-                                label="Point 2", value="–", interactive=False, lines=1, max_lines=1
-                            )
-                            pm_pixel_dist_label = gr.Textbox(
-                                label="Pixel distance", value="–", interactive=False, lines=1, max_lines=1
-                            )
-                            pm_real_dist = gr.Number(label="Real-world distance (mm)", value=10.0, minimum=0.001)
-                            pm_pixels_per_mm = gr.Number(label="Pixels per mm (auto-computed or enter manually)")
+                            with gr.Row():
+                                pm_point1_label = gr.Textbox(
+                                    label="Point 1", value="–", interactive=False, lines=1, max_lines=1
+                                )
+                                pm_point2_label = gr.Textbox(
+                                    label="Point 2", value="–", interactive=False, lines=1, max_lines=1
+                                )
+                                pm_pixel_dist_label = gr.Textbox(
+                                    label="Pixel distance", value="–", interactive=False, lines=1, max_lines=1
+                                )
+                            with gr.Row():
+                                pm_real_dist = gr.Number(label="Real-world distance (mm)", value=3.0, minimum=0.001)
+                                pm_pixels_per_mm = gr.Number(label="Pixels per mm (auto-computed or enter manually)")
                             pm_calibrate_btn = gr.Button("Apply Calibration", variant="primary")
                             pm_calib_status = gr.Textbox(
                                 label="Calibration status", value="", interactive=False, lines=1, max_lines=1
@@ -1059,7 +1063,6 @@ def app():
                         ("birefnet-general — best quality, slowest", "birefnet-general"),
                         ("birefnet-general-lite — good quality, faster", "birefnet-general-lite"),
                         ("isnet-general-use — medium quality, faster", "isnet-general-use"),
-                        ("u2netp — lowest quality, fastest", "u2netp"),
                         ("Ultra-speed — colour mask, no AI model (rough, ~1000× faster)", Mothbot_PixelMass.COLOUR_MASK),
                     ],
                     value="birefnet-general-lite",

@@ -372,13 +372,18 @@ def app():
             new MutationObserver(initCalibViewer).observe(document.body, { childList: true, subtree: true });
 
             // ── Sleep / reconnect recovery banner ──────────────────────────────
-            // When the laptop wakes from sleep (lid opens, screen-on, etc.) the
-            // browser fires visibilitychange: hidden → visible.  If a pipeline
-            // was running, Gradio's SSE stream is orphaned and the UI freezes.
-            // Show a banner so the user knows what happened and how to recover.
-            // Track timestamp so we can ignore normal tab switches (< 30 s hidden).
-            var _hiddenAt = 0;
-            var _MIN_SLEEP_MS = 30000;
+            // When the laptop wakes from sleep while a pipeline is running,
+            // Gradio's SSE stream can be orphaned and the UI freezes. Show a
+            // banner so the user knows what happened and how to recover.
+            // Sleep is detected from a clock gap: a 5 s timer that fires minutes
+            // late means the whole computer was suspended. Being hidden is not
+            // enough — the banner used to appear after any tab switch over 30 s
+            // during a run. Browsers slow timers in background tabs (Chrome to
+            // once a minute, Firefox to ~15 s) but never by minutes.
+            var _TICK_MS = 5000;
+            var _SLEEP_GAP_MS = 180000;
+            var _lastTick = Date.now();
+            var _sleptDuringRun = false;
 
             function _isPipelineRunning() {
                 // The Stop button is visible and enabled only while a run is active.
@@ -430,21 +435,20 @@ def app():
                 }, 3000);
             }
 
-            document.addEventListener('visibilitychange', function() {
-                if (document.visibilityState === 'hidden') {
-                    _hiddenAt = Date.now();
-                } else if (_hiddenAt > 0) {
-                    var hiddenMs = Date.now() - _hiddenAt;
-                    _hiddenAt = 0;
-                    // Only react to genuine sleep/suspend (hidden > 30 s).
-                    // Normal tab switches are milliseconds and should be ignored.
-                    if (hiddenMs >= _MIN_SLEEP_MS) {
-                        setTimeout(function() {
-                            if (_isPipelineRunning()) _showReconnectBanner();
-                        }, 2000);
-                    }
+            function _checkForSleep() {
+                var now = Date.now();
+                if (now - _lastTick > _SLEEP_GAP_MS && _isPipelineRunning()) _sleptDuringRun = true;
+                _lastTick = now;
+                // Shown once the tab is in view (it may still be hidden on wake).
+                if (_sleptDuringRun && document.visibilityState === 'visible') {
+                    _sleptDuringRun = false;
+                    setTimeout(function() {
+                        if (_isPipelineRunning()) _showReconnectBanner();
+                    }, 2000);
                 }
-            });
+            }
+            setInterval(_checkForSleep, _TICK_MS);
+            document.addEventListener('visibilitychange', _checkForSleep);
         }
         """,
         css="""
@@ -584,15 +588,18 @@ def app():
                             refresh_btn = gr.Button(
                                 "↻ Refresh", size="sm", variant="secondary", scale=1, min_width=100,
                             )
-                        classify_link = gr.HTML(value="", visible=False)
-                        with gr.Row():
-                            classify_open_btn = gr.Button(
-                                "🦋 Open in Mothbot Classify", size="sm", variant="secondary", visible=False,
-                            )
-                        classify_open_status = gr.Markdown(value="", visible=False)
+                        continue_process_btn = gr.Button(
+                            "▶ Process all steps automatically",
+                            variant="primary",
+                            interactive=False,
+                            visible=False,
+                        )
                         with gr.Group():
                             status = gr.Textbox(
                                 label="Error", lines=3, interactive=False, visible=False
+                            )
+                            toggle_all_btn = gr.Button(
+                                "Select All", size="sm", visible=False
                             )
                             folder_choices = gr.CheckboxGroup(
                                 label="Image Collections Found (select which to process)",
@@ -602,15 +609,12 @@ def app():
                                 interactive=True,
                                 visible=False,
                             )
-                            toggle_all_btn = gr.Button(
-                                "Select All", size="sm", visible=False
+                        classify_link = gr.HTML(value="", visible=False)
+                        with gr.Row():
+                            classify_open_btn = gr.Button(
+                                "🦋 Open in Mothbot Classify", size="sm", variant="secondary", visible=False,
                             )
-                        continue_process_btn = gr.Button(
-                            "▶ Process all steps automatically",
-                            variant="primary",
-                            interactive=False,
-                            visible=False,
-                        )
+                        classify_open_status = gr.Markdown(value="", visible=False)
 
                     with gr.Column():
                         gr.Markdown("### Additional Processing Files:")

@@ -821,7 +821,6 @@ def process_image_list(img_files, dataset_root=None):
     # submitted to a thread pool so it overlaps with the next YOLO batch rather
     # than blocking it.
     images_done = 0
-    detections_done = 0
     total_pending = len(pending)
     infer_start = time.monotonic()
     patch_futures = []  # (future, patch_folder_path, filename)
@@ -917,10 +916,9 @@ def process_image_list(img_files, dataset_root=None):
                         )
 
             # Shared: schedule patch writing and emit progress for this batch.
-            # Rough rate: detections so far over the time since inference started
-            # (patch writing overlaps it); the same for every line of a batch.
-            detections_done += sum(len(outcome[3]) for outcome in batch_outcomes if outcome[3])
-            rate = detections_done / max(time.monotonic() - infer_start, 1e-6)
+            # Rough rate: source images done (this batch included) over the time
+            # since inference started; the same for every line of a batch.
+            rate = (images_done + len(batch_outcomes)) / max(time.monotonic() - infer_start, 1e-6)
             for image_path, bot_json_path, patch_folder_path, shapes, orig_img in batch_outcomes:
                 filename = os.path.basename(image_path)
                 if shapes is None:
@@ -939,12 +937,10 @@ def process_image_list(img_files, dataset_root=None):
                         patch_futures[0][0].result()  # wait for the oldest job; errors reported below
 
                 images_done += 1
-                elapsed = time.monotonic() - infer_start
-                avg = elapsed / images_done
-                eta_secs = avg * (total_pending - images_done)
+                eta_secs = (total_pending - images_done) / max(rate, 1e-6)  # same batch-level rate as shown
                 eta_str = _format_eta(eta_secs) if images_done < total_pending else "done"
                 print(f"  ✓ {filename}: {len(shapes)} detection(s) — "
-                      f"{images_done}/{total_pending} images — ~{rate:.1f} detections/s — ETA {eta_str}")
+                      f"{images_done}/{total_pending} images — ~{rate:.2f} source images/s — ETA {eta_str}")
 
             # After each batch, emit previews for patch jobs already finished.
             # Workers run concurrently with inference, so many patches are done

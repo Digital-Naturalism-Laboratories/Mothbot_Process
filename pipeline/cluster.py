@@ -310,15 +310,16 @@ def extract_embeddings(image_files, batch_size=8):
         elapsed = time.time() - start_time
         batches_done = batch_num + 1
         images_done = min(i + batch_size, total)
+        rate = images_done / max(elapsed, 1e-6)  # patches/s since the start (first batch includes warm-up)
         if batches_done == 1 and total_batches > 1:
             eta_seconds = (elapsed / batches_done) * (total_batches - batches_done)
             print(f"   ⏱️ First batch done in {elapsed:.1f}s — estimated {eta_seconds:.0f}s remaining ({eta_seconds/60:.1f} min)")
         elif batches_done % 5 == 0 or batches_done == total_batches:
             eta_seconds = (elapsed / batches_done) * (total_batches - batches_done)
-            print(f"   📦 Batch {batches_done}/{total_batches} — {images_done}/{total} images — ~{eta_seconds:.0f}s remaining")
+            print(f"   📦 Batch {batches_done}/{total_batches} — {images_done}/{total} images — ~{rate:.1f} patches/s — ~{eta_seconds:.0f}s remaining")
 
     total_time = time.time() - start_time
-    print(f"✅ Embeddings complete — {total} images in {total_time:.1f}s ({total_time/60:.1f} min)")
+    print(f"✅ Embeddings complete — {total} images in {total_time:.1f}s ({total_time/60:.1f} min, ~{total / max(total_time, 1e-6):.1f} patches/s)")
     if embeddings_out is None:
         return np.empty((0, 384), dtype=np.float32)
     return embeddings_out[:filled]

@@ -177,10 +177,26 @@ def update_main_list(main_list, new_items):
 # Timestamp / device helpers
 # ---------------------------------------------------------------------------
 
+def format_duration(seconds: float) -> str:
+    """Human-readable duration, e.g. '2h 4m', '3m 12s', '45s'."""
+    seconds = int(round(seconds))
+    h, remainder = divmod(seconds, 3600)
+    m, s = divmod(remainder, 60)
+    if h:
+        return f"{h}h {m}m"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
 def current_timestamp():
     """Return current local timestamp as ``YYYY-MM-DD__HH_MM_SS_(+HHMM)``."""
     now = datetime.now().astimezone()
     return now.strftime("%Y-%m-%d__%H_%M_%S_(%z)")
+
+
+XPU_PROBE_FLAG = "--mothbot-xpu-probe"
+XPU_PROBE_CODE = "import torch; x = torch.randn(2, 2).to('xpu'); (x @ x).cpu()"
 
 
 @functools.lru_cache(maxsize=1)
@@ -196,10 +212,15 @@ def _xpu_actually_works():
     """
     import subprocess
     import sys
-    probe = "import torch; x = torch.randn(2, 2).to('xpu'); (x @ x).cpu()"
+    if getattr(sys, "frozen", False):
+        # The packaged app's executable is Mothbot itself, not Python: it runs the
+        # probe when given this flag (apps/desktop_main.py) instead of starting up.
+        command = [sys.executable, XPU_PROBE_FLAG]
+    else:
+        command = [sys.executable, "-c", XPU_PROBE_CODE]
     try:
         result = subprocess.run(
-            [sys.executable, "-c", probe],
+            command,
             capture_output=True,
             timeout=30,
         )

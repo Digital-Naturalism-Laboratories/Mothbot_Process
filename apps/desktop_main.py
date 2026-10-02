@@ -32,13 +32,19 @@ def _run_worker_process_if_requested() -> None:
     by joblib/loky (hdbscan, scikit-learn) re-run this executable. Without this
     they launched Mothbot again (opening a browser tab and exiting), so the
     parallel step failed. multiprocessing workers are handled by freeze_support();
-    loky's POSIX workers ask for ``-m joblib.externals.loky.backend.popen_loky_posix``.
+    loky's POSIX workers ask for ``-m joblib.externals.loky.backend.popen_loky_posix``;
+    the Intel GPU check in core.common asks for ``--mothbot-xpu-probe``.
     """
     if not getattr(sys, "frozen", False):
         return
     import multiprocessing
 
     multiprocessing.freeze_support()
+    if len(sys.argv) > 1 and sys.argv[1] == "--mothbot-xpu-probe":  # core.common._xpu_actually_works
+        from core.common import XPU_PROBE_CODE
+
+        exec(XPU_PROBE_CODE)
+        sys.exit(0)
     if len(sys.argv) > 2 and sys.argv[1] == "-m" and sys.argv[2].startswith("joblib.externals.loky."):
         import runpy
 
@@ -49,6 +55,17 @@ def _run_worker_process_if_requested() -> None:
 
 
 _run_worker_process_if_requested()
+
+if getattr(sys, "frozen", False):
+    # ultralytics can try to pip-install missing packages with sys.executable,
+    # which in the packaged app is Mothbot itself. Nothing should need it, but
+    # never let it relaunch the app. (Read when ultralytics is imported.)
+    os.environ.setdefault("YOLO_AUTOINSTALL", "False")
+    # pybioclip wraps BioCLIP in torch.compile. It never actually compiles today
+    # (it calls encode_image, which bypasses the compiled forward — tested: same
+    # results and speed with it off), but compiling would start compiler worker
+    # processes with sys.executable, i.e. relaunch Mothbot. Keep it off here.
+    os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 
 from ui.single_instance import ensure_single_instance
 from ui.tray import start_tray

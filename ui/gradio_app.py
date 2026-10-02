@@ -1491,7 +1491,10 @@ def _check_pipeline_status(processed_mirror: str) -> dict:
     return status
 
 
-_PATCH_NAME = re.compile(r"_\d+_(.+?)\.jpe?g$", re.IGNORECASE)
+# <photo>_<index>_<detector>.jpg, where bot detectors are always "Mothbot_…". Anchoring on
+# that matters: photo names can hold "_<digits>_" too (jollyTonino_2026_07_28__…), which
+# the first match would otherwise take as the index, misreading the detector.
+_PATCH_NAME = re.compile(r"_\d+_(Mothbot.*?)\.jpe?g$", re.IGNORECASE)
 _ARCHIVED_RUN_JSON = re.compile(r"_botdetection_(.+)\.json$")
 
 

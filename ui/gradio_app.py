@@ -167,16 +167,15 @@ def app():
             // Tag the Pixel Mass tab button with a data attribute so CSS can color
             // it without relying on nth-child counts (which shift when tabs are
             // shown/hidden).  Re-run on DOM mutations so it survives Gradio re-renders.
-            function tagPixelMassTab() {
-                var tabs = document.querySelectorAll('#mothbot-tabs button');
-                tabs.forEach(function(btn) {
-                    if (btn.textContent.trim() === 'Pixel Mass') {
-                        btn.setAttribute('data-tab', 'pixel-mass');
-                    }
+            function tagTabs() {
+                // data-tab = the tab's name as a slug ("Pixel Mass" -> "pixel-mass"), for the CSS tab colours.
+                document.querySelectorAll('#mothbot-tabs button[role="tab"]').forEach(function(btn) {
+                    var slug = btn.textContent.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+                    if (btn.getAttribute('data-tab') !== slug) btn.setAttribute('data-tab', slug);
                 });
             }
-            tagPixelMassTab();
-            new MutationObserver(tagPixelMassTab).observe(document.body, { childList: true, subtree: true });
+            tagTabs();
+            new MutationObserver(tagTabs).observe(document.body, { childList: true, subtree: true });
 
             // ── Collection labels: bold folder name, smaller "earlier" runs ─────
             // Checkbox labels are plain text in Gradio, so format a copy beside
@@ -471,62 +470,22 @@ def app():
                 background: rgba(0,0,0,0.55); color: #fff; font: 12px sans-serif; pointer-events: none;
             }
             .pm-calib-empty { padding: 48px 16px; text-align: center; opacity: 0.7; border: 1px dashed #888; border-radius: 8px; }
-            /* Setup - neutral white */
-            button.svelte-1tcem6n:nth-child(1).selected {
-                background-color: #e0e0e0 !important;
-                color: #000000 !important;
-            }
-            /* Process - orange (run all) */
-            button.svelte-1tcem6n:nth-child(2).selected {
-                background-color: #ff8c00 !important;
-                color: #ffffff !important;
-            }
-            /* Detect - red (step 1) */
-            button.svelte-1tcem6n:nth-child(3).selected {
-                background-color: #ff4444 !important;
-                color: #ffffff !important;
-            }
-            /* Cluster - blue (step 2) */
-            button.svelte-1tcem6n:nth-child(4).selected {
-                background-color: #4488ff !important;
-                color: #ffffff !important;
-            }
-            /* ID - green (step 3 group) */
-            button.svelte-1tcem6n:nth-child(5).selected {
-                background-color: #22ff88 !important;
-                color: #ffffff !important;
-            }
-            /* Insert Metadata - green (step 3 group) */
-            button.svelte-1tcem6n:nth-child(6).selected {
-                background-color: #22ff88 !important;
-                color: #ffffff !important;
-            }
-            /* Insert Exif - green (step 3 group) */
-            button.svelte-1tcem6n:nth-child(7).selected {
-                background-color: #22ff88 !important;
-                color: #ffffff !important;
-            }
-            /* Unselected tab color hints */
-            button.svelte-1tcem6n:nth-child(3):not(.selected) {
-                border-bottom: 3px solid #ff4444 !important;
-            }
-            button.svelte-1tcem6n:nth-child(4):not(.selected) {
-                border-bottom: 3px solid #4488ff !important;
-            }
-            button.svelte-1tcem6n:nth-child(5):not(.selected),
-            button.svelte-1tcem6n:nth-child(6):not(.selected),
-            button.svelte-1tcem6n:nth-child(7):not(.selected) {
-                border-bottom: 3px solid #44ff44 !important;
-            }
-            /* Pixel Mass tab - orange. Targeted by data attribute set via JS below
-               so the color is immune to nth-child counting shifts. */
-            #mothbot-tabs button[data-tab="pixel-mass"]:not(.selected) {
-                border-bottom: 3px solid #ff8c00 !important;
-            }
-            #mothbot-tabs button[data-tab="pixel-mass"].selected {
-                background-color: #ff8c00 !important;
-                color: #ffffff !important;
-            }
+            /* Tab colours. Targeted by data-tab attributes set via JS below (tab name
+               -> slug): Gradio's generated class names change between versions,
+               which silently dropped all but Pixel Mass's colour in the build. */
+            #mothbot-tabs button[data-tab="setup"].selected { background-color: #e0e0e0 !important; color: #000000 !important; }
+            #mothbot-tabs button[data-tab="detect"].selected { background-color: #ff8c00 !important; color: #ffffff !important; }
+            #mothbot-tabs button[data-tab="cluster-perceptually"].selected { background-color: #ff4444 !important; color: #ffffff !important; }
+            #mothbot-tabs button[data-tab="id"].selected { background-color: #4488ff !important; color: #ffffff !important; }
+            #mothbot-tabs button[data-tab="insert-metadata"].selected,
+            #mothbot-tabs button[data-tab="insert-exif"].selected { background-color: #22ff88 !important; color: #ffffff !important; }
+            #mothbot-tabs button[data-tab="pixel-mass"].selected { background-color: #ff8c00 !important; color: #ffffff !important; }
+            /* Unselected tab colour hints */
+            #mothbot-tabs button[data-tab="cluster-perceptually"]:not(.selected) { border-bottom: 3px solid #ff4444 !important; }
+            #mothbot-tabs button[data-tab="id"]:not(.selected) { border-bottom: 3px solid #4488ff !important; }
+            #mothbot-tabs button[data-tab="insert-metadata"]:not(.selected),
+            #mothbot-tabs button[data-tab="insert-exif"]:not(.selected) { border-bottom: 3px solid #44ff44 !important; }
+            #mothbot-tabs button[data-tab="pixel-mass"]:not(.selected) { border-bottom: 3px solid #ff8c00 !important; }
             #app-meta-row {
                 justify-content: flex-end;
                 margin-top: 10px;

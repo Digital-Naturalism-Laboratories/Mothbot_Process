@@ -78,6 +78,7 @@ if (
 import gc
 import hashlib
 import hdbscan
+import joblib
 from pathlib import Path
 
 from core.common import (
@@ -232,6 +233,19 @@ def get_fallback_embedding(img_path):
     norm = np.linalg.norm(feat)
     return feat if norm == 0 else feat / norm
 
+def _fit_predict(clusterer, data):
+    """HDBSCAN fit_predict with its parallel core-distance step run in threads.
+
+    Above 16,384 points hdbscan computes core distances with joblib, whose default
+    backend starts worker processes. In the packaged app each of those re-ran
+    the Mothbot executable (opening a browser tab and exiting), so clustering a
+    large collection failed. Threads give the same labels and still use several
+    cores (the KD-tree queries release the GIL).
+    """
+    with joblib.parallel_config(backend="threading"):
+        return clusterer.fit_predict(data)
+
+
 def extract_embeddings(image_files, batch_size=8):
     use_fallback = False
     try:
@@ -359,7 +373,7 @@ def cluster_with_size_groups(all_patch_paths, batch_size=8):
         cluster_selection_method="eom",  # "eom" gives fewer, broader groups
         metric="euclidean",
     )
-    size_labels = size_clusterer.fit_predict(log_sizes)
+    size_labels = _fit_predict(size_clusterer, log_sizes)
 
     n_groups = len(set(size_labels) - {-1})
     n_noise = int(np.sum(size_labels == -1))
@@ -550,7 +564,7 @@ def cluster_embeddings(embeddings, patch_paths=None):
         metric="euclidean",
         algorithm=algorithm,
     )
-    labels = clusterer.fit_predict(embeddings)
+    labels = _fit_predict(clusterer, embeddings)
 
     unique_labels = set(labels)
     if -1 in unique_labels:

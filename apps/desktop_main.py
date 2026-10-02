@@ -24,6 +24,32 @@ import socket
 import sys
 import traceback
 
+
+def _run_worker_process_if_requested() -> None:
+    """Run a worker process instead of a second copy of the app.
+
+    In the packaged app, worker processes started by Python's multiprocessing or
+    by joblib/loky (hdbscan, scikit-learn) re-run this executable. Without this
+    they launched Mothbot again (opening a browser tab and exiting), so the
+    parallel step failed. multiprocessing workers are handled by freeze_support();
+    loky's POSIX workers ask for ``-m joblib.externals.loky.backend.popen_loky_posix``.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    import multiprocessing
+
+    multiprocessing.freeze_support()
+    if len(sys.argv) > 2 and sys.argv[1] == "-m" and sys.argv[2].startswith("joblib.externals.loky."):
+        import runpy
+
+        module = sys.argv[2]
+        sys.argv = [sys.argv[0]] + sys.argv[3:]
+        runpy.run_module(module, run_name="__main__", alter_sys=True)
+        sys.exit(0)
+
+
+_run_worker_process_if_requested()
+
 from ui.single_instance import ensure_single_instance
 from ui.tray import start_tray
 

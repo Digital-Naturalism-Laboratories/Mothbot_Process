@@ -1329,6 +1329,8 @@ def app():
         def quit_app():
             import signal
             import threading
+            from ui.single_instance import release_lock
+            release_lock()  # the kill below skips atexit, which would otherwise remove it
             threading.Timer(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
             return gr.update(value="Mothbot is shutting down — you can now close this browser tab.", interactive=False), gr.update(visible=False)
 

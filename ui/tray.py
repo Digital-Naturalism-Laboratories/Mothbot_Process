@@ -85,6 +85,8 @@ def _run_tray(url: str, icon_path: Path | None) -> None:
             webbrowser.open(url)
 
         def on_quit(icon, item):
+            from ui.single_instance import release_lock
+            release_lock()  # os._exit skips atexit, which would otherwise remove it
             icon.stop()
             threading.Timer(0.5, lambda: os._exit(0)).start()
 

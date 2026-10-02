@@ -68,6 +68,7 @@ if getattr(sys, "frozen", False):
     os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 
 from ui.single_instance import ensure_single_instance
+from ui.startup_page import show_startup_page
 from ui.tray import start_tray
 
 
@@ -191,12 +192,21 @@ def main():
     ensure_single_instance(url=url)
     start_tray(url=url, icon_path=favicon if favicon.exists() else None)
 
+    # Loading the AI libraries below can take minutes: show a "Mothbot is
+    # starting…" page on our address right away. It turns into the app by
+    # itself once Gradio takes the address over, so Gradio needn't open a tab.
+    startup_page = show_startup_page(server_port, log_path=str(log_path))
+    if startup_page is not None:
+        launch_kwargs["inbrowser"] = False
 
     try:
         from ui.app import get_demo
 
+        demo = get_demo()
+        if startup_page is not None:
+            startup_page.stop()  # free the port for Gradio; the open page waits for the app
         logger.info("Launching Gradio app")
-        get_demo().launch(**launch_kwargs)
+        demo.launch(**launch_kwargs)
     except Exception:
         logger.error("Desktop startup failed", exc_info=True)
         # Keep this explicit trace write in case logging handler fails unexpectedly.

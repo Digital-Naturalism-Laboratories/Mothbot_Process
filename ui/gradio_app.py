@@ -775,6 +775,13 @@ def app():
                         height=180, scale=1,
                     )
                 blur_examples_state = gr.State([])
+                exclude_unlikely_taxa = gr.Checkbox(
+                    value=True,
+                    label="Leave out insects that probably never come to light traps (fossils, bed bugs, lice, etc...)",
+                    info="Lice, fleas, bed bugs, sessile scale insects, ice crawlers and fossil-only "
+                         "orders are removed from the choices BioCLIP picks from. The species list "
+                         "itself is used unchanged; each ID records which exclusion set was applied.",
+                )
                 ID_run_btn = gr.Button("Run Identification", variant="primary")
                 ID_output_box = gr.Textbox(label="Identification Output", lines=20)
 
@@ -786,6 +793,7 @@ def app():
                     ID_BOTDETECTIONS,
                     OVERWRITE_PREV_BOT_IDENTIFICATIONS,
                     blur_threshold,
+                    exclude_unlikely_taxa,
                 ]
                 _id_outputs = [ID_output_box, stop_btn]
                 ID_run_btn.click(
@@ -2446,7 +2454,8 @@ def show_blur_example(examples, threshold):
     return (cv2.cvtColor(image, cv2.COLOR_BGR2RGB) if image is not None else None), caption
 
 
-def run_ID(selected_folders, species_list, chosenrank, IDHum, IDBot, overwrite_bot, blur_threshold=100):
+def run_ID(selected_folders, species_list, chosenrank, IDHum, IDBot, overwrite_bot, blur_threshold=100,
+           exclude_unlikely_taxa=True):
     yield from _run_batch_pipeline(
         selected_folders=selected_folders,
         runner=Mothbot_ID.run,
@@ -2462,6 +2471,7 @@ def run_ID(selected_folders, species_list, chosenrank, IDHum, IDBot, overwrite_b
             "overwrite_prev_bot_ID": bool(overwrite_bot),
             "dataset_root": dataset_root,
             "blur_threshold": blur_threshold,
+            "exclude_unlikely_taxa": bool(exclude_unlikely_taxa),
         },
     )
 
@@ -2834,7 +2844,7 @@ def _ensure_bundled_species_csv() -> str:
     """Return the path to the bundled worldwide species-list CSV, extracting it
     from the committed zip if the CSV hasn't been unpacked yet.
 
-    The CSV is 269 MB (over GitHub's 100 MB limit) so only the zip is stored in
+    The CSV is ~320 MB (over GitHub's 100 MB limit) so only the zip is stored in
     git.  For a frozen app the zip is bundled inside sys._MEIPASS/specieslists/;
     the extracted CSV is written to ~/.mothbot/specieslists/ (writable on all
     platforms).  For source runs both the zip and the extracted CSV live in
@@ -2842,8 +2852,12 @@ def _ensure_bundled_species_csv() -> str:
     """
     import zipfile
 
-    zip_name = "Species_GBIF_Insecta_Worldwide_doi.org10.15468dl.hr7yfq.csv.zip"
+    # GBIF download 0024729-260928105237408 (DOI 10.15468/dl.4j8kfb): all Insecta,
+    # worldwide, Catalogue of Life taxonomy. The zip is GBIF's file byte-for-byte
+    # (only renamed); its DOI/metadata ship beside it as <key>.gbif.json.
+    zip_name = "0024729-260928105237408.csv.zip"
     csv_name = zip_name[:-4]  # strip .zip
+    sidecar_name = csv_name[:-4] + ".gbif.json"
 
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
@@ -2854,6 +2868,18 @@ def _ensure_bundled_species_csv() -> str:
         csv_dir  = PROJECT_ROOT / "specieslists"
 
     csv_path = csv_dir / csv_name
+
+    # Keep the DOI sidecar next to the extracted CSV (the frozen app extracts to
+    # ~/.mothbot), so the list's DOI is known even offline.
+    sidecar_src = zip_path.parent / sidecar_name
+    sidecar_dst = csv_dir / sidecar_name
+    if sidecar_src.exists() and sidecar_src != sidecar_dst:
+        try:
+            csv_dir.mkdir(parents=True, exist_ok=True)
+            if not sidecar_dst.exists() or sidecar_dst.read_bytes() != sidecar_src.read_bytes():
+                sidecar_dst.write_bytes(sidecar_src.read_bytes())
+        except OSError:
+            pass
 
     if not zip_path.exists():
         return str(csv_path) if csv_path.exists() else ""
@@ -2873,7 +2899,7 @@ def _ensure_bundled_species_csv() -> str:
 
     try:
         csv_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Extracting bundled worldwide species list — this happens once (~270 MB)...")
+        print(f"Extracting bundled worldwide species list — this happens once (~320 MB)...")
         with zipfile.ZipFile(zip_path, "r") as zf:
             # Extract only the CSV; skip macOS __MACOSX metadata entries
             for member in zf.namelist():

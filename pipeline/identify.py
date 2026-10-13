@@ -39,6 +39,7 @@ import io
 import time
 import hashlib
 from pathlib import Path
+import collections
 from collections import defaultdict
 import numpy as np
 from PIL import Image
@@ -100,6 +101,7 @@ from core.common import (
 )
 from core.paths import resolve_patch_path
 from core.species_list_info import doi_from_filename, resolve_species_list, species_list_aliases
+from core.light_trap_exclusions import EXCLUDED_FAMILIES, EXCLUDED_ORDERS, EXCLUSIONS_ID, exclusion_reason
 from core.blur import fill_missing_blur_scores
 
 # ~~~~Variables to Change~~~~~~~
@@ -150,6 +152,9 @@ DOI_ALIASES = set()
 # download key when there is one, so a run that crashed offline (DOI pending)
 # still resumes when rerun online (DOI known).
 SPECIES_LIST_KEY = ""
+# Leave out insect groups that never land on a light-trap screen (lice, fleas,
+# sessile scale insects, fossil-only orders… — see core/light_trap_exclusions.py).
+EXCLUDE_UNLIKELY_TAXA = True
 
 
 from importlib.metadata import version
@@ -207,6 +212,11 @@ def parse_args():
         required=False,
         default=ID_BOTDETECTIONS,
         help="ID detections made by robots?",
+    )
+    parser.add_argument(
+        "--keep_all_taxa",
+        action="store_true",
+        help="don't leave out groups that never come to light traps (see core/light_trap_exclusions.py)",
     )
     parser.add_argument(
         "--overwrite_prev_bot_ID",
@@ -528,7 +538,7 @@ def _apply_id_to_shape(shape, pred, conf, winningdict):
     old_identifier = shape.get("identifier_bot", "")
     old_doi = shape.get("species_list", "")
     if old_identifier and (old_identifier != VERSION or (old_doi != DOI and old_doi not in DOI_ALIASES)):
-        BOT_ID_FIELDS = ["identifier_bot", "species_list", "timestamp_ID_bot",
+        BOT_ID_FIELDS = ["identifier_bot", "species_list", "species_list_exclusions", "timestamp_ID_bot",
                          "confidence_ID", "label",
                          "kingdom", "phylum", "class", "order", "family", "genus", "species"]
         snapshot = {k: shape[k] for k in BOT_ID_FIELDS if k in shape}
@@ -536,6 +546,11 @@ def _apply_id_to_shape(shape, pred, conf, winningdict):
 
     shape["identifier_bot"] = VERSION
     shape["species_list"] = DOI
+    # Which taxa were left out of the choices (traceability; see core/light_trap_exclusions.py).
+    if EXCLUDE_UNLIKELY_TAXA:
+        shape["species_list_exclusions"] = EXCLUSIONS_ID
+    else:
+        shape.pop("species_list_exclusions", None)
     shape["timestamp_ID_bot"] = current_timestamp()
     shape["confidence_ID"] = conf
 
@@ -647,13 +662,14 @@ def _synonym_species_keys(taxa_df):
     return keys
 
 
-def _taxa_cache_fingerprint(taxa_path):
+def _taxa_cache_fingerprint(taxa_path, exclusions_id=None):
     """Identify the exact species-list file (and filter logic) a cache was built from."""
     st = os.stat(taxa_path)
-    return {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "filter": _TAXA_FILTER_VERSION}
+    return {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "filter": _TAXA_FILTER_VERSION,
+            "exclusions": exclusions_id}
 
 
-def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_errors):
+def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_errors, exclude_unlikely=False):
     """Build (or load from cache) a TreeOfLifeClassifier filtered to the given taxa.
 
     Cache format (v2): stores the pre-filtered embedding tensor + names list so
@@ -668,6 +684,8 @@ def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_erro
         taxon_rank: Taxonomic rank string (e.g. "order", "species").
         device: Torch device string ("cpu" or "cuda").
         flag_the_det_errors: Unused; kept for API compatibility.
+        exclude_unlikely: Also drop groups that never come to a light trap
+            (core/light_trap_exclusions.py).
 
     Returns:
         TreeOfLifeClassifier with embeddings filtered to the taxa in taxa_path.
@@ -678,7 +696,10 @@ def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_erro
         print("No species list provided — loading full Tree of Life classifier (no taxon filter).")
         return TreeOfLifeClassifier(device=device)
 
-    cache_path = os.path.splitext(taxa_path)[0] + ".pt"
+    exclusions_id = EXCLUSIONS_ID if exclude_unlikely else None
+    # Separate caches for with/without exclusions, so toggling doesn't force rebuilds.
+    cache_path = os.path.splitext(taxa_path)[0] + (".pt" if exclude_unlikely else ".all-taxa.pt")
+    fingerprint = _taxa_cache_fingerprint(taxa_path, exclusions_id)
 
     _ensure_hf_mode()
 
@@ -689,11 +710,11 @@ def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_erro
         except Exception:
             cache = {}
 
-        if "txt_embeddings" in cache and cache.get("source") != _taxa_cache_fingerprint(taxa_path):
+        if "txt_embeddings" in cache and cache.get("source") != fingerprint:
             # Built from a different version of the species list (e.g. before the
             # bundled worldwide list was cleaned of non-insects) — it would keep
             # predicting taxa that are no longer in the list.
-            print("ℹ️  Species list changed since the filter cache was built — rebuilding it.")
+            print("ℹ️  Species list or taxon exclusions changed since the filter cache was built — rebuilding it.")
         elif "txt_embeddings" in cache and "txt_names" in cache:
             n = cache["txt_embeddings"].shape[1]
             print(f"Loading BioCLIP model with cached filter ({n} filtered labels) — skipping full TOL embedding load")
@@ -742,6 +763,19 @@ def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_erro
             print(f"Dropping {dropped} TOL labels whose class isn't in the species list (name clashes)")
         keep_mask &= class_ok
 
+    if exclude_unlikely:
+        tol_order = label_data["order"].fillna("").str.lower()
+        tol_family = label_data["family"].fillna("").str.lower()
+        excluded = keep_mask & (tol_order.isin(EXCLUDED_ORDERS) | tol_family.isin(EXCLUDED_FAMILIES))
+        if excluded.any():
+            reasons = collections.Counter(
+                exclusion_reason(o, f) for o, f in zip(label_data["order"][excluded], label_data["family"][excluded])
+            )
+            print(f"Leaving out {int(excluded.sum())} TOL labels for groups never seen at light traps ({EXCLUSIONS_ID}):")
+            for reason, n in reasons.most_common():
+                print(f"   {n:6d}  {reason}")
+        keep_mask &= ~excluded
+
     keep_labels_ary = keep_mask.tolist()
     matched = sum(keep_labels_ary)
     print(f"Keeping {matched} of {len(keep_labels_ary)} TOL embeddings")
@@ -760,7 +794,7 @@ def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_erro
         {
             "txt_embeddings": classifier._subset_txt_embeddings.cpu(),
             "txt_names": classifier._subset_txt_names,
-            "source": _taxa_cache_fingerprint(taxa_path),
+            "source": fingerprint,
         },
         cache_path,
     )
@@ -859,7 +893,8 @@ def _id_checkpoint_dir(matched_img_json_pairs, label):
     which is precisely what lets an *overwrite* run tell "interrupted, resume"
     (directory present) from "fresh overwrite, redo everything" (absent).
     """
-    key_parts = [label, VERSION, SPECIES_LIST_KEY or DOI, str(TAXONOMIC_RANK_FILTER)]
+    key_parts = [label, VERSION, SPECIES_LIST_KEY or DOI, str(TAXONOMIC_RANK_FILTER),
+                 EXCLUSIONS_ID if EXCLUDE_UNLIKELY_TAXA else "all-taxa"]
     key_parts += sorted(str(jp) for _, jp in matched_img_json_pairs)
     digest = hashlib.md5("\n".join(key_parts).encode("utf-8")).hexdigest()[:16]
     return Path.home() / ".mothbot" / "id_cache" / digest
@@ -1126,7 +1161,9 @@ def ID_matched_img_json_pairs(
 ):
     """Build the classifier once, then ID human and bot detections."""
 
-    classifier = build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_errors)
+    classifier = build_classifier(
+        taxa_path, taxa_cols, taxon_rank, device, flag_the_det_errors, exclude_unlikely=EXCLUDE_UNLIKELY_TAXA,
+    )
 
     if ID_HUMANDETECTIONS:
         run_id_on_detection_set(hu_matched_img_json_pairs, classifier, "HU")
@@ -1165,7 +1202,7 @@ def extract_doi_from_csv_path(csv_path: str) -> str:
 
 def run(
     input_path, taxa_csv, rank=3, ID_Hum=True, ID_Bot=True, overwrite_prev_bot_ID=True,
-    dataset_root=None, blur_threshold=None,
+    dataset_root=None, blur_threshold=None, exclude_unlikely_taxa=True,
 ):
     """Run the full ID pipeline programmatically.
 
@@ -1186,9 +1223,14 @@ def run(
     dataset_root : str | None
         Top-level folder for the _processed output tree.  Defaults to
         *input_path* itself.
+    exclude_unlikely_taxa : bool
+        Leave out insect groups that never land on a light-trap screen (lice,
+        fleas, sessile scale insects, fossil-only orders…). The species list is
+        used unchanged; see core/light_trap_exclusions.py.
     """
     global TAXONOMIC_RANK_FILTER, OVERWRITE_EXISTING_IDs, ID_HUMANDETECTIONS
     global ID_BOTDETECTIONS, INPUT_PATH, DOI, DOI_ALIASES, SPECIES_LIST_KEY, DEVICE, DATASET_ROOT, BLUR_THRESHOLD
+    global EXCLUDE_UNLIKELY_TAXA
 
     TAXONOMIC_RANK_FILTER = Rank(int(rank))
     OVERWRITE_EXISTING_IDs = bool(overwrite_prev_bot_ID)
@@ -1196,6 +1238,7 @@ def run(
     ID_BOTDETECTIONS = bool(ID_Bot)
     INPUT_PATH = input_path
     DATASET_ROOT = dataset_root or input_path
+    EXCLUDE_UNLIKELY_TAXA = bool(exclude_unlikely_taxa)
     # 100 (the slider's max) means "identify everything", same as no threshold.
     BLUR_THRESHOLD = (
         float(blur_threshold) if blur_threshold is not None and float(blur_threshold) < 100 else None
@@ -1261,4 +1304,5 @@ if __name__ == "__main__":
         ID_Hum=bool(int(args.ID_Hum)),
         ID_Bot=bool(int(args.ID_Bot)),
         overwrite_prev_bot_ID=bool(int(args.overwrite_prev_bot_ID)),
+        exclude_unlikely_taxa=not args.keep_all_taxa,
     )

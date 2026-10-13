@@ -1,0 +1,22 @@
+{
+  "source": "gbif-download",
+  "downloadKey": "0024729-260928105237408",
+  "doi": "10.15468/dl.4j8kfb",
+  "doiUrl": "https://doi.org/10.15468/dl.4j8kfb",
+  "license": "http://creativecommons.org/licenses/by-nc/4.0/legalcode",
+  "created": "2026-10-13T20:37:30.461+00:00",
+  "totalRecords": 1656814,
+  "checklistKey": "7ddf754f-d193-4cc9-b351-99906754a03b",
+  "checklist": "Catalogue of Life (COL XR)",
+  "description": "Insecta \u00b7 Worldwide",
+  "predicate": {
+    "type": "in",
+    "key": "TAXON_KEY",
+    "values": [
+      "H6"
+    ],
+    "checklistKey": "7ddf754f-d193-4cc9-b351-99906754a03b"
+  },
+  "fetchedAt": "2026-10-13T22:24:42+00:00",
+  "downloadZipSha256": "174152621fc53dbc14733451650edd825dc9d6b4e41fe8ba6ab127b2bc96fa41"
+}

@@ -114,6 +114,9 @@ species_list_dir = project_dir / "specieslists"
 if species_list_dir.exists():
     for _zf in sorted(species_list_dir.glob("*.csv.zip")):
         datas.append((str(_zf), "specieslists"))
+    # GBIF download metadata (DOI etc.) shipped beside each list.
+    for _sidecar in sorted(species_list_dir.glob("*.gbif.json")):
+        datas.append((str(_sidecar), "specieslists"))
 
 # Bundle MBD detector models so the UI can offer them as built-in options.
 trained_models_dir = project_dir / "trained_models"

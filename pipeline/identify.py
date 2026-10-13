@@ -99,6 +99,7 @@ from core.common import (
     print_device_info,
 )
 from core.paths import resolve_patch_path
+from core.species_list_info import doi_from_filename, resolve_species_list, species_list_aliases
 from core.blur import fill_missing_blur_scores
 
 # ~~~~Variables to Change~~~~~~~
@@ -142,6 +143,13 @@ taxa_path = SPECIES_LIST
 DEVICE = get_device()
 
 DOI = ""
+# Every reference that means the current species list (its DOI URL and, for
+# GBIF download-key lists, the download page URL used while the DOI was pending).
+DOI_ALIASES = set()
+# Stable identity of the species list for the resume checkpoint — the GBIF
+# download key when there is one, so a run that crashed offline (DOI pending)
+# still resumes when rerun online (DOI known).
+SPECIES_LIST_KEY = ""
 
 
 from importlib.metadata import version
@@ -519,7 +527,7 @@ def _apply_id_to_shape(shape, pred, conf, winningdict):
     # Archive previous bot ID if it was from a different model or species list.
     old_identifier = shape.get("identifier_bot", "")
     old_doi = shape.get("species_list", "")
-    if old_identifier and (old_identifier != VERSION or old_doi != DOI):
+    if old_identifier and (old_identifier != VERSION or (old_doi != DOI and old_doi not in DOI_ALIASES)):
         BOT_ID_FIELDS = ["identifier_bot", "species_list", "timestamp_ID_bot",
                          "confidence_ID", "label",
                          "kingdom", "phylum", "class", "order", "family", "genus", "species"]
@@ -606,7 +614,37 @@ def _build_classifier_from_embedding_cache(txt_embeddings, txt_names, device):
 
 # Bump when the filtering logic in build_classifier changes, so caches built
 # the old way are rebuilt.
-_TAXA_FILTER_VERSION = 2
+_TAXA_FILTER_VERSION = 3
+
+
+# Ranks whose scientificName is a binomial worth matching against TOL species.
+_SPECIES_LEVEL_RANKS = {"SPECIES", "SUBSPECIES", "VARIETY", "FORM"}
+
+
+def _binomial(name):
+    """"Lebia (Chelonodema) melanocrepis (Bates, 1883)" → "lebia melanocrepis"; None if not a binomial."""
+    words = re.sub(r"\([^)]*\)", " ", str(name or "")).split()
+    if len(words) >= 2 and words[0][:1].isupper() and words[1][:1].islower() and words[1].isalpha():
+        return f"{words[0]} {words[1]}".lower()
+    return None
+
+
+def _synonym_species_keys(taxa_df):
+    """Binomials from scientificName / acceptedScientificName of species-level rows.
+
+    Catalogue of Life lists file a species under its current accepted name, while
+    BioCLIP's Tree of Life often knows it by an older one. GBIF keeps the old
+    names as synonym rows (scientificName), so matching those too keeps species
+    BioCLIP can recognise (~460 extra for the Panama/Costa Rica list).
+    """
+    if "taxonRank" not in taxa_df.columns:
+        return set()
+    rows = taxa_df.filter(taxa_df["taxonRank"].is_in(list(_SPECIES_LEVEL_RANKS)))
+    keys = set()
+    for col in ("scientificName", "acceptedScientificName"):
+        if col in rows.columns:
+            keys.update(b for b in map(_binomial, rows[col].drop_nulls().to_list()) if b)
+    return keys
 
 
 def _taxa_cache_fingerprint(taxa_path):
@@ -675,6 +713,11 @@ def build_classifier(taxa_path, taxa_cols, taxon_rank, device, flag_the_det_erro
     print(f"Reading {taxa_path!s}, extracting {taxon_rank} values.")
     taxa_df = _read_taxa_table(taxa_path)
     taxon_keys = _taxa_column_values(taxa_df, taxon_rank.lower(), taxa_cols)
+    if taxon_rank.lower() == "species":
+        synonyms = _synonym_species_keys(taxa_df) - taxon_keys
+        if synonyms:
+            print(f"Also matching {len(synonyms)} synonym / alternative species names from the list")
+            taxon_keys |= synonyms
 
     print(f"Filtering TOL embeddings to {len(taxon_keys)} {taxon_rank} values...")
     label_data = classifier.get_label_data()
@@ -816,7 +859,7 @@ def _id_checkpoint_dir(matched_img_json_pairs, label):
     which is precisely what lets an *overwrite* run tell "interrupted, resume"
     (directory present) from "fresh overwrite, redo everything" (absent).
     """
-    key_parts = [label, VERSION, DOI, str(TAXONOMIC_RANK_FILTER)]
+    key_parts = [label, VERSION, SPECIES_LIST_KEY or DOI, str(TAXONOMIC_RANK_FILTER)]
     key_parts += sorted(str(jp) for _, jp in matched_img_json_pairs)
     digest = hashlib.md5("\n".join(key_parts).encode("utf-8")).hexdigest()[:16]
     return Path.home() / ".mothbot" / "id_cache" / digest
@@ -1111,36 +1154,13 @@ def _ensure_hf_mode():
 
 
 def extract_doi_from_csv_path(csv_path: str) -> str:
+    """DOI URL from a hand-renamed species-list file name, or "no_doi".
+
+    Kept for callers that only want the file-name DOI; ``run`` uses
+    core.species_list_info.resolve_species_list, which also handles GBIF's
+    download-key file names (looking the DOI up online, offline-safe).
     """
-    Extracts the DOI from a filename like:
-      SpeciesList_..._doi.org10.15468dl.epzeza.csv       (old: no separator dot)
-      SpeciesList_..._doi.org.10.15468.dl.pkbmuj.csv     (new: dot-separated)
-    and returns the full DOI URL.
-    Returns "no_doi" if no valid DOI is found.
-    """
-    filename = os.path.basename(csv_path)
-
-    match = re.search(r"(doi\.org[0-9A-Za-z\.\-]+)", filename)
-    if not match:
-        return "no_doi"
-
-    doi_raw = match.group(1)
-    # Strip "doi.org", any leading separator dot, and trailing ".csv" if the
-    # regex greedily consumed it as part of the DOI chunk.
-    doi_core = doi_raw.replace("doi.org", "").lstrip(".")
-    if doi_core.lower().endswith(".csv"):
-        doi_core = doi_core[:-4]
-
-    # DOI prefix is always "10.<registrant>" — find the split point.
-    m = re.match(r"(10\.\d+)(.+)", doi_core)
-    if not m:
-        return "no_doi"
-
-    prefix, suffix = m.groups()
-    # suffix may start with "." in dot-separated filenames — strip it.
-    doi_fixed = f"{prefix}/{suffix.lstrip('.')}"
-
-    return f"https://doi.org/{doi_fixed}"
+    return doi_from_filename(csv_path) or "no_doi"
 
 
 def run(
@@ -1168,7 +1188,7 @@ def run(
         *input_path* itself.
     """
     global TAXONOMIC_RANK_FILTER, OVERWRITE_EXISTING_IDs, ID_HUMANDETECTIONS
-    global ID_BOTDETECTIONS, INPUT_PATH, DOI, DEVICE, DATASET_ROOT, BLUR_THRESHOLD
+    global ID_BOTDETECTIONS, INPUT_PATH, DOI, DOI_ALIASES, SPECIES_LIST_KEY, DEVICE, DATASET_ROOT, BLUR_THRESHOLD
 
     TAXONOMIC_RANK_FILTER = Rank(int(rank))
     OVERWRITE_EXISTING_IDs = bool(overwrite_prev_bot_ID)
@@ -1181,7 +1201,13 @@ def run(
         float(blur_threshold) if blur_threshold is not None and float(blur_threshold) < 100 else None
     )
 
-    DOI = extract_doi_from_csv_path(taxa_csv)
+    # Offline-safe: if GBIF can't be reached the run continues and the list is
+    # referenced by its GBIF download page until a later run fetches the DOI.
+    species_info = resolve_species_list(taxa_csv)
+    DOI = species_info["ref"]
+    DOI_ALIASES = species_list_aliases(species_info)
+    SPECIES_LIST_KEY = species_info["download_key"] or DOI
+    print(species_info["message"])
     print("using species list: " + DOI)
 
     DEVICE = get_device()

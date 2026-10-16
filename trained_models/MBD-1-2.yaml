@@ -1,5 +1,5 @@
 type: yolo26_obb
-name: yolo26s_Oct152026
+name: yolo26s_Oct162026_mbd12data
 display_name: MBD-1-2-OBB
 provider: Ultralytics
 model_path: "MBD-1-2.onnx"

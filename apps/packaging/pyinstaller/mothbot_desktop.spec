@@ -118,12 +118,13 @@ if species_list_dir.exists():
     for _sidecar in sorted(species_list_dir.glob("*.gbif.json")):
         datas.append((str(_sidecar), "specieslists"))
 
-# Bundle MBD detector models so the UI can offer them as built-in options.
+# Bundle detector models (MBD-<maj>-<min>.pt, Anybug-<Name>-v<maj>-<min>.pt) so the UI can offer
+# them as built-in options. Keep this pattern in sync with BUNDLED_MODEL_NAME in ui/gradio_app.py.
 trained_models_dir = project_dir / "trained_models"
 if trained_models_dir.exists():
     import re as _re
-    for _model in sorted(trained_models_dir.glob("MBD-*.pt")):
-        if _re.match(r"MBD-\d+-\d+\.pt$", _model.name):
+    for _model in sorted(trained_models_dir.glob("*.pt")):
+        if _re.match(r"(?:MBD-|Anybug-[A-Za-z0-9]+-v)\d+-\d+\.pt$", _model.name):
             datas.append((str(_model), "trained_models"))
 
 # Bundle favicon.png into assets/ so tray icon and browser tab can find it.

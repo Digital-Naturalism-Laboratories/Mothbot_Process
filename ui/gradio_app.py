@@ -2920,8 +2920,12 @@ def _ensure_bundled_species_csv() -> str:
 DEFAULT_SPECIES_CSV = _ensure_bundled_species_csv()
 
 
+BUNDLED_MODEL_NAME = re.compile(r"(?:MBD-|Anybug-[A-Za-z0-9]+-v)(\d+)-(\d+)\.pt$")
+
+
 def _discover_bundled_models():
-    """Find MBD-*.pt files in trained_models/ for both packaged and source runs.
+    """Find bundled detector models in trained_models/ for both packaged and source runs:
+    MBD-<major>-<minor>.pt and Anybug-<Name>-v<major>-<minor>.pt (e.g. Anybug-Mixed-v2-0.pt).
 
     Checks sys._MEIPASS first (PyInstaller bundle), then PROJECT_ROOT/trained_models.
     Returns a list of (label, path) tuples sorted newest-version-first, ready for
@@ -2938,17 +2942,18 @@ def _discover_bundled_models():
     for d in search_dirs:
         if not d.is_dir():
             continue
-        for pt in sorted(d.glob("MBD-*.pt")):
-            m = re.match(r"MBD-(\d+)-(\d+)\.pt$", pt.name)
+        for pt in sorted(d.glob("*.pt")):
+            m = BUNDLED_MODEL_NAME.match(pt.name)
             if not m or pt.name in seen:
                 continue
             seen.add(pt.name)
             major, minor = int(m.group(1)), int(m.group(2))
             models.append((major, minor, pt))
 
+    # Highest version first, so it becomes the default.
     models.sort(key=lambda x: (x[0], x[1]), reverse=True)
     return [
-        (f"MBD-{major}-{minor} (bundled)", str(path.resolve()))
+        (f"{path.stem} (bundled)", str(path.resolve()))
         for major, minor, path in models
     ]
 

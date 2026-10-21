@@ -3,6 +3,7 @@ name = "mothbot"
 version = "1.0.15"
 description = "Desktop-packaging-friendly Gradio app for Mothbot processing pipelines."
 readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.11"
 dependencies = [
     "babel==2.17.0",

@@ -155,6 +155,11 @@ mothbot_icns = project_dir / "assets" / "mothbot.icns"
 if mothbot_icns.exists():
     datas.append((str(mothbot_icns), "assets"))
 
+# Ship our license and the third-party notices (AGPL-3.0 Ultralytics, CC BY-NC species list, ...).
+for _notice in ("LICENSE", "THIRD_PARTY_NOTICES.md"):
+    if (project_dir / _notice).exists():
+        datas.append((str(project_dir / _notice), "."))
+
 # Bundle explicit build/release version marker when available.
 build_version_file = os.environ.get("MOTHBOT_VERSION_FILE", "").strip()
 if build_version_file:

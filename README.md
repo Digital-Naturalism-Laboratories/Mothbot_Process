@@ -101,3 +101,9 @@ Release flow:
 The workflow enforces an artifact size budget (warning at 1.6 GiB, fail at 1.8 GiB per file) to stay under GitHub Releases upload limits.
 
 For full release and local packaging steps, see `docs/DESKTOP_PACKAGING.md`.
+
+## License
+
+Mothbot Process is released under the [MIT License](LICENSE). It uses third-party software,
+models and data under their own licenses, including Ultralytics (AGPL-3.0) for detection and a
+GBIF species list (CC BY-NC 4.0); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -2921,15 +2921,23 @@ DEFAULT_SPECIES_CSV = _ensure_bundled_species_csv()
 
 
 BUNDLED_MODEL_NAME = re.compile(r"(?:MBD-|Anybug-[A-Za-z0-9]+-v)(\d+)-(\d+)\.pt$")
+# The default detector, listed first whenever it's bundled (Andrew 2026-10-27: nano is fast enough on
+# ordinary laptops and finds the same insects; the "s" model is offered as the tighter-box option).
+DEFAULT_BUNDLED_MODEL = "Anybug-MixedNano-v2-0"
+BUNDLED_MODEL_NOTES = {
+    "Anybug-MixedNano-v2-0": "default, fast",
+    "Anybug-Mixed-v2-0": "tight",
+}
 
 
 def _discover_bundled_models():
     """Find bundled detector models in trained_models/ for both packaged and source runs:
     MBD-<major>-<minor>.pt and Anybug-<Name>-v<major>-<minor>.pt (e.g. Anybug-Mixed-v2-0.pt).
+    Sub-folders (e.g. trained_models/archive/ with retired models) are not scanned.
 
     Checks sys._MEIPASS first (PyInstaller bundle), then PROJECT_ROOT/trained_models.
-    Returns a list of (label, path) tuples sorted newest-version-first, ready for
-    a gr.Dropdown choices list.
+    Returns a list of (label, path) tuples, DEFAULT_BUNDLED_MODEL first, then
+    newest-version-first, ready for a gr.Dropdown choices list.
     """
     search_dirs = []
     meipass = getattr(sys, "_MEIPASS", None)
@@ -2950,10 +2958,10 @@ def _discover_bundled_models():
             major, minor = int(m.group(1)), int(m.group(2))
             models.append((major, minor, pt))
 
-    # Highest version first, so it becomes the default.
-    models.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    # The chosen default first, then highest version first.
+    models.sort(key=lambda x: (x[2].stem == DEFAULT_BUNDLED_MODEL, x[0], x[1]), reverse=True)
     return [
-        (f"{path.stem} (bundled)", str(path.resolve()))
+        (f"{path.stem} ({BUNDLED_MODEL_NOTES.get(path.stem, 'bundled')})", str(path.resolve()))
         for major, minor, path in models
     ]
 

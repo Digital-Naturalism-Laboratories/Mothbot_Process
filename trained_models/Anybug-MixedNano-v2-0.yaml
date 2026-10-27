@@ -1,0 +1,10 @@
+type: yolo26_obb
+name: yolo26n_Oct232026_anybug2_mixed_v1
+display_name: Anybug-MixedNano-v2-0-OBB
+provider: Ultralytics
+model_path: "Anybug-MixedNano-v2-0.onnx"
+iou_threshold: 0.1
+conf_threshold: 0.1
+max_det: 5000
+classes:
+  - creature

@@ -120,6 +120,7 @@ if species_list_dir.exists():
 
 # Bundle detector models (MBD-<maj>-<min>.pt, Anybug-<Name>-v<maj>-<min>.pt) so the UI can offer
 # them as built-in options. Keep this pattern in sync with BUNDLED_MODEL_NAME in ui/gradio_app.py.
+# Only the top level of trained_models/ is bundled; retired models live in trained_models/archive/.
 trained_models_dir = project_dir / "trained_models"
 if trained_models_dir.exists():
     import re as _re

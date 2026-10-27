@@ -2921,12 +2921,12 @@ DEFAULT_SPECIES_CSV = _ensure_bundled_species_csv()
 
 
 BUNDLED_MODEL_NAME = re.compile(r"(?:MBD-|Anybug-[A-Za-z0-9]+-v)(\d+)-(\d+)\.pt$")
-# The default detector, listed first whenever it's bundled (Andrew 2026-10-27: nano is fast enough on
-# ordinary laptops and finds the same insects; the "s" model is offered as the tighter-box option).
-DEFAULT_BUNDLED_MODEL = "Anybug-MixedNano-v2-0"
+# The default detector, listed first whenever it's bundled. Andrew 2026-10-27: the "s" model, because on
+# real nights nano missed ~5-11% of its detections (mostly faint/blurry real insects); nano is the fast option.
+DEFAULT_BUNDLED_MODEL = "Anybug-Mixed-v2-0"
 BUNDLED_MODEL_NOTES = {
-    "Anybug-MixedNano-v2-0": "default, fast",
-    "Anybug-Mixed-v2-0": "tight",
+    "Anybug-Mixed-v2-0": "default",
+    "Anybug-MixedNano-v2-0": "fast",
 }
 
 

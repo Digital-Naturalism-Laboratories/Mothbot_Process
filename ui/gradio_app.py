@@ -10,6 +10,7 @@ Key changes from the subprocess-based original:
 """
 
 import json
+import logging
 import random
 import os
 import re
@@ -37,6 +38,8 @@ from pipeline import insert_exif as Mothbot_InsertExif
 from pipeline import insert_metadata as Mothbot_InsertMetadata
 from pipeline import legacy_converter as Mothbot_LegacyConverter
 from pipeline import pixel_mass as Mothbot_PixelMass
+
+logger = logging.getLogger("mothbot.ui")
 
 def _keep_session_state_after_disconnect():
     """Keep each page's gr.State values for as long as the app runs.
@@ -1197,19 +1200,31 @@ def app():
             lc_run_btn,
             meta_manual_folder_choices,
         ]
+        # Each scan first shows "Scanning…": the collection list stays hidden until the
+        # scan finishes, so otherwise nothing on screen says one is running.
         deployment_browse_btn.click(
             fn=browse_deployment_folder,
             inputs=[deployment_path],
             outputs=[deployment_path, picker_error_state],
         ).then(
+            fn=show_scanning_status,
+            inputs=[deployment_path],
+            outputs=[status],
+        ).then(
             fn=scan_deployment_folder,
             inputs=[deployment_path, picker_error_state],
             outputs=_scan_outputs,
+            show_progress="minimal",  # keep the "Scanning…" text readable
         )
         deployment_path.change(
+            fn=show_scanning_status,
+            inputs=[deployment_path],
+            outputs=[status],
+        ).then(
             fn=scan_deployment_folder_on_change,
             inputs=[deployment_path],
             outputs=_scan_outputs,
+            show_progress="minimal",  # keep the "Scanning…" text readable
         )
         # Show the "open in Classify" handoff link whenever the dataset folder changes.
         def _classify_handoff_ui(folder_path):
@@ -1229,9 +1244,14 @@ def app():
             outputs=[classify_open_status],
         )
         refresh_btn.click(
+            fn=show_scanning_status,
+            inputs=[deployment_path],
+            outputs=[status],
+        ).then(
             fn=scan_deployment_folder_on_change,
             inputs=[deployment_path],
             outputs=_scan_outputs,
+            show_progress="minimal",  # keep the "Scanning…" text readable
         )
 
         # ── Cross-tab two-way sync (wired after all tabs so all components exist) ──
@@ -1589,21 +1609,10 @@ def _format_run(run, total_photos, prefix=""):
     return f"{text}  {stages}" if stages else text
 
 
-def scan_deployment_folder(folder_path, picker_error_message=""):
-    """Scan *folder_path* for image collections (raw and externally-processed)
-    and return UI updates.
-
-    Rules:
-    - Raw collections: folders under *folder_path* (outside _processed/) that
-      contain .jpg files.
-    - Externally-processed collections: folders under *folder_path*/_processed/
-      that contain .jpg patch images but whose corresponding raw folder has NO
-      source images (so the collaborator only provided patches, not originals).
-    - If a raw folder has source images, its _processed mirror is NOT shown as
-      a separate entry (the raw folder already covers it).
-    """
-    _EMPTY = (
-        gr.update(visible=True),
+def _scan_failed_outputs(message):
+    """Scan outputs that show *message* in the status box and an empty collection list."""
+    return (
+        gr.update(label="Error", value=message, visible=True),
         gr.update(choices=[], value=[], visible=False),
         {},
         "Select All",
@@ -1618,11 +1627,48 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
         gr.update(choices=[], value=[]),  # meta_manual_folder_choices
     )
 
+
+def show_scanning_status(folder_path):
+    """Shown while a scan runs: the collection list stays hidden until it finishes, so
+    without this a slow scan (big or external drive) looks like nothing happened."""
+    folder_path = (folder_path or "").strip()
+    if not folder_path or not os.path.isdir(folder_path):
+        return gr.update()  # the scan itself reports the bad path
+    return gr.update(label="Status", value=f"Scanning for image collections in:\n{folder_path}\n…", visible=True)
+
+
+def scan_deployment_folder(folder_path, picker_error_message=""):
+    """Scan *folder_path* and return UI updates. A scan that fails shows its error in
+    the status box (and the log) instead of leaving the collection list silently empty —
+    the packaged app has no console, so Gradio's own traceback would be lost."""
+    try:
+        return _scan_deployment_folder(folder_path, picker_error_message)
+    except Exception as exc:
+        logger.exception("Scanning datasets folder %r failed", folder_path)
+        return _scan_failed_outputs(
+            f"Scanning this folder failed:\n{folder_path}\n\n{type(exc).__name__}: {exc}\n\n"
+            "Please send this message (and the Mothbot log file) to the Mothbot team."
+        )
+
+
+def _scan_deployment_folder(folder_path, picker_error_message=""):
+    """Scan *folder_path* for image collections (raw and externally-processed)
+    and return UI updates.
+
+    Rules:
+    - Raw collections: folders under *folder_path* (outside _processed/) that
+      contain .jpg files.
+    - Externally-processed collections: folders under *folder_path*/_processed/
+      that contain .jpg patch images but whose corresponding raw folder has NO
+      source images (so the collaborator only provided patches, not originals).
+    - If a raw folder has source images, its _processed mirror is NOT shown as
+      a separate entry (the raw folder already covers it).
+    """
     if picker_error_message:
-        return (gr.update(value=f"Picker error: {picker_error_message}", visible=True),) + _EMPTY[1:]
+        return _scan_failed_outputs(f"Picker error: {picker_error_message}")
 
     if not folder_path or not os.path.isdir(folder_path):
-        return (gr.update(value="No valid folder path provided.", visible=True),) + _EMPTY[1:]
+        return _scan_failed_outputs("No valid folder path provided.")
 
     # ── Raw collections ──────────────────────────────────────────────────────
     raw_matches = find_image_collections(folder_path)
@@ -1651,9 +1697,7 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
                 external_matches.append(p)
 
     if not raw_matches and not external_matches:
-        return (
-            gr.update(value=f"No folders containing images found in:\n{folder_path}", visible=True),
-        ) + _EMPTY[1:]
+        return _scan_failed_outputs(f"No folders containing images found in:\n{folder_path}")
 
     choices = []
     mapping = {}

@@ -19,6 +19,7 @@ from logging.handlers import RotatingFileHandler
 import logging
 from logging.handlers import RotatingFileHandler
 
+import io
 from pathlib import Path
 import socket
 import sys
@@ -75,17 +76,77 @@ from ui.tray import start_tray
 _DEVNULL_STREAMS = []
 
 
+class _StderrToLog:
+    """File-like stderr that writes each line to the Mothbot log.
+
+    The packaged app has no console, so anything printed to stderr was lost —
+    including the traceback Gradio prints when an event handler fails (which the
+    user only sees as a brief "Error" popup). Progress bars redraw a line with
+    "\\r"; only the last state of such a line is kept, so they don't flood the log.
+    """
+
+    encoding = "utf-8"
+    errors = "replace"
+
+    def __init__(self):
+        self._logger = logging.getLogger("mothbot.stderr")
+        self._pending = ""
+        self._writing = False  # a failing log handler reports to stderr: don't loop
+
+    def write(self, text):
+        if not isinstance(text, str):
+            text = str(text)
+        self._pending += text
+        *lines, self._pending = self._pending.split("\n")
+        if not self._writing:
+            self._writing = True
+            try:
+                for line in lines:
+                    line = line.rsplit("\r", 1)[-1].rstrip()
+                    if line:
+                        self._logger.warning(line)
+            finally:
+                self._writing = False
+        self._pending = self._pending.rsplit("\r", 1)[-1]
+        return len(text)
+
+    def flush(self):
+        pass
+
+    def isatty(self):
+        return False
+
+    def writable(self):
+        return True
+
+    def fileno(self):
+        raise io.UnsupportedOperation("fileno")
+
+
 def _ensure_stdio_streams() -> None:
     """
     PyInstaller windowed mode can leave stdio streams as None on Windows.
     Uvicorn's default logging formatter expects streams with isatty().
+
+    In the packaged app (no console attached) stderr goes to the log file instead,
+    so errors printed there are kept. Call after _configure_logging().
     """
+    frozen = getattr(sys, "frozen", False)
     for stream_name in ("stdout", "stderr"):
         stream = getattr(sys, stream_name, None)
-        if stream is None:
+        if stream_name == "stderr" and frozen and (stream is None or not _is_tty(stream)):
+            setattr(sys, stream_name, _StderrToLog())
+        elif stream is None:
             fallback = open(os.devnull, "w", encoding="utf-8")
             _DEVNULL_STREAMS.append(fallback)
             setattr(sys, stream_name, fallback)
+
+
+def _is_tty(stream) -> bool:
+    try:
+        return stream.isatty()
+    except Exception:
+        return False
 
 
 def _log_path() -> Path:
@@ -158,8 +219,8 @@ def _pick_server_port(preferred_port: int = 7861) -> int:
 
 
 def main():
-    _ensure_stdio_streams()
     log_path = _configure_logging()
+    _ensure_stdio_streams()
     _install_exception_hooks()
     logger = logging.getLogger("mothbot.desktop")
     logger.info("Mothbot desktop startup")

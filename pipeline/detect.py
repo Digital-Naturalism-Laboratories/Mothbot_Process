@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from core.preview import emit_preview
 from core.blur import blur_fields, record_blur_fields
+from core.boxes import direction_from_points, labelled_box
 from pipeline.pixel_mass import load_calibration, quick_nobg
 from core.common import (
     find_date_folders,
@@ -348,6 +349,7 @@ def _infer_onnx_single(image_path, bot_json_path, model_name, conf_thresh=0.25, 
     filename = os.path.basename(image_path)
     stem, _, ext = filename.rpartition(".")
     shapes = []
+    img_h, img_w = orig_img.shape[:2]
 
     for det_idx, i in enumerate(indices):
         # Undo letterbox to get coords in original image pixels
@@ -364,7 +366,9 @@ def _infer_onnx_single(image_path, bot_json_path, model_name, conf_thresh=0.25, 
 
         shapes.append({
             "kie_linking": [],
-            "direction": angle_deg,
+            # X-AnyLabeling's convention (radians, angle of the first edge), so the
+            # shape reopens correctly there. The corners are the record.
+            "direction": direction_from_points(points),
             "label": "creature",
             "score": conf,
             "group_id": None,
@@ -374,6 +378,8 @@ def _infer_onnx_single(image_path, bot_json_path, model_name, conf_thresh=0.25, 
             "flags": {},
             "attributes": {},
             "points": points,
+            # The same box in the Mothbox format: four relative corners, labelled.
+            "box": labelled_box(points, img_w, img_h),
             "patch_path": patch_filename,
             "confidence_detection": conf,
             "identifier_bot": "",
@@ -645,6 +651,7 @@ def _save_result(result, image_path, bot_json_path, model_name):
     """
     shapes = []
     orig_img = result.orig_img
+    height, width = orig_img.shape[:2]
 
     if result.obb is not None:
         filename = os.path.basename(image_path)
@@ -652,16 +659,16 @@ def _save_result(result, image_path, bot_json_path, model_name):
 
         for det_idx, obb in enumerate(result.obb.xyxyxyxy):
             pts = obb.cpu().numpy().reshape(-1, 2)
-            rect = cv2.minAreaRect(pts.astype(np.float32))
             confidence = result.obb.conf[det_idx].item()
-            _, _, angle = rect
 
             points = pts.tolist()
             patch_filename = f"{stem}_{det_idx}_{model_name}.{ext}" if GEN_THUMBNAILS else ""
 
             shapes.append({
                 "kie_linking": [],
-                "direction": angle,
+                # X-AnyLabeling's convention (radians, angle of the first edge), so the
+                # shape reopens correctly there. The corners are the record.
+                "direction": direction_from_points(points),
                 "label": "creature",
                 "score": float(confidence),
                 "group_id": None,
@@ -671,6 +678,8 @@ def _save_result(result, image_path, bot_json_path, model_name):
                 "flags": {},
                 "attributes": {},
                 "points": points,
+                # The same box in the Mothbox format: four relative corners, labelled.
+                "box": labelled_box(points, width, height),
                 "patch_path": patch_filename,
                 "confidence_detection": confidence,
                 "identifier_bot": "",
@@ -679,7 +688,6 @@ def _save_result(result, image_path, bot_json_path, model_name):
                 "detector_bot": str(model_name),
             })
 
-    height, width = orig_img.shape[:2]
     data = {
         "version": model_name,
         "flags": {},
@@ -1061,6 +1069,14 @@ def run(
     print(f"{len(images)} images found to process")
 
     process_image_list(images, dataset_root=DATASET_ROOT)
+
+    # Write each deployment's sessions down (default: one per night, noon to noon) so
+    # Classify and Antenna keep them as they are. Never lets detection fail.
+    try:
+        from pipeline.sessions import write_default_sessions
+        write_default_sessions(images, DATASET_ROOT)
+    except Exception as exc:  # noqa: BLE001
+        print(f"⚠️  Could not write sessions.json: {exc}")
 
     print("Finished Running Detections!")
 

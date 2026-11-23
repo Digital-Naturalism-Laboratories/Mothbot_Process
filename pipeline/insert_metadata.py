@@ -22,6 +22,7 @@ Arguments:
 import os
 import sys
 import json
+from core.device_info import device_from_exif, device_type_id_for
 import argparse
 import re
 import numpy as np
@@ -109,7 +110,22 @@ FIELD_ALIASES = {
     # via field_sheet_metadata regardless of this fallback.
     "attractor": ["attractor", "attractor1"],
     "attractor_location": ["attractor_location"],
+    # Ontology fields (Automated Insect Monitoring Ontology: Device, Location, Site, Target, Sensor).
+    "device_type": ["device_type", "devicetype", "mothbox_type", "device_model"],
+    "facing_direction": ["facing_direction", "facing", "heading"],
+    "site_description": ["site_description", "site_notes"],
+    "land_use_type": ["land_use_type", "land_use", "landuse"],
+    "target_type": ["target_type", "target_material"],
+    "target_width_cm": ["target_width_cm", "target_width"],
+    "target_height_cm": ["target_height_cm", "target_height"],
+    "target_distance_cm": ["target_distance_cm", "target_distance"],
+    "sensor_type": ["sensor_type", "sensor"],
+    "sensor_resolution": ["sensor_resolution", "camera_resolution", "resolution"],
 }
+
+# Field sheets describe up to this many attractors: attractor1, attractor1_location,
+# attractor1_power (watts), attractor1_settings (free text), attractor2, ...
+MAX_ATTRACTORS = 5
 
 
 def parse_args():
@@ -216,6 +232,72 @@ def get_aliased(metadata, canonical_name, default=""):
     return default
 
 
+def _number_or_none(value):
+    number = extract_number(value) if value not in (None, "") else None
+    return number
+
+
+def attractors_from_metadata(metadata):
+    """The deployment's attractors as a list (ontology: Attractor), from the field sheet's
+    ``attractor`` / ``attractorN`` columns and their ``_location``, ``_power`` and
+    ``_settings`` columns. Each entry has camelCase keys, as decided for files."""
+    attractors = []
+    prefixes = ["attractor"] + [f"attractor{n}" for n in range(1, MAX_ATTRACTORS + 1)]
+    seen_types = set()
+    for prefix in prefixes:
+        kind = metadata.get(_normalize_key(prefix))
+        if kind in (None, ""):
+            continue
+        location = metadata.get(_normalize_key(f"{prefix}_location"))
+        if prefix == "attractor1" and location in (None, ""):
+            location = metadata.get(_normalize_key("attractor_location"))
+        power = _number_or_none(metadata.get(_normalize_key(f"{prefix}_power")) or metadata.get(_normalize_key(f"{prefix}_power_w")))
+        settings = metadata.get(_normalize_key(f"{prefix}_settings"))
+        key = (str(kind), str(location or ""))
+        # "attractor" and "attractor1" often repeat each other on older sheets.
+        if key in seen_types:
+            continue
+        seen_types.add(key)
+        entry = {"attractorType": str(kind)}
+        if location not in (None, ""):
+            entry["attractorLocation"] = str(location)
+        if power is not None:
+            entry["powerW"] = power
+        if settings not in (None, ""):
+            entry["settings"] = str(settings)
+        attractors.append(entry)
+    return attractors
+
+
+def ontology_fields_from_metadata(metadata, exif_device=None):
+    """Device, site, location, target and sensor fields named as in the ontology (camelCase).
+    EXIF from the photo fills in the device when the field sheet doesn't name it."""
+    exif_device = exif_device or {}
+    device_type = get_aliased(metadata, "device_type") or exif_device.get("deviceType", "")
+    fields = {
+        "deviceID": get_aliased(metadata, "device") or exif_device.get("device", ""),
+        "deviceType": device_type,
+        "deviceTypeID": device_type_id_for(device_type) or "",
+        "firmwareVersion": str(get_aliased(metadata, "firmware") or exif_device.get("firmware", "")),
+        "siteName": get_aliased(metadata, "site"),
+        "siteDescription": get_aliased(metadata, "site_description"),
+        "landUseType": get_aliased(metadata, "land_use_type"),
+        "facingDirection": get_aliased(metadata, "facing_direction"),
+        "attractors": attractors_from_metadata(metadata),
+        "target": {
+            "targetType": get_aliased(metadata, "target_type") or get_aliased(metadata, "sheet"),
+            "targetWidthCm": _number_or_none(get_aliased(metadata, "target_width_cm")),
+            "targetHeightCm": _number_or_none(get_aliased(metadata, "target_height_cm")),
+            "targetDistanceCm": _number_or_none(get_aliased(metadata, "target_distance_cm")),
+        },
+        "sensor": {
+            "sensorType": get_aliased(metadata, "sensor_type") or "camera",
+            "sensorResolution": get_aliased(metadata, "sensor_resolution"),
+        },
+    }
+    return fields
+
+
 def load_anylabeling_data(json_path, image_path, metadata, overwrite=True):
     """Writes field-sheet metadata into an AnyLabeling-style detection JSON.
 
@@ -247,11 +329,16 @@ def load_anylabeling_data(json_path, image_path, metadata, overwrite=True):
         print(f"Skipping (metadata already present, overwrite=False): {json_path}")
         return
 
+    # The firmware writes the device name, firmware and body model into each photo's
+    # EXIF; use them when the field sheet leaves them out.
+    needs_exif = not get_aliased(metadata, "device") or not get_aliased(metadata, "firmware") or not get_aliased(metadata, "device_type")
+    exif_device = device_from_exif(image_path) if needs_exif else {}
+
     data["filepath"] = image_path
     data["uploaded"] = metadata.get("uploaded", "")
     data["sd"] = metadata.get("sd_card", "")
-    data["device"] = get_aliased(metadata, "device")
-    data["firmware"] = str(get_aliased(metadata, "firmware"))
+    data["device"] = get_aliased(metadata, "device") or exif_device.get("device", "")
+    data["firmware"] = str(get_aliased(metadata, "firmware") or exif_device.get("firmware", ""))
     data["sheet"] = get_aliased(metadata, "sheet")
     data["datasetcollection"] = get_aliased(metadata, "dataset")
     data["project"] = get_aliased(metadata, "project")
@@ -270,6 +357,9 @@ def load_anylabeling_data(json_path, image_path, metadata, overwrite=True):
     data["habitat"] = get_aliased(metadata, "habitat")
     data["attractor"] = get_aliased(metadata, "attractor")
     data["attractor_location"] = get_aliased(metadata, "attractor_location")
+    # The same deployment described with the ontology's names (camelCase, as decided for
+    # files); the older keys above stay for the tools that read them.
+    data.update(ontology_fields_from_metadata(metadata, exif_device))
 
     # Flexible passthrough: keep every column from the field sheet,
     # whatever it's called, so extra/custom info is never lost.

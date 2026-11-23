@@ -152,6 +152,9 @@ DOI_ALIASES = set()
 # download key when there is one, so a run that crashed offline (DOI pending)
 # still resumes when rerun online (DOI known).
 SPECIES_LIST_KEY = ""
+# The species list's taxon key style ("col", "gbif"; ontology: Taxon Keys), written on
+# every machine identification next to its DOI.
+SPECIES_LIST_KEY_STYLE = None
 # Leave out insect groups that never land on a light-trap screen (lice, fleas,
 # sessile scale insects, fossil-only orders… — see core/light_trap_exclusions.py).
 EXCLUDE_UNLIKELY_TAXA = True
@@ -532,13 +535,28 @@ def update_json_labels_and_scores(json_path, index, pred, conf, winningdict):
     apply_ids_to_files([(json_path, index, pred, conf, winningdict)])
 
 
+def _new_bot_label(pred):
+    """The label a prediction is written as ("ORDER_Diptera", or "ERROR_background" for non-creatures)."""
+    predstring = str(pred).strip().lower()
+    if predstring in ["hole", "background", "wall", "floor", "blank", "sky"]:
+        return "ERROR_" + pred
+    return str(TAXONOMIC_RANK_FILTER).replace("Rank.", "") + "_" + pred
+
+
 def _apply_id_to_shape(shape, pred, conf, winningdict):
-    """Set one detection shape's bot ID fields (archiving a previous model's ID)."""
-    # Archive previous bot ID if it was from a different model or species list.
+    """Set one detection shape's bot ID fields, archiving the previous bot ID.
+
+    Every machine identification is kept (ontology: Identification): the previous one
+    goes into ``bot_id_history`` when this run used a different model or species list,
+    or reached a different answer. A re-run that repeats the same answer adds nothing.
+    """
     old_identifier = shape.get("identifier_bot", "")
     old_doi = shape.get("species_list", "")
-    if old_identifier and (old_identifier != VERSION or (old_doi != DOI and old_doi not in DOI_ALIASES)):
-        BOT_ID_FIELDS = ["identifier_bot", "species_list", "species_list_exclusions", "timestamp_ID_bot",
+    new_label = _new_bot_label(pred)
+    changed_model_or_list = old_identifier != VERSION or (old_doi != DOI and old_doi not in DOI_ALIASES)
+    changed_answer = shape.get("label", "") != new_label
+    if old_identifier and (changed_model_or_list or changed_answer):
+        BOT_ID_FIELDS = ["identifier_bot", "species_list", "species_list_key_style", "species_list_exclusions", "timestamp_ID_bot",
                          "confidence_ID", "label",
                          "kingdom", "phylum", "class", "order", "family", "genus", "species"]
         snapshot = {k: shape[k] for k in BOT_ID_FIELDS if k in shape}
@@ -546,6 +564,10 @@ def _apply_id_to_shape(shape, pred, conf, winningdict):
 
     shape["identifier_bot"] = VERSION
     shape["species_list"] = DOI
+    if SPECIES_LIST_KEY_STYLE:
+        shape["species_list_key_style"] = SPECIES_LIST_KEY_STYLE
+    else:
+        shape.pop("species_list_key_style", None)
     # Which taxa were left out of the choices (traceability; see core/light_trap_exclusions.py).
     if EXCLUDE_UNLIKELY_TAXA:
         shape["species_list_exclusions"] = EXCLUSIONS_ID
@@ -553,14 +575,7 @@ def _apply_id_to_shape(shape, pred, conf, winningdict):
         shape.pop("species_list_exclusions", None)
     shape["timestamp_ID_bot"] = current_timestamp()
     shape["confidence_ID"] = conf
-
-    predstring = str(pred).strip().lower()
-    if predstring in ["hole", "background", "wall", "floor", "blank", "sky"]:
-        shape["label"] = "ERROR_" + pred
-    else:
-        shape["label"] = (
-            str(TAXONOMIC_RANK_FILTER).replace("Rank.", "") + "_" + pred
-        )
+    shape["label"] = new_label
 
     # Add taxonomic ranks only if they exist in the winningdict
     for rank in ["kingdom", "phylum", "class", "order", "family", "genus", "species"]:
@@ -1229,7 +1244,7 @@ def run(
         used unchanged; see core/light_trap_exclusions.py.
     """
     global TAXONOMIC_RANK_FILTER, OVERWRITE_EXISTING_IDs, ID_HUMANDETECTIONS
-    global ID_BOTDETECTIONS, INPUT_PATH, DOI, DOI_ALIASES, SPECIES_LIST_KEY, DEVICE, DATASET_ROOT, BLUR_THRESHOLD
+    global ID_BOTDETECTIONS, INPUT_PATH, DOI, DOI_ALIASES, SPECIES_LIST_KEY, SPECIES_LIST_KEY_STYLE, DEVICE, DATASET_ROOT, BLUR_THRESHOLD
     global EXCLUDE_UNLIKELY_TAXA
 
     TAXONOMIC_RANK_FILTER = Rank(int(rank))
@@ -1250,6 +1265,7 @@ def run(
     DOI = species_info["ref"]
     DOI_ALIASES = species_list_aliases(species_info)
     SPECIES_LIST_KEY = species_info["download_key"] or DOI
+    SPECIES_LIST_KEY_STYLE = species_info.get("key_style")
     print(species_info["message"])
     print("using species list: " + DOI)
 

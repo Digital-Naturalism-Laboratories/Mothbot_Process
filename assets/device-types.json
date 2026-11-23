@@ -1,0 +1,113 @@
+{
+  "format": "aimo-device-types",
+  "formatVersion": 1,
+  "updated": "2026-11-22",
+  "deviceTypes": [
+    {
+      "deviceTypeID": "mothbox-pro",
+      "deviceType": "Standard Mothbox Pro",
+      "derivedFrom": null,
+      "maker": "Digital Naturalism Laboratories",
+      "firmware": {
+        "family": "Mothbox Unified 6.x",
+        "hardwareID": "pro"
+      },
+      "attractors": [
+        {
+          "channel": "ATTRACT_A",
+          "attractorType": null,
+          "attractorLocation": null,
+          "powerW": null
+        },
+        {
+          "channel": "ATTRACT_B",
+          "attractorType": null,
+          "attractorLocation": null,
+          "powerW": null
+        }
+      ],
+      "target": {
+        "targetType": null,
+        "targetWidthCm": null,
+        "targetHeightCm": null,
+        "targetDistanceCm": null
+      },
+      "sensors": [
+        {
+          "sensorType": "camera",
+          "model": "Arducam 64MP OwlSight (OV64A40)",
+          "lens": "Arducam B0483 6.65mm F1.9",
+          "resolutionMegapixels": 64,
+          "effectiveResolutionPxPerMm": null,
+          "sensitivityRange": null,
+          "orientation": null
+        }
+      ],
+      "computer": "Raspberry Pi 5",
+      "customFields": {}
+    },
+    {
+      "deviceTypeID": "mothbox-diy",
+      "deviceType": "Standard Mothbox DIY",
+      "derivedFrom": null,
+      "maker": "Digital Naturalism Laboratories",
+      "firmware": {
+        "family": "Mothbox Unified 6.x",
+        "hardwareID": "diy"
+      },
+      "attractors": [
+        {
+          "channel": "ATTRACT_A",
+          "attractorType": null,
+          "attractorLocation": null,
+          "powerW": null
+        },
+        {
+          "channel": "ATTRACT_B",
+          "attractorType": null,
+          "attractorLocation": null,
+          "powerW": null
+        }
+      ],
+      "target": {
+        "targetType": null,
+        "targetWidthCm": null,
+        "targetHeightCm": null,
+        "targetDistanceCm": null
+      },
+      "sensors": [
+        {
+          "sensorType": "camera",
+          "model": "Arducam 64MP OwlSight (OV64A40)",
+          "lens": "Arducam B0483 6.65mm F1.9",
+          "resolutionMegapixels": 64,
+          "effectiveResolutionPxPerMm": null,
+          "sensitivityRange": null,
+          "orientation": null
+        }
+      ],
+      "computer": "Raspberry Pi 5",
+      "customFields": {}
+    },
+    {
+      "deviceTypeID": "ami-device",
+      "deviceType": "AMI Device",
+      "derivedFrom": null,
+      "maker": null,
+      "firmware": {
+        "family": null,
+        "hardwareID": null
+      },
+      "attractors": [],
+      "target": {
+        "targetType": null,
+        "targetWidthCm": null,
+        "targetHeightCm": null,
+        "targetDistanceCm": null
+      },
+      "sensors": [],
+      "computer": null,
+      "customFields": {}
+    }
+  ]
+}

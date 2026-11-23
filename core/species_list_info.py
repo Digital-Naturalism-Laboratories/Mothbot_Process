@@ -31,11 +31,19 @@ COL_XR_CHECKLIST_KEY = "7ddf754f-d193-4cc9-b351-99906754a03b"
 SIDECAR_SUFFIX = ".gbif.json"
 
 # Taxon-ID systems, shared with Mothbot Classify.
-TAXON_ID_GBIF_BACKBONE = "gbif-backbone"
+# Taxon key styles, named as in the Automated Insect Monitoring Ontology (Taxon Keys).
+# Older versions wrote "gbif-backbone" for "gbif"; normalize_key_style() still reads it.
+TAXON_ID_GBIF_BACKBONE = "gbif"
 TAXON_ID_COL = "col"
+TAXON_ID_BOLD = "bold"
+TAXON_ID_INAT = "inat"
+TAXON_ID_FIELDGUIDE = "fieldguide"
 TAXON_ID_LABELS = {
     TAXON_ID_GBIF_BACKBONE: "GBIF Backbone Taxonomy",
     TAXON_ID_COL: "Catalogue of Life (COL XR, via GBIF)",
+    TAXON_ID_BOLD: "BOLD BIN",
+    TAXON_ID_INAT: "iNaturalist taxon ID",
+    TAXON_ID_FIELDGUIDE: "Fieldguide UUID",
 }
 
 _DOWNLOAD_KEY_RE = re.compile(r"(?<!\d)(\d{7}-\d{15})(?!\d)")
@@ -166,6 +174,24 @@ def save_sidecar(csv_path, info):
         return False
 
 
+def normalize_key_style(value):
+    """A key style from any stored form ("gbif-backbone", a label, or the style name), or None."""
+    v = str(value or "").strip().lower()
+    if not v:
+        return None
+    if v in ("gbif", "gbif-backbone") or v.startswith("gbif backbone"):
+        return TAXON_ID_GBIF_BACKBONE
+    if v == "col" or v.startswith("catalogue of life"):
+        return TAXON_ID_COL
+    if v.startswith("bold"):
+        return TAXON_ID_BOLD
+    if v == "inat" or v.startswith("inaturalist"):
+        return TAXON_ID_INAT
+    if v.startswith("fieldguide"):
+        return TAXON_ID_FIELDGUIDE
+    return None
+
+
 def detect_taxon_id_system(csv_path, sample_rows=2000):
     """Which ID system the list's taxonKey column uses: TAXON_ID_COL, TAXON_ID_GBIF_BACKBONE or None.
 
@@ -206,18 +232,19 @@ def resolve_species_list(csv_path, allow_network=True, timeout=6.0):
                      "pending" (download key known, GBIF not reachable yet) or "none"
       download_key — GBIF download key or None
       description  — e.g. "Insecta · Panama, Costa Rica" (when known)
-      taxon_id_system — TAXON_ID_COL / TAXON_ID_GBIF_BACKBONE / None
+      key_style    — the list's taxon key style: "col", "gbif" or None
+      taxon_id_system — same as key_style (older name)
       message      — one line for the log
     """
     info = {
         "ref": "no_doi", "doi_url": None, "doi_status": "none", "download_key": None,
-        "description": None, "taxon_id_system": None, "message": "",
+        "description": None, "key_style": None, "taxon_id_system": None, "message": "",
     }
     if not csv_path:
         info["message"] = "No species list — IDs won't reference one."
         return info
 
-    info["taxon_id_system"] = detect_taxon_id_system(csv_path)
+    info["key_style"] = info["taxon_id_system"] = detect_taxon_id_system(csv_path)
     key = download_key_from_filename(csv_path)
     info["download_key"] = key
 

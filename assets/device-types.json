@@ -1,113 +1,583 @@
 {
   "format": "aimo-device-types",
-  "formatVersion": 1,
-  "updated": "2026-11-22",
+  "formatVersion": 3,
+  "updated": "2026-11-23",
+  "choices": {
+    "attractorTypes": [
+      "Mothbeam (Visible)",
+      "Mothbeam (UV)",
+      "UV LED",
+      "White LED",
+      "UV + white LED",
+      "Blacklight tube",
+      "Mercury vapor",
+      "Pheromone lure",
+      "Bait"
+    ],
+    "attractorLocations": [
+      "internal",
+      "external",
+      "in target"
+    ],
+    "attractorPowerOptions": {
+      "Mothbeam (Visible)": {
+        "hardwareVersion": "5.0.3",
+        "options": [
+          {
+            "configuration": "0 switches",
+            "powerW": 0.2,
+            "measured": "17 mA / 0.20 W at 12 V"
+          },
+          {
+            "configuration": "1 switch",
+            "powerW": 2.0,
+            "measured": "165 mA / 1.98 W at 12 V"
+          },
+          {
+            "configuration": "1 and 2 switches",
+            "powerW": 3.5,
+            "measured": "303 mA / 3.64 W at 12 V"
+          },
+          {
+            "configuration": "1, 2 and 3 switches",
+            "powerW": 5.5,
+            "measured": "463 mA / 5.56 W at 12 V"
+          },
+          {
+            "configuration": "3 and 4 switches",
+            "powerW": 4.5,
+            "measured": "379 mA / 4.55 W at 12 V"
+          },
+          {
+            "configuration": "1, 3 and 4 switches",
+            "powerW": 5.5,
+            "measured": "478 mA / 5.74 W at 12 V"
+          },
+          {
+            "configuration": "All 4 switches",
+            "powerW": 7.0,
+            "measured": "570 mA / 6.84 W at 12 V"
+          }
+        ]
+      },
+      "Mothbeam (UV)": {
+        "hardwareVersion": "5.0.3",
+        "measuredOn": "Mothbeam 5.0.3 (Visible)",
+        "options": [
+          {
+            "configuration": "0 switches",
+            "powerW": 0.2,
+            "measured": "17 mA / 0.20 W at 12 V"
+          },
+          {
+            "configuration": "1 switch",
+            "powerW": 2.0,
+            "measured": "165 mA / 1.98 W at 12 V"
+          },
+          {
+            "configuration": "1 and 2 switches",
+            "powerW": 3.5,
+            "measured": "303 mA / 3.64 W at 12 V"
+          },
+          {
+            "configuration": "1, 2 and 3 switches",
+            "powerW": 5.5,
+            "measured": "463 mA / 5.56 W at 12 V"
+          },
+          {
+            "configuration": "3 and 4 switches",
+            "powerW": 4.5,
+            "measured": "379 mA / 4.55 W at 12 V"
+          },
+          {
+            "configuration": "1, 3 and 4 switches",
+            "powerW": 5.5,
+            "measured": "478 mA / 5.74 W at 12 V"
+          },
+          {
+            "configuration": "All 4 switches",
+            "powerW": 7.0,
+            "measured": "570 mA / 6.84 W at 12 V"
+          }
+        ]
+      }
+    },
+    "targetTypes": [
+      "sheet",
+      "tube",
+      "artificial flower",
+      "screen"
+    ],
+    "targetMaterials": [
+      "felt",
+      "matte plastic",
+      "glossy plastic",
+      "wood",
+      "canvas",
+      "vinyl"
+    ],
+    "targetColors": [
+      "white",
+      "yellow"
+    ],
+    "sensorTypes": [
+      "camera",
+      "infrared",
+      "lidar",
+      "radar",
+      "microphone",
+      "other"
+    ],
+    "powerSourceTypes": [
+      "battery",
+      "grid",
+      "solar"
+    ],
+    "batteries": [
+      {
+        "model": "Standard TalentCell PB120B1",
+        "capacityWh": 142,
+        "nominalVoltageV": 11.1,
+        "voltageAt80PercentV": 12.0,
+        "voltageAt20PercentV": 10.5
+      }
+    ]
+  },
   "deviceTypes": [
     {
       "deviceTypeID": "mothbox-pro",
       "deviceType": "Standard Mothbox Pro",
       "derivedFrom": null,
       "maker": "Digital Naturalism Laboratories",
+      "hardwareVersion": "5.0.6",
       "firmware": {
         "family": "Mothbox Unified 6.x",
+        "version": "6.1.2",
         "hardwareID": "pro"
       },
       "attractors": [
         {
           "channel": "ATTRACT_A",
-          "attractorType": null,
-          "attractorLocation": null,
-          "powerW": null
+          "attractorType": "Mothbeam (UV)",
+          "hardwareVersion": "5.0.3",
+          "attractorLocation": "internal",
+          "configuration": "1 switch",
+          "powerW": 2
         },
         {
           "channel": "ATTRACT_B",
-          "attractorType": null,
-          "attractorLocation": null,
-          "powerW": null
+          "attractorType": "Mothbeam (Visible)",
+          "hardwareVersion": "5.0.3",
+          "attractorLocation": "internal",
+          "configuration": "1 switch",
+          "powerW": 2
         }
       ],
-      "target": {
-        "targetType": null,
-        "targetWidthCm": null,
-        "targetHeightCm": null,
-        "targetDistanceCm": null
-      },
+      "targets": [
+        {
+          "targetType": "sheet",
+          "material": "felt",
+          "color": null,
+          "widthCm": 28.885,
+          "heightCm": 20.5294,
+          "distanceCm": 24.5
+        }
+      ],
       "sensors": [
         {
           "sensorType": "camera",
           "model": "Arducam 64MP OwlSight (OV64A40)",
           "lens": "Arducam B0483 6.65mm F1.9",
-          "resolutionMegapixels": 64,
+          "resolution": "64 MP",
           "effectiveResolutionPxPerMm": null,
           "sensitivityRange": null,
-          "orientation": null
+          "orientation": null,
+          "notes": null
         }
       ],
+      "powerSources": [],
       "computer": "Raspberry Pi 5",
-      "customFields": {}
+      "customFields": {},
+      "description": null
     },
     {
       "deviceTypeID": "mothbox-diy",
       "deviceType": "Standard Mothbox DIY",
       "derivedFrom": null,
       "maker": "Digital Naturalism Laboratories",
+      "hardwareVersion": null,
       "firmware": {
         "family": "Mothbox Unified 6.x",
+        "version": null,
         "hardwareID": "diy"
       },
       "attractors": [
         {
           "channel": "ATTRACT_A",
           "attractorType": null,
+          "hardwareVersion": null,
           "attractorLocation": null,
+          "configuration": null,
           "powerW": null
         },
         {
           "channel": "ATTRACT_B",
           "attractorType": null,
+          "hardwareVersion": null,
           "attractorLocation": null,
+          "configuration": null,
           "powerW": null
         }
       ],
-      "target": {
-        "targetType": null,
-        "targetWidthCm": null,
-        "targetHeightCm": null,
-        "targetDistanceCm": null
-      },
+      "targets": [
+        {
+          "targetType": null,
+          "material": null,
+          "color": null,
+          "widthCm": null,
+          "heightCm": null,
+          "distanceCm": null
+        }
+      ],
       "sensors": [
         {
           "sensorType": "camera",
           "model": "Arducam 64MP OwlSight (OV64A40)",
           "lens": "Arducam B0483 6.65mm F1.9",
-          "resolutionMegapixels": 64,
           "effectiveResolutionPxPerMm": null,
           "sensitivityRange": null,
-          "orientation": null
+          "orientation": null,
+          "resolution": "64 MP",
+          "notes": null
         }
       ],
       "computer": "Raspberry Pi 5",
-      "customFields": {}
+      "powerSources": [],
+      "customFields": {},
+      "description": null
     },
     {
       "deviceTypeID": "ami-device",
       "deviceType": "AMI Device",
       "derivedFrom": null,
-      "maker": null,
+      "maker": "UKCEH",
+      "hardwareVersion": null,
       "firmware": {
         "family": null,
+        "version": null,
         "hardwareID": null
       },
-      "attractors": [],
-      "target": {
-        "targetType": null,
-        "targetWidthCm": null,
-        "targetHeightCm": null,
-        "targetDistanceCm": null
+      "attractors": [
+        {
+          "channel": null,
+          "attractorType": null,
+          "hardwareVersion": null,
+          "attractorLocation": null,
+          "configuration": null,
+          "powerW": null
+        }
+      ],
+      "targets": [],
+      "sensors": [
+        {
+          "sensorType": "camera",
+          "model": null,
+          "lens": null,
+          "resolution": null,
+          "effectiveResolutionPxPerMm": null,
+          "sensitivityRange": null,
+          "orientation": null,
+          "notes": null
+        }
+      ],
+      "powerSources": [
+        {
+          "powerSourceType": "solar",
+          "model": null,
+          "capacityWh": null,
+          "nominalVoltageV": null,
+          "voltageAt80PercentV": null,
+          "voltageAt20PercentV": null
+        },
+        {
+          "powerSourceType": "battery",
+          "model": "rechargeable",
+          "capacityWh": null,
+          "nominalVoltageV": null,
+          "voltageAt80PercentV": null,
+          "voltageAt20PercentV": null
+        }
+      ],
+      "computer": "Raspberry Pi 4",
+      "customFields": {
+        "source": "InsectAI COST Action hardware-db (https://insectai-cost-action.github.io/hardware-db/), 2026-11-23",
+        "sizeTransportMm": "550 x 350 x 230",
+        "sizeDeployedMm": "550 x 350 x 500",
+        "weightKg": 15,
+        "powerAutonomy": "∞",
+        "captureModes": "Scheduled photo; Time-lapse",
+        "connectivity": "USB (wired); SD card",
+        "costUnitBuild": 900,
+        "construction": "Fully custom: Designed and fabricated entirely by the user (e.g custom PCB)",
+        "documentationURL": "https://www.ceh.ac.uk/solutions/equipment/automated-monitoring-insects-trap"
       },
-      "sensors": [],
+      "description": "The UKCEH AMI system offers a platform for long-term, autonomous monitoring of moths.  Combining robust lighting for attracting insects with high resolution cameras, the UKCEH AMI system can provide practical and cost-effective solutions for standardised monitoring. UKCEH AMI systems have been deployed in the UK, Canada, USA, Cyprus, Panama, Kenya, Uganda, Singapore, Costa Rica and Argentina, with plans to expand further."
+    },
+    {
+      "deviceTypeID": "diopsis",
+      "deviceType": "DIOPSIS",
+      "derivedFrom": null,
+      "maker": "Faunabit",
+      "hardwareVersion": "DIOPSIS 2.0",
+      "firmware": {
+        "family": null,
+        "version": null,
+        "hardwareID": null
+      },
+      "attractors": [
+        {
+          "channel": null,
+          "attractorType": "UV light",
+          "hardwareVersion": null,
+          "attractorLocation": null,
+          "configuration": null,
+          "powerW": null
+        },
+        {
+          "channel": null,
+          "attractorType": "Visible light (white/coloured LED)",
+          "hardwareVersion": null,
+          "attractorLocation": null,
+          "configuration": null,
+          "powerW": null
+        }
+      ],
+      "targets": [],
+      "sensors": [
+        {
+          "sensorType": "camera",
+          "model": "Raspberry Pi Camera Module 3",
+          "lens": null,
+          "resolution": "> 8 MP",
+          "effectiveResolutionPxPerMm": null,
+          "sensitivityRange": null,
+          "orientation": null,
+          "notes": "Manual focus; minimum focal distance 20–50 cm; under 1 fps."
+        }
+      ],
+      "powerSources": [
+        {
+          "powerSourceType": "grid",
+          "model": null,
+          "capacityWh": null,
+          "nominalVoltageV": null,
+          "voltageAt80PercentV": null,
+          "voltageAt20PercentV": null
+        },
+        {
+          "powerSourceType": "solar",
+          "model": null,
+          "capacityWh": null,
+          "nominalVoltageV": null,
+          "voltageAt80PercentV": null,
+          "voltageAt20PercentV": null
+        },
+        {
+          "powerSourceType": "battery",
+          "model": "rechargeable",
+          "capacityWh": null,
+          "nominalVoltageV": null,
+          "voltageAt80PercentV": null,
+          "voltageAt20PercentV": null
+        }
+      ],
+      "computer": "Raspberry Pi Zero / Zero 2 W",
+      "customFields": {
+        "source": "InsectAI COST Action hardware-db (https://insectai-cost-action.github.io/hardware-db/), 2026-11-23",
+        "sizeTransportMm": "600 x 500 x 400",
+        "sizeDeployedMm": "600 x 500 x 900",
+        "weightKg": 30,
+        "mounting": "Freestanding (no mount required)",
+        "powerAutonomy": "10 months",
+        "captureModes": "Time-lapse; Motion-triggered photo; Scheduled photo; Event-triggered (e.g. AI model detection)",
+        "connectivity": "WiFi; Cellular (4G/LTE-M/NB-IoT); USB (wired); Ethernet; SSH/VNC (remote access); SD card",
+        "ipRating": "ip65",
+        "temperatureMinC": 0,
+        "temperatureMaxC": 40,
+        "subjectSizeMinMm": 3,
+        "construction": "Off-the-shelf: Purchased and used as-is",
+        "documentationURL": "https://faunabit.eu/producten/diopsis",
+        "lastFirmwareUpdate": "April 2026"
+      },
+      "description": "The DIOPSIS is a smart camera that automatically photographs and identifies insects in the wild. Set up in nature, it works day and night to capture which species are present and how often they appear, helping researchers track insect populations and monitor biodiversity over time."
+    },
+    {
+      "deviceTypeID": "entocam",
+      "deviceType": "Entocam",
+      "derivedFrom": null,
+      "maker": null,
+      "hardwareVersion": null,
+      "firmware": {
+        "family": null,
+        "version": null,
+        "hardwareID": null
+      },
+      "attractors": [
+        {
+          "channel": null,
+          "attractorType": "EntoCam Beam (UV and visible LED)",
+          "hardwareVersion": null,
+          "attractorLocation": "external",
+          "configuration": null,
+          "powerW": null
+        }
+      ],
+      "targets": [
+        {
+          "targetType": "screen",
+          "material": null,
+          "color": null,
+          "widthCm": null,
+          "heightCm": null,
+          "distanceCm": 45
+        }
+      ],
+      "sensors": [
+        {
+          "sensorType": "camera",
+          "model": "Sony Starvis",
+          "lens": null,
+          "resolution": "8 MP",
+          "effectiveResolutionPxPerMm": null,
+          "sensitivityRange": null,
+          "orientation": null,
+          "notes": "Fixed focus at 45 cm; 60° field of view; built-in white flash."
+        }
+      ],
+      "powerSources": [
+        {
+          "powerSourceType": "grid",
+          "model": null,
+          "capacityWh": null,
+          "nominalVoltageV": null,
+          "voltageAt80PercentV": null,
+          "voltageAt20PercentV": null
+        },
+        {
+          "powerSourceType": "solar",
+          "model": null,
+          "capacityWh": null,
+          "nominalVoltageV": null,
+          "voltageAt80PercentV": null,
+          "voltageAt20PercentV": null
+        },
+        {
+          "powerSourceType": "battery",
+          "model": "rechargeable",
+          "capacityWh": null,
+          "nominalVoltageV": null,
+          "voltageAt80PercentV": null,
+          "voltageAt20PercentV": null
+        },
+        {
+          "powerSourceType": "battery",
+          "model": "non-rechargeable",
+          "capacityWh": null,
+          "nominalVoltageV": null,
+          "voltageAt80PercentV": null,
+          "voltageAt20PercentV": null
+        }
+      ],
       "computer": null,
-      "customFields": {}
+      "customFields": {
+        "source": "InsectAI COST Action hardware-db (https://insectai-cost-action.github.io/hardware-db/), 2026-11-23",
+        "sizeTransportMm": "200 x 400 x 100",
+        "sizeDeployedMm": "550 x 350 x 500",
+        "weightKg": 1,
+        "mounting": "Tripod; Tree strap / clamp",
+        "powerAutonomy": "30 days",
+        "captureModes": "Time-lapse; Scheduled photo; Manual capture",
+        "connectivity": "USB (wired); SD card",
+        "ipRating": "IP64",
+        "temperatureMinC": -20,
+        "temperatureMaxC": 50,
+        "construction": "Off-the-shelf: Purchased and used as-is",
+        "documentationURL": "https://drive.google.com/file/d/1iNXuJH1KsE21d-vDD2z77KPcQGcR3h_2/view?usp=drive_link",
+        "additionalResources": "www.entocam.com",
+        "lastFirmwareUpdate": "July 2025"
+      },
+      "description": "The Entocam is a camera system entirely dedicated to capturing Moths and Nocturnal insect pictures. It consists of a waterproof, programmable camera that features a 8MP Sony Starvis Sensor, built-in with a white flash and designed to focus on a screen located at 45 cm mounted with carbon rods. It is paired with the EntoCam Beam, a strong and adjustable Moth-Attracting LED."
+    },
+    {
+      "deviceTypeID": "lepisense",
+      "deviceType": "LepiSense",
+      "derivedFrom": null,
+      "maker": "UKCEH",
+      "hardwareVersion": "Non-commercial trial",
+      "firmware": {
+        "family": null,
+        "version": null,
+        "hardwareID": null
+      },
+      "attractors": [
+        {
+          "channel": null,
+          "attractorType": "UV light",
+          "hardwareVersion": null,
+          "attractorLocation": null,
+          "configuration": null,
+          "powerW": null
+        },
+        {
+          "channel": null,
+          "attractorType": "Visible light (white/coloured LED)",
+          "hardwareVersion": null,
+          "attractorLocation": null,
+          "configuration": null,
+          "powerW": null
+        }
+      ],
+      "targets": [],
+      "sensors": [
+        {
+          "sensorType": "camera",
+          "model": "Arducam Mega 5 MP (autofocus)",
+          "lens": null,
+          "resolution": "5 MP",
+          "effectiveResolutionPxPerMm": null,
+          "sensitivityRange": null,
+          "orientation": null,
+          "notes": "Fixed focus distance, 20–50 cm; 68.75° field of view."
+        }
+      ],
+      "powerSources": [
+        {
+          "powerSourceType": "solar",
+          "model": null,
+          "capacityWh": null,
+          "nominalVoltageV": null,
+          "voltageAt80PercentV": null,
+          "voltageAt20PercentV": null
+        }
+      ],
+      "computer": "ATMSAMD21J microcontroller with ARM Cortex-M0+ core (32 KB RAM; 256 KB flash memory; 48 MHz CPU speed)",
+      "customFields": {
+        "source": "InsectAI COST Action hardware-db (https://insectai-cost-action.github.io/hardware-db/), 2026-11-23",
+        "sizeTransportMm": "560 x 390 x 120 mm (pack of 2 units)",
+        "weightKg": 3.9,
+        "mounting": "Pole / stake (ground)",
+        "powerAutonomy": "1.5 years",
+        "captureModes": "Time-lapse",
+        "connectivity": "Cellular (4G/LTE-M/NB-IoT); SD card",
+        "temperatureMinC": -20,
+        "temperatureMaxC": 60,
+        "costUnitBuild": 230,
+        "construction": "Fully custom: Designed and fabricated entirely by the user (e.g custom PCB)",
+        "documentationURL": "https://nerc-ceh.github.io/lepisense-website/",
+        "additionalResources": "https://github.com/NERC-CEH/lepisense-website/discussions/categories/q-a?discussions_q=",
+        "lastFirmwareUpdate": "March 2026"
+      },
+      "description": "LepiSense features colourful lighting to attract insects, a high-resolution camera, and high-capacity data storage for pictures. Solar-powered and easy to set up, it aims to enable scalable, automated long-term monitoring of nocturnal insects."
     }
   ]
 }

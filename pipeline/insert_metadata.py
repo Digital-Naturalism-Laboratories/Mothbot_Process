@@ -22,7 +22,7 @@ Arguments:
 import os
 import sys
 import json
-from core.device_info import device_from_exif, device_type_id_for
+from core.device_info import device_from_exif, device_type_id_for, standard_device_type
 import argparse
 import re
 import numpy as np
@@ -269,15 +269,32 @@ def attractors_from_metadata(metadata):
     return attractors
 
 
-def ontology_fields_from_metadata(metadata, exif_device=None):
+def ontology_fields_from_metadata(metadata, exif_device=None, device_choice=None):
     """Device, site, location, target and sensor fields named as in the ontology (camelCase).
-    EXIF from the photo fills in the device when the field sheet doesn't name it."""
+
+    Which device type, in order: the one chosen in Process (``device_choice``, a full device
+    description), the field sheet's ``device_type``, then what the photo's EXIF says (the
+    device chosen in the Mothbox settings editor, else the board). The full description goes
+    into ``deviceTypeDefinition`` whenever it is known.
+    """
     exif_device = exif_device or {}
-    device_type = get_aliased(metadata, "device_type") or exif_device.get("deviceType", "")
+    definition = device_choice or None
+    sheet_type = get_aliased(metadata, "device_type")
+    if definition is None and sheet_type:
+        definition = standard_device_type(device_type_id_for(sheet_type) or "")
+    if definition is None and not sheet_type:
+        definition = exif_device.get("deviceDefinition") or standard_device_type(
+            exif_device.get("deviceTypeID") or device_type_id_for(exif_device.get("deviceType")) or "")
+    if definition:
+        device_type = definition.get("deviceType", "")
+        device_type_id = definition.get("deviceTypeID", "")
+    else:
+        device_type = sheet_type or exif_device.get("deviceType", "")
+        device_type_id = device_type_id_for(device_type) or exif_device.get("deviceTypeID", "")
     fields = {
         "deviceID": get_aliased(metadata, "device") or exif_device.get("device", ""),
         "deviceType": device_type,
-        "deviceTypeID": device_type_id_for(device_type) or "",
+        "deviceTypeID": device_type_id or "",
         "firmwareVersion": str(get_aliased(metadata, "firmware") or exif_device.get("firmware", "")),
         "siteName": get_aliased(metadata, "site"),
         "siteDescription": get_aliased(metadata, "site_description"),
@@ -295,10 +312,12 @@ def ontology_fields_from_metadata(metadata, exif_device=None):
             "sensorResolution": get_aliased(metadata, "sensor_resolution"),
         },
     }
+    if definition:
+        fields["deviceTypeDefinition"] = definition
     return fields
 
 
-def load_anylabeling_data(json_path, image_path, metadata, overwrite=True):
+def load_anylabeling_data(json_path, image_path, metadata, overwrite=True, device_choice=None):
     """Writes field-sheet metadata into an AnyLabeling-style detection JSON.
 
     `metadata` is one normalized row from the field sheet CSV (see
@@ -331,7 +350,8 @@ def load_anylabeling_data(json_path, image_path, metadata, overwrite=True):
 
     # The firmware writes the device name, firmware and body model into each photo's
     # EXIF; use them when the field sheet leaves them out.
-    needs_exif = not get_aliased(metadata, "device") or not get_aliased(metadata, "firmware") or not get_aliased(metadata, "device_type")
+    needs_exif = (not get_aliased(metadata, "device") or not get_aliased(metadata, "firmware")
+                  or (not get_aliased(metadata, "device_type") and not device_choice))
     exif_device = device_from_exif(image_path) if needs_exif else {}
 
     data["filepath"] = image_path
@@ -359,7 +379,7 @@ def load_anylabeling_data(json_path, image_path, metadata, overwrite=True):
     data["attractor_location"] = get_aliased(metadata, "attractor_location")
     # The same deployment described with the ontology's names (camelCase, as decided for
     # files); the older keys above stay for the tools that read them.
-    data.update(ontology_fields_from_metadata(metadata, exif_device))
+    data.update(ontology_fields_from_metadata(metadata, exif_device, device_choice))
 
     # Flexible passthrough: keep every column from the field sheet,
     # whatever it's called, so extra/custom info is never lost.
@@ -375,7 +395,7 @@ def load_anylabeling_data(json_path, image_path, metadata, overwrite=True):
 
 # Maybe this?
 def connect_metadata_matched_img_json_pairs(
-    hu_matched_img_json_pairs, bot_matched_img_json_pairs, metadata, overwrite=True
+    hu_matched_img_json_pairs, bot_matched_img_json_pairs, metadata, overwrite=True, device_choice=None
 ):
 
     # Process Human Detections
@@ -390,7 +410,7 @@ def connect_metadata_matched_img_json_pairs(
             # Load JSON file
             image_path, json_path = pair[:2]  # Always extract the first two elements
 
-            load_anylabeling_data(json_path, image_path, metadata, overwrite=overwrite)
+            load_anylabeling_data(json_path, image_path, metadata, overwrite=overwrite, device_choice=device_choice)
 
     print("processing BOT Detections.........")
     if ID_BOTDETECTIONS:
@@ -402,7 +422,7 @@ def connect_metadata_matched_img_json_pairs(
             # Load JSON file and
             image_path, json_path = pair[:2]  # Always extract the first two elements
 
-            load_anylabeling_data(json_path, image_path, metadata, overwrite=overwrite)
+            load_anylabeling_data(json_path, image_path, metadata, overwrite=overwrite, device_choice=device_choice)
 
 
 def _normalize_key(key: str) -> str:
@@ -573,7 +593,16 @@ def find_csv_match_old_onlyparent(input_path: str, metadata_path: str) -> dict:
     return matches[0]
 
 
-def run(input_path, metadata_path=None, dataset_root=None, manual_metadata=None, overwrite_existing=True):
+def run(input_path, metadata_path=None, dataset_root=None, manual_metadata=None, overwrite_existing=True,
+        device_choice=None):
+    """``device_choice``: a full device description chosen in the UI (a standard device
+    type, or one found in the photos). It overrides the field sheet and EXIF; None keeps
+    what they say. The other parameters are described on ``_run``."""
+    return _run(input_path, metadata_path, dataset_root, manual_metadata, overwrite_existing, device_choice)
+
+
+def _run(input_path, metadata_path=None, dataset_root=None, manual_metadata=None, overwrite_existing=True,
+         device_choice=None):
     """Run the metadata-insertion pipeline programmatically.
 
     Parameters
@@ -645,6 +674,7 @@ def run(input_path, metadata_path=None, dataset_root=None, manual_metadata=None,
         bot_matched_img_json_pairs,
         metadata=metadata,
         overwrite=overwrite_existing,
+        device_choice=device_choice,
     )
 
     print("Finished Attaching Metadata field info")

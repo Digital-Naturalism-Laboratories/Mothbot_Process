@@ -36,6 +36,7 @@ from pipeline import detect as Mothbot_Detect
 from pipeline import identify as Mothbot_ID
 from pipeline import insert_exif as Mothbot_InsertExif
 from pipeline import insert_metadata as Mothbot_InsertMetadata
+from ui.device_panel import build_device_panel, link_device_panels
 from pipeline import legacy_converter as Mothbot_LegacyConverter
 from pipeline import pixel_mass as Mothbot_PixelMass
 
@@ -514,6 +515,9 @@ def app():
         )
         # Tracks which selected keys are externally-processed (no source images)
         external_keys_state = gr.State(set())
+        # The device for this run (shared by the Setup and Insert Metadata tabs); None = what the photos say.
+        device_state = gr.State({"definition": None})
+        photos_device_state = gr.State({"text": "", "found": {}})
 
         # ── Global Action Bar (Stop + Quit) – declared before tabs to maintain scope and render order ──
         with gr.Row():
@@ -603,6 +607,7 @@ def app():
                                 )
                                 metadata_browse_btn = gr.Button("Browse", size="sm")
 
+                setup_device_panel = build_device_panel(device_state, photos_device_state, selected_paths)
 
                 # NOTE: deployment_browse_btn.click and deployment_path.change are
                 # wired after all tabs are defined (see below) because they reference
@@ -877,6 +882,9 @@ def app():
                         meta_storage_loc = gr.Text(label="Data Storage Location", interactive=True)
                     meta_notes = gr.Textbox(label="Notes", interactive=True, lines=3)
 
+                # Device type (ontology: Device, Device Type): what the photos say, or a correction.
+                meta_device_panel = build_device_panel(device_state, photos_device_state, selected_paths)
+
                 overwrite_metadata = gr.Checkbox(
                     value=True,
                     label="Overwrite existing metadata (uncheck to skip detections that already have metadata)",
@@ -886,6 +894,8 @@ def app():
                 metadata_output_box = gr.Textbox(
                     label="Insert Metadata Output", lines=20
                 )
+
+                link_device_panels([setup_device_panel, meta_device_panel], device_state, photos_device_state, selected_paths)
 
                 metadata_mode.change(
                     fn=lambda mode: (
@@ -954,6 +964,7 @@ def app():
                         meta_schedule,
                         meta_storage_loc,
                         meta_notes,
+                        device_state,
                 ]
                 _metadata_outputs = [metadata_output_box, stop_btn]
                 metadata_run_btn.click(
@@ -2547,7 +2558,10 @@ def run_metadata(
     schedule,
     data_storage_location,
     notes,
+    device_state=None,
 ):
+    # The device chosen in the Device section; None keeps what the sheet and photos say.
+    device_choice = (device_state or {}).get("definition")
     if metadata_mode == "Manual Entry":
         # Resolve the manual night-picker selection to actual folder paths.
         # Fall back to the global selected_folders if the picker is empty.
@@ -2589,6 +2603,7 @@ def run_metadata(
                 "manual_metadata": _meta,
                 "dataset_root": dataset_root,
                 "overwrite_existing": bool(overwrite_existing),
+                "device_choice": device_choice,
             },
         )
     else:
@@ -2603,6 +2618,7 @@ def run_metadata(
                 "metadata_path": str(metadata_csv),
                 "dataset_root": dataset_root,
                 "overwrite_existing": bool(overwrite_existing),
+                "device_choice": device_choice,
             },
         )
 

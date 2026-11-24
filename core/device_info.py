@@ -1,8 +1,8 @@
 """Devices and device types (Automated Insect Monitoring Ontology: Device, Device Type).
 
 ``assets/device-types.json`` is a copy of the ontology's built-in device types
-(Automated-Insect-Monitoring-Ontology/device-types/device-types.json); update the copy
-when that file changes.
+(Automated-Insect-Monitoring-Ontology/device-types/device-types.json); after editing that
+file, run its device-types/sync-copies.py to update this copy.
 
 The Mothbox firmware writes the device's name, firmware version and body model into
 every photo's EXIF, so they are known even when no field sheet is given.
@@ -28,6 +28,25 @@ def load_device_types():
         return []
 
 
+@lru_cache(maxsize=1)
+def load_device_choices():
+    """Suggested values for device editors (the shared file's ``choices``): attractor types,
+    Mothbeam light settings and power, target materials and colors, batteries…"""
+    try:
+        with open(_ASSET, "r", encoding="utf-8") as f:
+            return json.load(f).get("choices", {})
+    except (OSError, ValueError):
+        return {}
+
+
+def standard_device_type(device_type_id):
+    """The built-in device type with this id (a copy), or None."""
+    for device_type in load_device_types():
+        if device_type.get("deviceTypeID") == device_type_id:
+            return json.loads(json.dumps(device_type))
+    return None
+
+
 def device_type_id_for(name):
     """The ``deviceTypeID`` for a device-type name or id ("Mothbox Pro", "mothbox-pro", "Pro"), or None."""
     text = str(name or "").strip().lower()
@@ -50,9 +69,12 @@ def device_type_id_for(name):
 
 
 def device_from_exif(image_path):
-    """``{"device": name, "firmware": version, "deviceType": body}`` from a Mothbox photo's EXIF.
+    """What a Mothbox photo's EXIF says about the device that took it.
 
-    Missing values are left out; returns ``{}`` for photos without Mothbox EXIF.
+    Keys (each only when known): ``device`` (its name), ``firmware``, ``deviceType`` (type
+    name or body), ``deviceTypeID``, and ``deviceDefinition`` (the full device description
+    chosen in the settings editor: attractors, targets, sensors…). ``{}`` for photos without
+    Mothbox EXIF.
     """
     try:
         from PIL import Image
@@ -77,8 +99,14 @@ def device_from_exif(image_path):
             out["device"] = str(comment["mothbox"])
         if comment.get("firmware"):
             out["firmware"] = str(comment["firmware"])
-        if comment.get("deviceTypeID") and "deviceType" not in out:
-            out["deviceType"] = str(comment["deviceTypeID"])
+        if comment.get("deviceTypeID"):
+            out["deviceTypeID"] = str(comment["deviceTypeID"])
+        definition = comment.get("device")
+        if isinstance(definition, dict) and definition.get("deviceTypeID"):
+            out["deviceDefinition"] = definition
+            out["deviceTypeID"] = str(definition["deviceTypeID"])
+            if definition.get("deviceType"):
+                out["deviceType"] = str(definition["deviceType"])
     return out
 
 

@@ -1,6 +1,6 @@
 {
   "format": "aimo-device-types",
-  "formatVersion": 3,
+  "formatVersion": 4,
   "updated": "2026-11-23",
   "choices": {
     "attractorTypes": [
@@ -133,13 +133,36 @@
       "grid",
       "solar"
     ],
-    "batteries": [
+    "powerSources": [
       {
-        "model": "Standard TalentCell PB120B1",
+        "powerSourceID": "talentcell-pb120b1",
+        "name": "Standard TalentCell PB120B1",
+        "derivedFrom": null,
+        "powerSourceType": "battery",
+        "model": "TalentCell PB120B1",
         "capacityWh": 142,
         "nominalVoltageV": 11.1,
         "voltageAt80PercentV": 12.0,
-        "voltageAt20PercentV": 10.5
+        "voltageAt20PercentV": 10.5,
+        "notes": null
+      },
+      {
+        "powerSourceID": "grid-12v-adapter",
+        "name": "Mains adapter, 12 V",
+        "derivedFrom": null,
+        "powerSourceType": "grid",
+        "model": null,
+        "supplyVoltageV": 12,
+        "notes": null
+      },
+      {
+        "powerSourceID": "solar-panel",
+        "name": "Solar panel",
+        "derivedFrom": null,
+        "powerSourceType": "solar",
+        "model": null,
+        "panelPowerW": null,
+        "notes": null
       }
     ]
   },
@@ -152,7 +175,7 @@
       "hardwareVersion": "5.0.6",
       "firmware": {
         "family": "Mothbox Unified 6.x",
-        "version": "6.1.2",
+        "version": "6.1.3",
         "hardwareID": "pro"
       },
       "attractors": [
@@ -195,7 +218,7 @@
           "notes": null
         }
       ],
-      "powerSources": [],
+      "powerSource": null,
       "computer": "Raspberry Pi 5",
       "customFields": {},
       "description": null
@@ -251,8 +274,8 @@
           "notes": null
         }
       ],
+      "powerSource": null,
       "computer": "Raspberry Pi 5",
-      "powerSources": [],
       "customFields": {},
       "description": null
     },
@@ -290,24 +313,7 @@
           "notes": null
         }
       ],
-      "powerSources": [
-        {
-          "powerSourceType": "solar",
-          "model": null,
-          "capacityWh": null,
-          "nominalVoltageV": null,
-          "voltageAt80PercentV": null,
-          "voltageAt20PercentV": null
-        },
-        {
-          "powerSourceType": "battery",
-          "model": "rechargeable",
-          "capacityWh": null,
-          "nominalVoltageV": null,
-          "voltageAt80PercentV": null,
-          "voltageAt20PercentV": null
-        }
-      ],
+      "powerSource": null,
       "computer": "Raspberry Pi 4",
       "customFields": {
         "source": "InsectAI COST Action hardware-db (https://insectai-cost-action.github.io/hardware-db/), 2026-11-23",
@@ -319,7 +325,11 @@
         "connectivity": "USB (wired); SD card",
         "costUnitBuild": 900,
         "construction": "Fully custom: Designed and fabricated entirely by the user (e.g custom PCB)",
-        "documentationURL": "https://www.ceh.ac.uk/solutions/equipment/automated-monitoring-insects-trap"
+        "documentationURL": "https://www.ceh.ac.uk/solutions/equipment/automated-monitoring-insects-trap",
+        "powerOptions": [
+          "solar",
+          "battery (rechargeable)"
+        ]
       },
       "description": "The UKCEH AMI system offers a platform for long-term, autonomous monitoring of moths.  Combining robust lighting for attracting insects with high resolution cameras, the UKCEH AMI system can provide practical and cost-effective solutions for standardised monitoring. UKCEH AMI systems have been deployed in the UK, Canada, USA, Cyprus, Panama, Kenya, Uganda, Singapore, Costa Rica and Argentina, with plans to expand further."
     },
@@ -365,32 +375,7 @@
           "notes": "Manual focus; minimum focal distance 20–50 cm; under 1 fps."
         }
       ],
-      "powerSources": [
-        {
-          "powerSourceType": "grid",
-          "model": null,
-          "capacityWh": null,
-          "nominalVoltageV": null,
-          "voltageAt80PercentV": null,
-          "voltageAt20PercentV": null
-        },
-        {
-          "powerSourceType": "solar",
-          "model": null,
-          "capacityWh": null,
-          "nominalVoltageV": null,
-          "voltageAt80PercentV": null,
-          "voltageAt20PercentV": null
-        },
-        {
-          "powerSourceType": "battery",
-          "model": "rechargeable",
-          "capacityWh": null,
-          "nominalVoltageV": null,
-          "voltageAt80PercentV": null,
-          "voltageAt20PercentV": null
-        }
-      ],
+      "powerSource": null,
       "computer": "Raspberry Pi Zero / Zero 2 W",
       "customFields": {
         "source": "InsectAI COST Action hardware-db (https://insectai-cost-action.github.io/hardware-db/), 2026-11-23",
@@ -407,7 +392,12 @@
         "subjectSizeMinMm": 3,
         "construction": "Off-the-shelf: Purchased and used as-is",
         "documentationURL": "https://faunabit.eu/producten/diopsis",
-        "lastFirmwareUpdate": "April 2026"
+        "lastFirmwareUpdate": "April 2026",
+        "powerOptions": [
+          "grid",
+          "solar",
+          "battery (rechargeable)"
+        ]
       },
       "description": "The DIOPSIS is a smart camera that automatically photographs and identifies insects in the wild. Set up in nature, it works day and night to capture which species are present and how often they appear, helping researchers track insect populations and monitor biodiversity over time."
     },
@@ -454,40 +444,7 @@
           "notes": "Fixed focus at 45 cm; 60° field of view; built-in white flash."
         }
       ],
-      "powerSources": [
-        {
-          "powerSourceType": "grid",
-          "model": null,
-          "capacityWh": null,
-          "nominalVoltageV": null,
-          "voltageAt80PercentV": null,
-          "voltageAt20PercentV": null
-        },
-        {
-          "powerSourceType": "solar",
-          "model": null,
-          "capacityWh": null,
-          "nominalVoltageV": null,
-          "voltageAt80PercentV": null,
-          "voltageAt20PercentV": null
-        },
-        {
-          "powerSourceType": "battery",
-          "model": "rechargeable",
-          "capacityWh": null,
-          "nominalVoltageV": null,
-          "voltageAt80PercentV": null,
-          "voltageAt20PercentV": null
-        },
-        {
-          "powerSourceType": "battery",
-          "model": "non-rechargeable",
-          "capacityWh": null,
-          "nominalVoltageV": null,
-          "voltageAt80PercentV": null,
-          "voltageAt20PercentV": null
-        }
-      ],
+      "powerSource": null,
       "computer": null,
       "customFields": {
         "source": "InsectAI COST Action hardware-db (https://insectai-cost-action.github.io/hardware-db/), 2026-11-23",
@@ -504,7 +461,13 @@
         "construction": "Off-the-shelf: Purchased and used as-is",
         "documentationURL": "https://drive.google.com/file/d/1iNXuJH1KsE21d-vDD2z77KPcQGcR3h_2/view?usp=drive_link",
         "additionalResources": "www.entocam.com",
-        "lastFirmwareUpdate": "July 2025"
+        "lastFirmwareUpdate": "July 2025",
+        "powerOptions": [
+          "grid",
+          "solar",
+          "battery (rechargeable)",
+          "battery (non-rechargeable)"
+        ]
       },
       "description": "The Entocam is a camera system entirely dedicated to capturing Moths and Nocturnal insect pictures. It consists of a waterproof, programmable camera that features a 8MP Sony Starvis Sensor, built-in with a white flash and designed to focus on a screen located at 45 cm mounted with carbon rods. It is paired with the EntoCam Beam, a strong and adjustable Moth-Attracting LED."
     },
@@ -550,16 +513,7 @@
           "notes": "Fixed focus distance, 20–50 cm; 68.75° field of view."
         }
       ],
-      "powerSources": [
-        {
-          "powerSourceType": "solar",
-          "model": null,
-          "capacityWh": null,
-          "nominalVoltageV": null,
-          "voltageAt80PercentV": null,
-          "voltageAt20PercentV": null
-        }
-      ],
+      "powerSource": null,
       "computer": "ATMSAMD21J microcontroller with ARM Cortex-M0+ core (32 KB RAM; 256 KB flash memory; 48 MHz CPU speed)",
       "customFields": {
         "source": "InsectAI COST Action hardware-db (https://insectai-cost-action.github.io/hardware-db/), 2026-11-23",
@@ -575,7 +529,10 @@
         "construction": "Fully custom: Designed and fabricated entirely by the user (e.g custom PCB)",
         "documentationURL": "https://nerc-ceh.github.io/lepisense-website/",
         "additionalResources": "https://github.com/NERC-CEH/lepisense-website/discussions/categories/q-a?discussions_q=",
-        "lastFirmwareUpdate": "March 2026"
+        "lastFirmwareUpdate": "March 2026",
+        "powerOptions": [
+          "solar"
+        ]
       },
       "description": "LepiSense features colourful lighting to attract insects, a high-resolution camera, and high-capacity data storage for pictures. Solar-powered and easy to set up, it aims to enable scalable, automated long-term monitoring of nocturnal insects."
     }

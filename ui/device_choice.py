@@ -21,12 +21,23 @@ PHOTOS_LABEL = "Use what the photos say"
 IMAGE_EXTENSIONS = (".jpg", ".jpeg")
 MAX_PHOTOS_TO_CHECK = 25
 CUSTOM_TYPES_FILE = Path.home() / ".mothbot" / "device-types.ndjson"
+CUSTOM_POWER_FILE = Path.home() / ".mothbot" / "power-sources.ndjson"
 
 ATTRACTOR_COLUMNS = ["Type", "Hardware version", "Location", "Switches on", "Power (W)"]
 TARGET_COLUMNS = ["Type", "Material", "Color", "Width (cm)", "Height (cm)", "Distance (cm)"]
 SENSOR_COLUMNS = ["Type", "Model", "Lens", "Resolution", "Notes"]
-POWER_COLUMNS = ["Type", "Model", "Capacity (Wh)", "Nominal (V)", "At 80% full (V)", "At 20% full (V)"]
-BATTERY_NUMBERS = ("capacityWh", "nominalVoltageV", "voltageAt80PercentV", "voltageAt20PercentV")
+POWER_NOT_SPECIFIED = "Not specified"
+# Each kind of power source has its own details (more can be added per kind later).
+POWER_NUMBERS = {
+    "battery": ("capacityWh", "nominalVoltageV", "voltageAt80PercentV", "voltageAt20PercentV"),
+    "grid": ("supplyVoltageV",),
+    "solar": ("panelPowerW",),
+}
+POWER_NUMBER_LABELS = {
+    "capacityWh": "Battery capacity", "nominalVoltageV": "Battery nominal voltage",
+    "voltageAt80PercentV": "Battery voltage at 80%", "voltageAt20PercentV": "Battery voltage at 20%",
+    "supplyVoltageV": "Supply voltage", "panelPowerW": "Panel power",
+}
 
 
 # ── the choices ────────────────────────────────────────────────────────────────
@@ -54,14 +65,45 @@ def saved_custom_types(path=None):
     return list(out.values())
 
 
+def _write_ndjson(path, items):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".ndjson.tmp")
+    tmp.write_text("".join(json.dumps(t, ensure_ascii=False) + "\n" for t in items), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def save_custom_type(definition, path=None):
     """Adds or replaces (by id) a custom device in the remembered list."""
     path = Path(path or CUSTOM_TYPES_FILE)
     kept = [t for t in saved_custom_types(path) if t["deviceTypeID"] != definition["deviceTypeID"]]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".ndjson.tmp")
-    tmp.write_text("".join(json.dumps(t, ensure_ascii=False) + "\n" for t in [*kept, definition]), encoding="utf-8")
-    os.replace(tmp, path)
+    _write_ndjson(path, [*kept, definition])
+
+
+def saved_power_setups(path=None):
+    """Custom power setups made in Process before (newest wins for an id)."""
+    path = Path(path or CUSTOM_POWER_FILE)
+    out = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict) and item.get("powerSourceID") and item.get("powerSourceType"):
+            out[item["powerSourceID"]] = item
+    return list(out.values())
+
+
+def save_power_setup(setup, path=None):
+    """Adds or replaces (by id) a custom power setup in the remembered list (standard ones aren't stored)."""
+    if not setup or not setup.get("powerSourceID") or is_standard_power_setup(setup):
+        return
+    path = Path(path or CUSTOM_POWER_FILE)
+    kept = [p for p in saved_power_setups(path) if p["powerSourceID"] != setup["powerSourceID"]]
+    _write_ndjson(path, [*kept, setup])
 
 
 def custom_label(definition):
@@ -133,7 +175,7 @@ def _sample_photos(folders, limit=MAX_PHOTOS_TO_CHECK):
 
 def describe(definition):
     """One line about a device description: attractors, targets, sensors, power."""
-    units = {"powerW": " W", "capacityWh": " Wh"}
+    units = {"powerW": " W", "capacityWh": " Wh", "supplyVoltageV": " V", "panelPowerW": " W panel"}
 
     def items(key, parts):
         out = []
@@ -145,8 +187,11 @@ def describe(definition):
     text = (f"attractors: {items('attractors', ('attractorType', 'hardwareVersion', 'powerW'))} · "
             f"targets: {items('targets', ('targetType', 'color', 'material'))} · "
             f"sensors: {items('sensors', ('sensorType', 'model', 'resolution'))}")
-    if definition.get("powerSources"):
-        text += f" · power: {items('powerSources', ('powerSourceType', 'model', 'capacityWh'))}"
+    power = definition.get("powerSource") or (definition.get("powerSources") or [None])[0]
+    if power:
+        parts = [power.get("powerSourceType"), power.get("name") or power.get("model")]
+        parts += [f"{power[k]}{units.get(k, '')}" for k in ("capacityWh", "supplyVoltageV", "panelPowerW") if power.get(k) is not None]
+        text += " · power: " + " ".join(str(p) for p in parts if p)
     if definition.get("description"):
         text += f" · {definition['description']}"
     return text
@@ -214,10 +259,7 @@ def editor_hint():
     parts += [
         f"**Target materials:** {', '.join(c.get('targetMaterials', []))} · **colors:** {', '.join(c.get('targetColors', []))}",
         f"**Sensor types:** {', '.join(c.get('sensorTypes', []))}",
-        f"**Power sources:** {', '.join(c.get('powerSourceTypes', []))} · **batteries:** "
-        + ", ".join(f"{b['model']} ({b.get('capacityWh')} Wh, {b.get('nominalVoltageV')} V; "
-                    f"{b.get('voltageAt80PercentV')} V at 80%, {b.get('voltageAt20PercentV')} V at 20%)"
-                    for b in c.get("batteries", [])),
+        "**Power source:** one battery, grid or solar setup. Pick a standard setup; changing its details makes it your own.",
         "Any other value is fine too. Right-click a table to add or delete rows; empty rows are ignored.",
     ]
     return "\n\n".join(parts)
@@ -243,9 +285,66 @@ def to_editor(definition):
                     for t in d.get("targets") or []],
         "sensors": [[_cell(s.get(k)) for k in ("sensorType", "model", "lens", "resolution", "notes")]
                     for s in d.get("sensors") or []],
-        "powerSources": [[_cell(p.get(k)) for k in ("powerSourceType", "model", *BATTERY_NUMBERS)]
-                         for p in d.get("powerSources") or []],
+        "power": dict(d.get("powerSource") or (d.get("powerSources") or [None])[0] or {}),
     }
+
+
+# ── the power source: one setup of one kind ───────────────────────────────────
+
+def standard_power_setups():
+    return load_device_choices().get("powerSources", [])
+
+
+def is_standard_power_setup(setup):
+    return bool(setup) and setup.get("powerSourceID") in {s.get("powerSourceID") for s in standard_power_setups()}
+
+
+def power_setups(kind, custom_path=None):
+    """The setups of one kind (battery, grid, solar): standard ones, then ones saved in Process."""
+    standard = [s for s in standard_power_setups() if s.get("powerSourceType") == kind]
+    ids = {s.get("powerSourceID") for s in standard}
+    saved = [s for s in saved_power_setups(custom_path) if s.get("powerSourceType") == kind and s["powerSourceID"] not in ids]
+    return standard + saved
+
+
+def power_setup_labels(kind, current=None):
+    """Setup dropdown labels: standard and saved setups, plus the current one if it is neither."""
+    labels = [s["name"] for s in power_setups(kind)]
+    if current and current.get("powerSourceType") == kind and current.get("name") not in labels:
+        labels.append(current.get("name") or "Custom")
+    return labels
+
+
+def power_from_editor(kind, setup_label, model, notes, numbers, current=None, problems=None, name=None):
+    """The one power source from the editor's fields (None when not specified).
+
+    Starting from the chosen setup (standard or saved), any changed detail or a new name makes
+    it a new custom setup with its own id that names the setup it came from.
+    """
+    problems = problems if problems is not None else []
+    if kind not in POWER_NUMBERS:
+        return None
+    std = next((s for s in power_setups(kind) if s.get("name") == setup_label), None)
+    start = std or (current if (current or {}).get("powerSourceType") == kind else None) or {
+        "powerSourceID": f"custom-power-{kind}", "name": kind, "derivedFrom": None}
+    out = {"powerSourceType": kind, "powerSourceID": start.get("powerSourceID"), "name": start.get("name"),
+           "derivedFrom": start.get("derivedFrom"), "model": _text(model), "notes": _text(notes)}
+    for key in POWER_NUMBERS[kind]:
+        out[key] = _number((numbers or {}).get(key), POWER_NUMBER_LABELS[key], problems)
+    if kind == "battery" and out["voltageAt80PercentV"] is not None and out["voltageAt20PercentV"] is not None \
+            and out["voltageAt80PercentV"] <= out["voltageAt20PercentV"]:
+        problems.append("The battery's 80% voltage has to be higher than its 20% voltage.")
+    new_name = (name or "").strip()
+    renamed = bool(new_name) and new_name != start.get("name")
+    if std and (renamed or any(out.get(k) != std.get(k) for k in ("model", "notes", *POWER_NUMBERS[kind]))):
+        label = new_name if renamed else f"{std['name'].removeprefix('Standard ').removesuffix(' (custom)')} (custom)"
+        out.update(powerSourceID="custom-power-" + (re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-") or kind),
+                   name=label, derivedFrom=std["powerSourceID"])
+    elif renamed:
+        out["name"] = new_name
+    if out["name"] in {s["name"] for s in standard_power_setups()} and not is_standard_power_setup(out):
+        problems.append("That power setup name belongs to a standard setup; give yours its own name.")
+    return out
 
 
 def _rows(table):
@@ -300,11 +399,12 @@ def custom_id_for(name):
 
 
 def from_editor(base, name, maker, hardware_version, firmware_version, computer, description,
-                attractors, targets, sensors, power_sources):
+                attractors, targets, sensors, power=None):
     """A custom device description from the editor, and the problems that stop it being used.
 
     ``base`` is the device it was customized from: its firmware family, channels and other
-    fields not in the editor are kept.
+    fields not in the editor are kept. ``power`` holds the power fields:
+    ``{"kind", "setup", "model", "notes", "numbers": {field: value}}``.
     """
     base = base or {}
     problems = []
@@ -315,14 +415,14 @@ def from_editor(base, name, maker, hardware_version, firmware_version, computer,
     base_attractors = base.get("attractors") or []
     out_attractors = []
     for i, row in enumerate(_rows(attractors)):
-        kind, hw, location, lights, power = (row + [""] * 5)[:5]
+        kind, hw, location, lights, watts = (row + [""] * 5)[:5]
         item = {
             "channel": base_attractors[i].get("channel") if i < len(base_attractors) else None,
             "attractorType": _text(kind),
             "hardwareVersion": _text(hw),
             "attractorLocation": _text(location),
             "configuration": _text(lights),
-            "powerW": _number(power, "Attractor power", problems),
+            "powerW": _number(watts, "Attractor power", problems),
         }
         options = _power_options(item["attractorType"])
         if options:
@@ -357,32 +457,14 @@ def from_editor(base, name, maker, hardware_version, firmware_version, computer,
     if not out_sensors:
         problems.append("A device needs at least one sensor.")
 
-    batteries = {b["model"].lower(): b for b in load_device_choices().get("batteries", [])}
-    out_power = []
-    for row in _rows(power_sources):
-        kind, model, capacity, nominal, at80, at20 = (row + [""] * 6)[:6]
-        item = {"powerSourceType": (_text(kind) or "").lower() or None, "model": _text(model),
-                "capacityWh": _number(capacity, "Battery capacity", problems),
-                "nominalVoltageV": _number(nominal, "Battery nominal voltage", problems),
-                "voltageAt80PercentV": _number(at80, "Battery voltage at 80%", problems),
-                "voltageAt20PercentV": _number(at20, "Battery voltage at 20%", problems)}
-        if not item["powerSourceType"]:
-            problems.append("Every power source needs a type (battery, grid or solar).")
-        # A known battery fills in its capacity and voltages (where they're empty).
-        known = batteries.get((item["model"] or "").lower())
-        for key in BATTERY_NUMBERS:
-            if known and item[key] is None and known.get(key) is not None:
-                item[key] = known[key]
-        if item["powerSourceType"] != "battery":
-            item = {k: v for k, v in item.items() if k not in BATTERY_NUMBERS or v is not None}
-        elif (item["voltageAt80PercentV"] is not None and item["voltageAt20PercentV"] is not None
-              and item["voltageAt80PercentV"] <= item["voltageAt20PercentV"]):
-            problems.append("The battery's 80% voltage has to be higher than its 20% voltage.")
-        out_power.append(item)
+    power = power or {}
+    base_power = base.get("powerSource") or (base.get("powerSources") or [None])[0]
+    out_power = power_from_editor(power.get("kind"), power.get("setup"), power.get("model"), power.get("notes"),
+                                  power.get("numbers"), current=base_power, problems=problems, name=power.get("name"))
 
     standard_ids = {t["deviceTypeID"] for t in load_device_types()}
     definition = {
-        **{k: v for k, v in base.items() if k not in ("deviceTypeID", "deviceType", "derivedFrom")},
+        **{k: v for k, v in base.items() if k not in ("deviceTypeID", "deviceType", "derivedFrom", "powerSources")},
         "deviceTypeID": custom_id_for(name),
         "deviceType": name,
         "derivedFrom": base.get("deviceTypeID") if base.get("deviceTypeID") in standard_ids else base.get("derivedFrom"),
@@ -392,7 +474,7 @@ def from_editor(base, name, maker, hardware_version, firmware_version, computer,
         "attractors": out_attractors,
         "targets": out_targets,
         "sensors": out_sensors,
-        "powerSources": out_power,
+        "powerSource": out_power,
         "computer": _text(computer),
         "description": _text(description),
     }

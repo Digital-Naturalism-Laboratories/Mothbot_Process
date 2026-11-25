@@ -540,16 +540,16 @@ def app():
                 with gr.Row():
                     with gr.Column():
                         gr.Markdown(
-                            "### Datasets Folder: Pick a folder of your datasets to process"
+                            "### Projects Folder: Pick a folder of your projects to process"
                         )
                         deployment_path = gr.Text(
-                            label="Datasets Folder Path (paste or type)",
+                            label="Projects Folder Path (paste or type)",
                             placeholder="/path/to/your/deployment/folder",
                             interactive=True,
                         )
                         with gr.Row():
                             deployment_browse_btn = gr.Button(
-                                "Pick a Datasets Folder", size="sm", variant="primary", scale=3,
+                                "Pick a Projects Folder", size="sm", variant="primary", scale=3,
                             )
                             refresh_btn = gr.Button(
                                 "↻ Refresh", size="sm", variant="secondary", scale=1, min_width=100,
@@ -1113,11 +1113,11 @@ def app():
             # ~~~~~~~~~~~~ Legacy Converter Tab ~~~~~~~~~~~~~~~~~~~~~~
             with gr.Tab("Legacy Converter", id="legacy_converter", visible=False) as legacy_converter_tab:
                 gr.Markdown(
-                    "**Convert legacy-format datasets** to the current `_processed/` layout.\n\n"
+                    "**Convert legacy-format projects** to the current `_processed/` layout.\n\n"
                     "Old Mothbot versions stored patches in a `patches/` subfolder and wrote "
                     "`_botdetection.json` files next to source images. "
                     "This tool moves those outputs into the `_processed/` mirror tree so the "
-                    "dataset works with current Mothbot Process and Mothbot Classify.\n\n"
+                    "project works with current Mothbot Process and Mothbot Classify.\n\n"
                     "Legacy collections are detected automatically when you scan a folder in the "
                     "**Setup** tab. Use **↻ Refresh** there to re-scan after making changes."
                 )
@@ -1655,7 +1655,7 @@ def scan_deployment_folder(folder_path, picker_error_message=""):
     try:
         return _scan_deployment_folder(folder_path, picker_error_message)
     except Exception as exc:
-        logger.exception("Scanning datasets folder %r failed", folder_path)
+        logger.exception("Scanning projects folder %r failed", folder_path)
         return _scan_failed_outputs(
             f"Scanning this folder failed:\n{folder_path}\n\n{type(exc).__name__}: {exc}\n\n"
             "Please send this message (and the Mothbot log file) to the Mothbot team."
@@ -1864,7 +1864,7 @@ def open_classify_in_chrome(folder_path):
 
     folder_path = (folder_path or "").strip()
     if not folder_path or not os.path.isdir(folder_path):
-        return gr.update(value="Choose a datasets folder first.", visible=True)
+        return gr.update(value="Choose a projects folder first.", visible=True)
 
     url, _root = _classify_handoff_url(folder_path)
 
@@ -1887,7 +1887,7 @@ def open_classify_in_chrome(folder_path):
         value=(
             "⚠️ Couldn't find Chrome, Edge, or Brave, so this opened in your default browser. "
             "Classify needs a Chromium-based browser to open folders — if the page can't open your "
-            "dataset, paste the link into Chrome."
+            "project, paste the link into Chrome."
         ),
         visible=True,
     )
@@ -1916,7 +1916,7 @@ def classify_handoff_html(folder_path):
         f'🦋 Open <b>{html.escape(target)}</b> in Mothbot Classify ↗</a>'
         f'<div style="color:#888;font-size:12px;margin-top:2px">'
         f'Use the button for best results — Classify needs Chrome/Edge to open folders. '
-        f'Point its datasets folder at <code>{html.escape(root)}</code> if it asks.'
+        f'Point its projects folder at <code>{html.escape(root)}</code> if it asks.'
         f'</div></div>'
     )
     return gr.update(value=body, visible=True)
@@ -2222,7 +2222,7 @@ def scan_legacy_collections_ui(dataset_root):
         return (
             gr.update(choices=[], value=[], visible=False),
             gr.update(interactive=False),
-            "No dataset folder selected. Pick a folder in the Setup tab first.\n",
+            "No project folder selected. Pick a folder in the Setup tab first.\n",
         )
 
     results = Mothbot_LegacyConverter.scan_dataset_for_legacy(dataset_root)
@@ -2230,7 +2230,7 @@ def scan_legacy_collections_ui(dataset_root):
         return (
             gr.update(choices=[], value=[], visible=False),
             gr.update(interactive=False),
-            "✅ No legacy-format collections found — this dataset is already up to date.\n",
+            "✅ No legacy-format collections found — this project is already up to date.\n",
         )
 
     choices = []
@@ -2258,7 +2258,7 @@ def run_legacy_converter_ui(selected_folders, dataset_root, delete_originals):
         return
 
     if not dataset_root or not os.path.isdir(dataset_root):
-        yield "Dataset root not set — pick a folder in the Setup tab first.\n", HIDE_STOP
+        yield "Projects folder not set — pick a folder in the Setup tab first.\n", HIDE_STOP
         return
 
     output_log = ""

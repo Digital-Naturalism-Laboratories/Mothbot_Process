@@ -1,7 +1,7 @@
 {
   "format": "aimo-device-types",
   "formatVersion": 4,
-  "updated": "2026-11-23",
+  "updated": "2026-11-25",
   "choices": {
     "attractorTypes": [
       "Mothbeam (Visible)",
@@ -144,7 +144,19 @@
         "nominalVoltageV": 11.1,
         "voltageAt80PercentV": 12.0,
         "voltageAt20PercentV": 10.5,
-        "notes": null
+        "notes": "This is the standard battery that the Mothbox team has been using built in to the Mothboxes"
+      },
+      {
+        "powerSourceID": "talentcell-pb120b1-external",
+        "name": "TalentCell PB120B1 with Extra External Battery",
+        "derivedFrom": null,
+        "powerSourceType": "battery",
+        "model": "TalentCell PB120B1",
+        "capacityWh": 260,
+        "nominalVoltageV": 11.1,
+        "voltageAt80PercentV": 12,
+        "voltageAt20PercentV": 10.5,
+        "notes": "This is the setup when we connect an external Talentcell Battery to the charging port to extend the life of the internal battery in a session"
       },
       {
         "powerSourceID": "grid-12v-adapter",
@@ -200,7 +212,7 @@
         {
           "targetType": "sheet",
           "material": "felt",
-          "color": null,
+          "color": "white",
           "widthCm": 28.885,
           "heightCm": 20.5294,
           "distanceCm": 24.5
@@ -218,48 +230,59 @@
           "notes": null
         }
       ],
-      "powerSource": null,
+      "powerSource": {
+        "powerSourceID": "talentcell-pb120b1",
+        "name": "Standard TalentCell PB120B1",
+        "derivedFrom": null,
+        "powerSourceType": "battery",
+        "model": "TalentCell PB120B1",
+        "capacityWh": 142,
+        "nominalVoltageV": 11.1,
+        "voltageAt80PercentV": 12.0,
+        "voltageAt20PercentV": 10.5,
+        "notes": "This is the standard battery that the Mothbox team has been using built in to the Mothboxes"
+      },
       "computer": "Raspberry Pi 5",
       "customFields": {},
-      "description": null
+      "description": "This has been the Mothbox team's default option for research. www.mothbox.org"
     },
     {
       "deviceTypeID": "mothbox-diy",
       "deviceType": "Standard Mothbox DIY",
       "derivedFrom": null,
       "maker": "Digital Naturalism Laboratories",
-      "hardwareVersion": null,
+      "hardwareVersion": "4.16",
       "firmware": {
         "family": "Mothbox Unified 6.x",
-        "version": null,
+        "version": "6.1.3",
         "hardwareID": "diy"
       },
       "attractors": [
         {
           "channel": "ATTRACT_A",
-          "attractorType": null,
-          "hardwareVersion": null,
-          "attractorLocation": null,
-          "configuration": null,
-          "powerW": null
+          "attractorType": "Mothbeam (Visible)",
+          "hardwareVersion": "5.0.3",
+          "attractorLocation": "internal",
+          "configuration": "1 switch",
+          "powerW": 2
         },
         {
           "channel": "ATTRACT_B",
-          "attractorType": null,
-          "hardwareVersion": null,
-          "attractorLocation": null,
-          "configuration": null,
-          "powerW": null
+          "attractorType": "Mothbeam (UV)",
+          "hardwareVersion": "5.0.3",
+          "attractorLocation": "internal",
+          "configuration": "1 switch",
+          "powerW": 2
         }
       ],
       "targets": [
         {
-          "targetType": null,
-          "material": null,
-          "color": null,
-          "widthCm": null,
-          "heightCm": null,
-          "distanceCm": null
+          "targetType": "sheet",
+          "material": "felt",
+          "color": "white",
+          "widthCm": 29,
+          "heightCm": 20.5,
+          "distanceCm": 24
         }
       ],
       "sensors": [
@@ -274,10 +297,21 @@
           "notes": null
         }
       ],
-      "powerSource": null,
+      "powerSource": {
+        "powerSourceID": "talentcell-pb120b1",
+        "name": "Standard TalentCell PB120B1",
+        "derivedFrom": null,
+        "powerSourceType": "battery",
+        "model": "TalentCell PB120B1",
+        "capacityWh": 142,
+        "nominalVoltageV": 11.1,
+        "voltageAt80PercentV": 12.0,
+        "voltageAt20PercentV": 10.5,
+        "notes": "This is the standard battery that the Mothbox team has been using built in to the Mothboxes"
+      },
       "computer": "Raspberry Pi 5",
       "customFields": {},
-      "description": null
+      "description": "This is an example of our old setup with Mothbox DIYs with 2 internal mothbeams. www.mothbox.org"
     },
     {
       "deviceTypeID": "ami-device",
@@ -485,17 +519,9 @@
       "attractors": [
         {
           "channel": null,
-          "attractorType": "UV light",
+          "attractorType": "UV + white LED",
           "hardwareVersion": null,
-          "attractorLocation": null,
-          "configuration": null,
-          "powerW": null
-        },
-        {
-          "channel": null,
-          "attractorType": "Visible light (white/coloured LED)",
-          "hardwareVersion": null,
-          "attractorLocation": null,
+          "attractorLocation": "in target",
           "configuration": null,
           "powerW": null
         }

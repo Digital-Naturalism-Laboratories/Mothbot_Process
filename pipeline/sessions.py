@@ -151,6 +151,23 @@ def build_default_sessions(deployment_id, photo_names):
     return sessions
 
 
+def _wall_clock(text):
+    """Local wall-clock time from an ISO time, ignoring any UTC offset; None if unreadable."""
+    try:
+        return datetime.strptime(str(text)[:19], "%Y-%m-%dT%H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+
+
+def _span(session):
+    start, end = _wall_clock(session.get("start")), _wall_clock(session.get("end"))
+    return (start, end) if start and end and start <= end else None
+
+
+def _overlaps(a, b):
+    return bool(a and b) and a[0] <= b[1] and b[0] <= a[1]
+
+
 def load_sessions_file(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -173,8 +190,15 @@ def update_sessions_file(deployment_dir, deployment_id, photo_names):
         return 0
 
     data = existing or {"format": FORMAT, "formatVersion": FORMAT_VERSION, "deploymentID": deployment_id, "sessions": []}
-    known = {s.get("sessionID") for s in data["sessions"] if isinstance(s, dict)}
-    added = [s for s in build_default_sessions(deployment_id, photo_names) if s["sessionID"] not in known]
+    current = [s for s in data["sessions"] if isinstance(s, dict)]
+    known = {s.get("sessionID") for s in current}
+    # A night already covered by a session (one a person edited or renamed, say) gets no
+    # second, overlapping default session: captures are matched to sessions by time.
+    spans = [span for span in (_span(s) for s in current) if span]
+    added = [
+        s for s in build_default_sessions(deployment_id, photo_names)
+        if s["sessionID"] not in known and not any(_overlaps(_span(s), other) for other in spans)
+    ]
     if not added:
         return 0
 

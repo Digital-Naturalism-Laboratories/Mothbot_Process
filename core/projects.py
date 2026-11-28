@@ -210,3 +210,122 @@ def _write_json(path, data):
         json.dump(data, f, indent=2)
         f.write("\n")
     os.replace(tmp, path)
+
+
+# ──────────────────────────────────────────────────────────────
+#  Moving older data to the per-project layout
+# ──────────────────────────────────────────────────────────────
+#
+# Older Process runs kept one _processed for a whole folder of projects:
+#     MB Projects/_processed/DesertHouse/{dataset.json, 02_records/, Cactus/…}
+# The per-project layout keeps it inside the project:
+#     MB Projects/DesertHouse/_processed/{dataset.json, 02_records/, Cactus/…}
+# Every path in the package records is relative to the package folder, so moving
+# the folder (one rename, on the same drive) keeps human IDs, sessions and patches
+# working. Nothing is copied or deleted.
+
+
+def _has_detections_two_levels_down(folder):
+    """True if *folder*/<deployment>/<night>/ holds a ``*_botdetection.json``."""
+    try:
+        for deployment in os.scandir(folder):
+            if not deployment.is_dir() or deployment.name.startswith("."):
+                continue
+            for night in os.scandir(deployment.path):
+                if not night.is_dir() or night.name.startswith("."):
+                    continue
+                for entry in os.scandir(night.path):
+                    if entry.name.endswith("_botdetection.json"):
+                        return True
+    except OSError:
+        return False
+    return False
+
+
+def _is_project_results(folder):
+    """A folder inside an older shared _processed that holds one project's results."""
+    return os.path.isfile(os.path.join(folder, "dataset.json")) or _has_detections_two_levels_down(folder)
+
+
+def _processed_folders_under(directory):
+    found = []
+    for root, dirs, _files in os.walk(os.path.abspath(directory)):
+        if PROCESSED in dirs:
+            found.append(os.path.join(root, PROCESSED))
+        dirs[:] = sorted(d for d in dirs if d != PROCESSED and d.lower() != "patches")
+    return found
+
+
+def older_layout_moves(scan_root, collections=()):
+    """Projects found from *scan_root* whose results are still in an older shared
+    ``_processed``, each as ``{"name", "source", "project", "destination",
+    "has_photos", "has_package", "problem"}``. ``problem`` is set (and the move
+    skipped) when the destination is already taken.
+
+    Looks in every ``_processed`` at or below *scan_root*, and in the one above it
+    that holds results for *collections* (when a single project was picked).
+    """
+    scan_root = os.path.abspath(scan_root)
+    shared = set(_processed_folders_under(scan_root))
+    for collection in collections:
+        root = existing_results_root(collection)
+        if root and not marker_root(collection):
+            shared.add(os.path.join(root, PROCESSED))
+
+    moves = []
+    for processed in sorted(shared):
+        owner = os.path.dirname(processed)
+        # Already a project's own _processed: nothing to move.
+        if has_marker(owner) or has_marker(processed) or os.path.isfile(os.path.join(processed, "dataset.json")):
+            continue
+        # Above the picked folder: only the project on the way down to it.
+        only = os.path.relpath(scan_root, owner).split(os.sep)[0] if scan_root.startswith(owner + os.sep) else None
+        try:
+            entries = sorted(os.scandir(processed), key=lambda e: e.name.lower())
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.is_dir() or entry.name.startswith(".") or (only and entry.name != only):
+                continue
+            if not _is_project_results(entry.path):
+                continue
+            project = os.path.join(owner, entry.name)
+            destination = os.path.join(project, PROCESSED)
+            problem = None
+            if os.path.exists(destination):
+                problem = f"{entry.name} already has its own _processed folder"
+            elif os.path.exists(project) and not os.path.isdir(project):
+                problem = f"a file named {entry.name} is in the way"
+            moves.append({
+                "name": entry.name,
+                "source": entry.path,
+                "project": project,
+                "destination": destination,
+                "has_photos": os.path.isdir(project),
+                "has_package": os.path.isfile(os.path.join(entry.path, "dataset.json")),
+                "problem": problem,
+            })
+    return moves
+
+
+def apply_older_layout_move(move):
+    """Moves one project's results into ``<project>/_processed`` and marks the project.
+
+    A rename only: it fails (and changes nothing) rather than copying if the
+    destination is on another drive or already exists.
+    """
+    source, project, destination = move["source"], move["project"], move["destination"]
+    if not os.path.isdir(source):
+        raise FileNotFoundError(f"{source} is no longer there")
+    if os.path.exists(destination):
+        raise FileExistsError(f"{destination} already exists")
+    os.makedirs(project, exist_ok=True)
+    os.rename(source, destination)
+    write_marker(project)
+    # The shared _processed is left behind once empty; remove only an empty folder.
+    old = os.path.dirname(source)
+    try:
+        if not os.listdir(old):
+            os.rmdir(old)
+    except OSError:
+        pass

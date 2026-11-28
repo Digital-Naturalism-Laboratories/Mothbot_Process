@@ -38,6 +38,8 @@ from pipeline import insert_exif as Mothbot_InsertExif
 from pipeline import insert_metadata as Mothbot_InsertMetadata
 from ui.device_panel import build_device_panel, link_device_panels
 from core.projects import (
+    apply_older_layout_move,
+    older_layout_moves,
     layout_options as project_layout_options,
     processed_mirror as project_processed_mirror,
     project_root_for,
@@ -610,6 +612,13 @@ def app():
                     project_apply_btn = gr.Button("Use this", variant="primary", size="sm")
                 project_prompt_state = gr.State([])
 
+                # Projects whose results are still in an older shared _processed folder
+                # (core/projects.py): offer to move each into its own project folder.
+                with gr.Group(visible=False) as older_layout_box:
+                    older_layout_md = gr.Markdown("")
+                    older_layout_btn = gr.Button("Move these projects", variant="primary", size="sm")
+                older_layout_state = gr.State([])
+
                 # Full width, under the folder: the tree needs room for folder names and counts.
                 session_tree = gr.HTML(value="", visible=False, padding=False)
                 # The tree writes {"selected": [...], "collapsed": [...]} here (hidden by CSS;
@@ -864,13 +873,15 @@ def app():
 
             # ~~~~~~~~~~~~ Metadata Tab ~~~~~~~~~~~~~~~~~~~~~~
             with gr.Tab("Insert Metadata", id="metadata") as metadata_tab:
+                # Manual Entry unless a field sheet CSV is chosen (it follows the CSV path below).
+                _start_with_csv = bool(str(DEFAULT_METADATA_CSV or "").strip())
                 metadata_mode = gr.Radio(
                     choices=["CSV File", "Manual Entry"],
-                    value="CSV File",
+                    value="CSV File" if _start_with_csv else "Manual Entry",
                     label="Metadata Source",
                 )
 
-                with gr.Group(visible=True) as meta_csv_group:
+                with gr.Group(visible=_start_with_csv) as meta_csv_group:
                     with gr.Row():
                         meta_csv_mirror = gr.Text(
                             label="Metadata field sheet:",
@@ -878,7 +889,7 @@ def app():
                         )
                         meta_browse_mirror = gr.Button("Browse", size="sm", scale=0, min_width=100)
 
-                with gr.Column(visible=False) as meta_manual_group:
+                with gr.Column(visible=not _start_with_csv) as meta_manual_group:
                     gr.Markdown("**Apply to which nights** (select the folders this metadata applies to):")
                     # Ticked in the tree below; this hidden list holds the selection the run reads.
                     meta_manual_folder_choices = gr.CheckboxGroup(
@@ -1264,6 +1275,10 @@ def app():
             project_choice,
             project_preview,
             project_prompt_state,
+            older_layout_box,
+            older_layout_md,
+            older_layout_btn,
+            older_layout_state,
         ]
         # Each scan first shows "Scanning…": the collection list stays hidden until the
         # scan finishes, so otherwise nothing on screen says one is running.
@@ -1312,6 +1327,11 @@ def app():
             fn=project_prompt_preview_ui,
             inputs=[project_choice, project_prompt_state],
             outputs=[project_preview],
+        )
+        older_layout_btn.click(
+            fn=apply_older_layout_moves,
+            inputs=[older_layout_state, deployment_path],
+            outputs=_scan_outputs,
         )
         project_apply_btn.click(
             fn=apply_project_choice,
@@ -1387,6 +1407,12 @@ def app():
         )
         meta_csv_mirror.change(
             lambda v: v, inputs=[meta_csv_mirror], outputs=[metadata_csv_file]
+        )
+        # No field sheet chosen: Insert Metadata shows the manual entry (and the night picker).
+        meta_csv_mirror.change(
+            lambda v: "CSV File" if str(v or "").strip() else "Manual Entry",
+            inputs=[meta_csv_mirror],
+            outputs=[metadata_mode],
         )
         meta_browse_mirror.click(
             fn=browse_metadata_csv,
@@ -1723,6 +1749,10 @@ def _scan_failed_outputs(message):
         gr.update(choices=[], value=None),  # project_choice
         "",  # project_preview
         [],  # project_prompt_state
+        gr.update(visible=False),  # older_layout_box
+        "",  # older_layout_md
+        gr.update(),  # older_layout_btn
+        [],  # older_layout_state
     )
 
 
@@ -1901,6 +1931,7 @@ def _scan_deployment_folder(folder_path, picker_error_message=""):
         _meta_tree_html(folder_path, leaves, collapsed, []),  # meta_tree
         leaves,  # tree_leaves_state
         *_project_prompt_outputs(folder_path, unresolved),
+        *_older_layout_outputs(folder_path, raw_matches),
     )
 
 
@@ -1949,6 +1980,70 @@ def project_prompt_preview(option_id, options, unresolved):
         f"Project folder{'s' if len(option['roots']) != 1 else ''}: {roots}{more}  \n"
         f"Results for `{os.path.basename(example)}` will go to: `{project_processed_mirror(example, root)}`"
     )
+
+
+def _older_layout_outputs(folder_path, collections):
+    """(box, explanation, button, moves) for projects still in an older shared _processed."""
+    try:
+        moves = older_layout_moves(folder_path, collections)
+    except OSError:
+        logger.exception("Looking for older-layout projects under %r failed", folder_path)
+        moves = []
+    if not moves:
+        return gr.update(visible=False), "", gr.update(), []
+    ready = [m for m in moves if not m["problem"]]
+    base = os.path.dirname(os.path.abspath(folder_path))
+
+    def short(path):
+        return os.path.relpath(path, base)
+
+    rows = []
+    for m in moves:
+        notes = []
+        if m["has_package"]:
+            notes.append("Classify project: human IDs move with it")
+        if not m["has_photos"]:
+            notes.append("results only (no photos here)")
+        if m["problem"]:
+            notes.append(f"⚠️ not moved: {m['problem']}")
+        rows.append(f"| **{m['name']}** | `{short(m['source'])}` | `{short(m['destination'])}` | {'; '.join(notes)} |")
+    n = len(ready)
+    text = (
+        f"### {len(moves)} project{'s' if len(moves) != 1 else ''} here use{'s' if len(moves) == 1 else ''} the older layout\n"
+        "Their results share one `_processed` folder. Moving each project's results into its own folder means "
+        "you can share a project by itself, and Classify can open it directly. Each move is a single rename on "
+        "the same drive: nothing is copied or deleted, and human IDs, sessions and patches go along.\n\n"
+        "| Project | Results now in | Will move to | |\n|---|---|---|---|\n" + "\n".join(rows) + "\n\n"
+        "Close the project in Mothbot Classify first (or reload Classify afterwards), and don't move "
+        "projects while a step is running here."
+    )
+    label = f"Move {n} project{'s' if n != 1 else ''} to the new layout" if n else "Nothing can be moved"
+    return gr.update(visible=True), text, gr.update(value=label, interactive=bool(n)), moves
+
+
+def apply_older_layout_moves(moves, folder_path):
+    """Moves each listed project's results into its own folder, then rescans."""
+    done, failed = [], []
+    for move in moves or []:
+        if move.get("problem"):
+            continue
+        try:
+            apply_older_layout_move(move)
+            done.append(move["name"])
+        except OSError as exc:
+            logger.exception("Moving %r to the new layout failed", move.get("source"))
+            failed.append(f"{move['name']}: {exc}")
+    outputs = list(scan_deployment_folder(folder_path, ""))
+    lines = []
+    if done:
+        lines.append(f"Moved {len(done)} project{'s' if len(done) != 1 else ''} to the new layout: {', '.join(done)}.")
+        lines.append("Reload Mothbot Classify to open them from their new place.")
+    if failed:
+        lines.append("Not moved:\n" + "\n".join(failed))
+    if lines:
+        outputs[0] = gr.update(label="Projects moved" if not failed else "Some projects were not moved",
+                               value="\n".join(lines), visible=True)
+    return tuple(outputs)
 
 
 def project_prompt_preview_ui(option_id, prompt_state):
@@ -2231,6 +2326,18 @@ def _end_auto_run():
 
 def _auto_metadata_step(selected_folders, metadata_mode, metadata_csv, *rest):
     """Insert Metadata for the automatic run; pauses there if no metadata source was chosen."""
+    # rest = overwrite, manual nights, mapping, external keys, dataset root, then the
+    # manual fields, then the device choice (see _metadata_inputs).
+    manual_fields = rest[5:-1]
+    if metadata_mode == "Manual Entry" and not any(str(v or "").strip() for v in manual_fields):
+        _RUN_STATE["paused"] = "Insert Metadata"
+        yield (
+            "⏸ The automatic run paused here: no metadata was entered.\n"
+            "→ Fill in the manual entry above (or choose a metadata CSV), click Insert Metadata,\n"
+            "  then run the Insert Exif tab to finish.\n",
+            gr.update(visible=False),
+        )
+        return
     if metadata_mode == "CSV File" and not (metadata_csv and str(metadata_csv).strip()):
         _RUN_STATE["paused"] = "Insert Metadata"
         yield (

@@ -37,6 +37,12 @@ from pipeline import identify as Mothbot_ID
 from pipeline import insert_exif as Mothbot_InsertExif
 from pipeline import insert_metadata as Mothbot_InsertMetadata
 from ui.device_panel import build_device_panel, link_device_panels
+from core.projects import (
+    layout_options as project_layout_options,
+    processed_mirror as project_processed_mirror,
+    project_root_for,
+    write_marker as write_project_marker,
+)
 from ui.session_tree import (
     SESSION_TREE_CSS,
     SESSION_TREE_JS,
@@ -551,16 +557,16 @@ def app():
                 with gr.Row():
                     with gr.Column():
                         gr.Markdown(
-                            "### Projects Folder: Pick a folder of your projects to process"
+                            "### Folder to Process: pick a project, or a folder holding several projects"
                         )
                         deployment_path = gr.Text(
-                            label="Projects Folder Path (paste or type)",
+                            label="Folder Path (paste or type)",
                             placeholder="/path/to/your/deployment/folder",
                             interactive=True,
                         )
                         with gr.Row():
                             deployment_browse_btn = gr.Button(
-                                "Pick a Projects Folder", size="sm", variant="primary", scale=3,
+                                "Pick a Folder", size="sm", variant="primary", scale=3,
                             )
                             refresh_btn = gr.Button(
                                 "↻ Refresh", size="sm", variant="secondary", scale=1, min_width=100,
@@ -591,6 +597,18 @@ def app():
                             interactive=False,
                             visible=False,
                         )
+
+                # New photos without a project: ask where the project's top folder is
+                # (see core/projects.py). Answering writes mothbox-project.json and rescans.
+                with gr.Group(visible=False) as project_prompt:
+                    project_choice = gr.Radio(
+                        label="Which folder is the top folder of the project you want to process?",
+                        choices=[],
+                        interactive=True,
+                    )
+                    project_preview = gr.Markdown("")
+                    project_apply_btn = gr.Button("Use this", variant="primary", size="sm")
+                project_prompt_state = gr.State([])
 
                 # Full width, under the folder: the tree needs room for folder names and counts.
                 session_tree = gr.HTML(value="", visible=False, padding=False)
@@ -1242,6 +1260,10 @@ def app():
             session_tree,
             meta_tree,
             tree_leaves_state,
+            project_prompt,
+            project_choice,
+            project_preview,
+            project_prompt_state,
         ]
         # Each scan first shows "Scanning…": the collection list stays hidden until the
         # scan finishes, so otherwise nothing on screen says one is running.
@@ -1285,6 +1307,16 @@ def app():
             fn=open_classify_in_chrome,
             inputs=[deployment_path],
             outputs=[classify_open_status],
+        )
+        project_choice.change(
+            fn=project_prompt_preview_ui,
+            inputs=[project_choice, project_prompt_state],
+            outputs=[project_preview],
+        )
+        project_apply_btn.click(
+            fn=apply_project_choice,
+            inputs=[project_choice, project_prompt_state, deployment_path],
+            outputs=_scan_outputs,
         )
         refresh_btn.click(
             fn=show_scanning_status,
@@ -1438,7 +1470,9 @@ def load_metadata_for_preview(selected_keys, mapping, dataset_root):
     if not folder_path or not os.path.isdir(folder_path):
         return EMPTY
 
-    dr = dataset_root or folder_path
+    dr = project_root_for(folder_path)
+    if dr is None:
+        return EMPTY
     try:
         hu_pairs, bot_pairs = find_detection_matches_processed(dr, source_folder=folder_path)
     except Exception:
@@ -1685,6 +1719,10 @@ def _scan_failed_outputs(message):
         gr.update(value="", visible=False),  # session_tree
         "",  # meta_tree
         [],  # tree_leaves_state
+        gr.update(visible=False),  # project_prompt
+        gr.update(choices=[], value=None),  # project_choice
+        "",  # project_preview
+        [],  # project_prompt_state
     )
 
 
@@ -1732,28 +1770,19 @@ def _scan_deployment_folder(folder_path, picker_error_message=""):
 
     # ── Raw collections ──────────────────────────────────────────────────────
     raw_matches = find_image_collections(folder_path)
-
-    # Build a set of relative paths that have raw source images, so we can
-    # suppress their _processed mirror from appearing as an external entry.
-    raw_rel_paths = set()
-    for p in raw_matches:
-        try:
-            raw_rel_paths.add(os.path.relpath(p, folder_path))
-        except ValueError:
-            pass
+    raw_paths = {os.path.abspath(p) for p in raw_matches}
 
     # ── Externally-processed collections ─────────────────────────────────────
-    processed_root = os.path.join(folder_path, "_processed")
+    # Results without their photos (e.g. a collaborator's _processed folder). Each
+    # project has its own _processed (older data has one for the whole folder), so
+    # look in every _processed folder here. A folder whose raw photos are present is
+    # covered by its raw entry.
     external_matches = []
-    if os.path.isdir(processed_root):
-        ext_collections = find_image_collections(processed_root)
-        for p in ext_collections:
-            try:
-                rel_under_processed = os.path.relpath(p, processed_root)
-            except ValueError:
-                continue
-            # Only include if the corresponding raw folder has no source images
-            if rel_under_processed not in raw_rel_paths:
+    for processed_root in find_processed_folders(folder_path):
+        owner = os.path.dirname(processed_root)
+        for p in find_image_collections(processed_root):
+            rel_under_processed = os.path.relpath(p, processed_root)
+            if os.path.abspath(os.path.join(owner, rel_under_processed)) not in raw_paths:
                 external_matches.append(p)
 
     if not raw_matches and not external_matches:
@@ -1765,6 +1794,7 @@ def _scan_deployment_folder(folder_path, picker_error_message=""):
     seen_values = set()
     lc_choices = []
     leaves = []  # the session tree's rows, one per collection
+    unresolved = []  # new folders whose project hasn't been chosen yet
 
     def _make_entry(p, folder_root, label_prefix, is_external):
         try:
@@ -1781,8 +1811,12 @@ def _scan_deployment_folder(folder_path, picker_error_message=""):
 
         jpeg_count = _count_matching_files(p, ("*.jpg", "*.jpeg"))
 
-        # For external collections the folder IS the processed mirror.
-        processed_mirror = p if is_external else os.path.join(folder_path, "_processed", os.path.relpath(p, folder_path))
+        # Where this folder's results live: its project's _processed (for external
+        # collections the folder IS the processed mirror). No project yet: no results.
+        project_root = project_root_for(p)
+        if project_root is None:
+            unresolved.append(p)
+        processed_mirror = project_processed_mirror(p, project_root) if project_root else ""
         ps = _check_pipeline_status(processed_mirror)
         runs = _detection_run_summaries(processed_mirror)
         total_photos = 0 if is_external else jpeg_count
@@ -1811,7 +1845,8 @@ def _scan_deployment_folder(folder_path, picker_error_message=""):
             label += f"  |  {pipeline_tags}"
 
         choices.append((label, value))
-        leaves.append(make_leaf(value, rel, jpeg_count, runs, ps, is_external, is_legacy))
+        leaves.append(make_leaf(value, rel, jpeg_count, runs, ps, is_external, is_legacy,
+                                no_project=project_root is None))
         mapping[value] = os.path.abspath(p)
         if is_external:
             external_keys.add(value)
@@ -1834,11 +1869,10 @@ def _scan_deployment_folder(folder_path, picker_error_message=""):
 
     for p in external_matches:
         try:
-            rel_from_processed = os.path.relpath(p, processed_root)
+            display = os.path.relpath(p, folder_path)
         except ValueError:
-            rel_from_processed = str(p)
-        display = f"_processed/{rel_from_processed}"
-        _make_entry(p, processed_root, display, is_external=True)
+            display = str(p)
+        _make_entry(p, folder_path, display, is_external=True)
 
     any_legacy = bool(lc_choices)
     collapsed = load_collapsed(folder_path)
@@ -1866,7 +1900,73 @@ def _scan_deployment_folder(folder_path, picker_error_message=""):
         gr.update(value=tree_html(folder_path, leaves, collapsed), visible=True),  # session_tree
         _meta_tree_html(folder_path, leaves, collapsed, []),  # meta_tree
         leaves,  # tree_leaves_state
+        *_project_prompt_outputs(folder_path, unresolved),
     )
+
+
+def find_processed_folders(directory, processed_dir_name="_processed"):
+    """Every ``_processed`` folder at or below *directory* (not looking inside them)."""
+    found = []
+    for root, dirs, _files in os.walk(os.path.abspath(directory)):
+        if processed_dir_name in dirs:
+            found.append(os.path.join(root, processed_dir_name))
+        dirs[:] = sorted(d for d in dirs if d != processed_dir_name and d.lower() != "patches")
+    return found
+
+
+def _project_prompt_outputs(folder_path, unresolved):
+    """(prompt group, choices, preview, options state) for folders without a project."""
+    options = project_layout_options(folder_path, unresolved) if unresolved else []
+    if not options:
+        return gr.update(visible=False), gr.update(choices=[], value=None), "", []
+    suggested = next(o for o in options if o["suggested"])
+    n = len(unresolved)
+    question = (
+        f"**{n} folder{'s' if n != 1 else ''} of photos here {'have' if n != 1 else 'has'} no project yet.** "
+        "Mothbot keeps each project's results in a `_processed` folder inside that project, "
+        "so the project can be shared on its own."
+    )
+    return (
+        gr.update(visible=True),
+        gr.update(choices=[(f"{o['label']} — {o['why']}", o["id"]) for o in options], value=suggested["id"],
+                  info=question),
+        project_prompt_preview(suggested["id"], options, unresolved),
+        {"options": options, "unresolved": unresolved},
+    )
+
+
+def project_prompt_preview(option_id, options, unresolved):
+    """Where one night's results would go with the chosen project folder."""
+    option = next((o for o in options or [] if o["id"] == option_id), None)
+    if not option or not unresolved:
+        return ""
+    example = max(unresolved, key=lambda path: (os.path.abspath(path).count(os.sep), path))  # a night, ideally
+    root = next((r for r in option["roots"] if os.path.abspath(example).startswith(os.path.abspath(r) + os.sep)
+                 or os.path.abspath(example) == os.path.abspath(r)), option["roots"][0])
+    roots = ", ".join(f"`{os.path.basename(r)}`" for r in option["roots"][:6])
+    more = f" and {len(option['roots']) - 6} more" if len(option["roots"]) > 6 else ""
+    return (
+        f"Project folder{'s' if len(option['roots']) != 1 else ''}: {roots}{more}  \n"
+        f"Results for `{os.path.basename(example)}` will go to: `{project_processed_mirror(example, root)}`"
+    )
+
+
+def project_prompt_preview_ui(option_id, prompt_state):
+    state = prompt_state or {}
+    return project_prompt_preview(option_id, state.get("options"), state.get("unresolved"))
+
+
+def apply_project_choice(option_id, prompt_state, folder_path):
+    """Writes mothbox-project.json into the chosen project folder(s), then rescans."""
+    option = next((o for o in (prompt_state or {}).get("options", []) if o["id"] == option_id), None)
+    if option:
+        for root in option["roots"]:
+            try:
+                write_project_marker(root)
+            except OSError as exc:
+                logger.exception("Writing the project marker into %r failed", root)
+                return _scan_failed_outputs(f"Couldn't mark {root} as a project:\n{exc}")
+    return scan_deployment_folder(folder_path, "")
 
 
 CLASSIFY_URL = "https://classify.mothbox.org"
@@ -2023,15 +2123,17 @@ def confirm_selection(selected_labels, mapping, external_keys=None, dataset_root
     if not selected_labels:
         return [], gr.update(interactive=False)
     external_keys = external_keys or set()
-    resolved = [
-        {
-            "path": mapping[label],
-            "external": label in external_keys,
-            "dataset_root": dataset_root or mapping[label],
-        }
-        for label in selected_labels
-        if label in mapping
-    ]
+    resolved = []
+    for label in selected_labels:
+        if label not in mapping:
+            continue
+        # Each folder's root is its own project (see core/projects.py), not the folder
+        # that was scanned. A folder without a project yet is left out until one is
+        # chosen on the Setup tab, so nothing is written to a place it would later move from.
+        root = project_root_for(mapping[label])
+        if root is None:
+            continue
+        resolved.append({"path": mapping[label], "external": label in external_keys, "dataset_root": root})
     return resolved, gr.update(interactive=bool(resolved))
 
 

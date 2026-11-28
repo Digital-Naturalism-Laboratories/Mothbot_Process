@@ -80,7 +80,7 @@ def parse_tree_state(text):
 #  Tree payload
 # ──────────────────────────────────────────────────────────────
 
-def make_leaf(key, rel_path, photos, runs, pipeline_flags, is_external, is_legacy):
+def make_leaf(key, rel_path, photos, runs, pipeline_flags, is_external, is_legacy, no_project=False):
     """One scanned folder, in the shape the browser tree draws.
 
     *runs* is ``_detection_run_summaries()``'s result and *pipeline_flags* is
@@ -108,6 +108,7 @@ def make_leaf(key, rel_path, photos, runs, pipeline_flags, is_external, is_legac
             for r in runs.get("archived", [])
         ],
         "human": [int(runs.get("human_patches", 0)), int(runs.get("human_photos", 0))],
+        "noProject": bool(no_project),
     }
     return leaf
 
@@ -229,6 +230,7 @@ SESSION_TREE_JS = r"""
                 }
                 function extras(l) {
                     var bits = [];
+                    if (l.noProject) bits.push('no project yet: choose one above');
                     if (l.legacy) bits.push('⚠️ legacy');
                     if (l.ext) bits.push('results only, no photos');
                     (l.earlier || []).forEach(function(r) { bits.push('earlier ' + esc(r.model) + ': 🦋 ' + fmt(r.patches)); });

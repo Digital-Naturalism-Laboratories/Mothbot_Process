@@ -234,6 +234,15 @@ def write_default_sessions(image_paths, dataset_root):
             print(f"Sessions not written for {deployment_folder}: choose the deployment or dataset folder to get a sessions file.")
             continue
         deployment_id = os.path.basename(os.path.normpath(deployment_folder))
+        if os.path.realpath(deployment_folder) != os.path.realpath(dataset_root):
+            # Name tag linking these results to their photos (core/deployments.py),
+            # so either half can be renamed or moved later.
+            from core.deployments import ensure_deployment_file
+            from core.projects import marker_root, read_marker
+            project = marker_root(deployment_folder)
+            project_id = (read_marker(project) or {}).get("projectID") if project else None
+            link = ensure_deployment_file(processed_dir, dataset_root, deployment_folder, project_id)
+            deployment_id = link.get("deploymentID") or deployment_id
         added = update_sessions_file(processed_dir, deployment_id, names)
         if added:
             print(f"Added {added} session(s) to {os.path.join(processed_dir, SESSIONS_FILE)}")

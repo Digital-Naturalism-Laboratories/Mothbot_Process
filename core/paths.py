@@ -65,6 +65,7 @@ def get_processed_root(dataset_root: str) -> str:
     The folder is created on first access.
     """
     processed = os.path.join(dataset_root, _PROCESSED_DIR_NAME)
+    _start_project_if_new(dataset_root)
     Path(processed).mkdir(parents=True, exist_ok=True)
     return processed
 
@@ -105,10 +106,25 @@ def get_processed_folder(source_folder: str, dataset_root: str) -> str:
     parts = Path(rel).parts
     if parts and parts[0] == _PROCESSED_DIR_NAME:
         rel = str(Path(*parts[1:])) if len(parts) > 1 else "."
+    else:
+        # A deployment renamed or moved on one side keeps its results together
+        # (deployment.json links; see core/deployments.py).
+        from core.deployments import processed_rel_for
+        rel = processed_rel_for(dataset_root, rel) or "."
 
     processed_folder = os.path.join(dataset_root, _PROCESSED_DIR_NAME, rel)
+    _start_project_if_new(dataset_root)
     Path(processed_folder).mkdir(parents=True, exist_ok=True)
     return processed_folder
+
+
+def _start_project_if_new(dataset_root):
+    """The first results written for a folder make it a project: mark it
+    (core/projects.py). An existing _processed is left as it is."""
+    if os.path.isdir(os.path.join(dataset_root, _PROCESSED_DIR_NAME)):
+        return
+    from core.projects import write_marker
+    write_marker(dataset_root)
 
 
 def get_json_output_path(

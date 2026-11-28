@@ -37,7 +37,19 @@ from pipeline import identify as Mothbot_ID
 from pipeline import insert_exif as Mothbot_InsertExif
 from pipeline import insert_metadata as Mothbot_InsertMetadata
 from ui.device_panel import build_device_panel, link_device_panels
+from core.deployments import clear_cache as clear_deployment_links, raw_rel_for
 from core.projects import (
+    merge_plan,
+    merge_projects,
+    split_plan,
+    split_project,
+    default_project_for_scan,
+    holds_projects,
+    new_project_options,
+    human_ids_for_deployment,
+    marker_root,
+    move_deployment,
+    plan_deployment_move,
     apply_older_layout_move,
     older_layout_moves,
     layout_options as project_layout_options,
@@ -600,11 +612,12 @@ def app():
                             visible=False,
                         )
 
+                project_note = gr.Markdown("")
                 # New photos without a project: ask where the project's top folder is
                 # (see core/projects.py). Answering writes mothbox-project.json and rescans.
                 with gr.Group(visible=False) as project_prompt:
                     project_choice = gr.Radio(
-                        label="Which folder is the top folder of the project you want to process?",
+                        label="Which project should the new photos go into?",
                         choices=[],
                         interactive=True,
                     )
@@ -624,6 +637,33 @@ def app():
                 # The tree writes {"selected": [...], "collapsed": [...]} here (hidden by CSS;
                 # it has to stay rendered for the browser script to reach it).
                 tree_state_box = gr.Textbox(value="", elem_id="mb-tree-state", show_label=False, container=False)
+
+                # Move a deployment (photos and results together) to another project.
+                with gr.Accordion("Move a deployment to another project", open=False, visible=False) as move_box:
+                    with gr.Row():
+                        move_source = gr.Dropdown(label="Deployment", choices=[], interactive=True)
+                        move_dest = gr.Dropdown(label="Move to project", choices=[], interactive=True)
+                        move_new_name = gr.Textbox(label="New project name", visible=False, interactive=True)
+                    move_preview = gr.Markdown("")
+                    move_btn = gr.Button("Move deployment", variant="primary", size="sm", interactive=False)
+                move_catalog = gr.State({})
+
+                # Change which folder is the project: split one into its folders, or merge
+                # the projects in the picked folder into one (core/projects.py).
+                with gr.Accordion("Merge or split projects", open=False, visible=False) as reorg_box:
+                    gr.Markdown(
+                        "A project is the folder that holds `_processed`. **Split** makes each folder inside a "
+                        "project its own project; **merge** makes the picked folder one project of the projects "
+                        "inside it. Results move with renames only, and Mothbot Classify carries the records "
+                        "and identifications over the next time it opens these folders."
+                    )
+                    with gr.Row():
+                        split_project_dd = gr.Dropdown(label="Project to split", choices=[], interactive=True)
+                        split_folders = gr.CheckboxGroup(label="Folders that become projects", choices=[], interactive=True)
+                    split_preview = gr.Markdown("")
+                    split_btn = gr.Button("Split project", variant="primary", size="sm", interactive=False)
+                    merge_preview = gr.Markdown("")
+                    merge_btn = gr.Button("Merge into one project", variant="secondary", size="sm", visible=False)
 
                 gr.Markdown("### Additional Processing Files:")
                 # Fields in one row and their Browse buttons in the next, so the buttons line up.
@@ -1279,6 +1319,15 @@ def app():
             older_layout_md,
             older_layout_btn,
             older_layout_state,
+            move_box,
+            move_source,
+            move_dest,
+            move_catalog,
+            project_note,
+            reorg_box,
+            split_project_dd,
+            merge_preview,
+            merge_btn,
         ]
         # Each scan first shows "Scanning…": the collection list stays hidden until the
         # scan finishes, so otherwise nothing on screen says one is running.
@@ -1327,6 +1376,38 @@ def app():
             fn=project_prompt_preview_ui,
             inputs=[project_choice, project_prompt_state],
             outputs=[project_preview],
+        )
+        for _move_input in (move_source, move_dest, move_new_name):
+            _move_input.change(
+                fn=preview_deployment_move,
+                inputs=[move_source, move_dest, move_new_name, move_catalog],
+                outputs=[move_new_name, move_preview, move_btn],
+            )
+        move_btn.click(
+            fn=apply_deployment_move,
+            inputs=[move_source, move_dest, move_new_name, move_catalog, deployment_path],
+            outputs=_scan_outputs,
+        )
+        split_project_dd.change(
+            fn=split_folder_choices,
+            inputs=[split_project_dd, move_catalog],
+            outputs=[split_folders],
+        )
+        for _split_input in (split_project_dd, split_folders):
+            _split_input.change(
+                fn=preview_split,
+                inputs=[split_project_dd, split_folders, move_catalog],
+                outputs=[split_preview, split_btn],
+            )
+        split_btn.click(
+            fn=apply_split,
+            inputs=[split_project_dd, split_folders, move_catalog, deployment_path],
+            outputs=_scan_outputs,
+        )
+        merge_btn.click(
+            fn=apply_merge,
+            inputs=[deployment_path],
+            outputs=_scan_outputs,
         )
         older_layout_btn.click(
             fn=apply_older_layout_moves,
@@ -1753,6 +1834,15 @@ def _scan_failed_outputs(message):
         "",  # older_layout_md
         gr.update(),  # older_layout_btn
         [],  # older_layout_state
+        gr.update(visible=False),  # move_box
+        gr.update(choices=[], value=None),  # move_source
+        gr.update(choices=[], value=None),  # move_dest
+        {},  # move_catalog
+        "",  # project_note
+        gr.update(visible=False),  # reorg_box
+        gr.update(choices=[], value=None),  # split_project_dd
+        "",  # merge_preview
+        gr.update(visible=False),  # merge_btn
     )
 
 
@@ -1807,12 +1897,16 @@ def _scan_deployment_folder(folder_path, picker_error_message=""):
     # project has its own _processed (older data has one for the whole folder), so
     # look in every _processed folder here. A folder whose raw photos are present is
     # covered by its raw entry.
+    # Folders may have been moved or renamed since the last scan: re-read the
+    # deployment links (deployment.json) that pair results with their photos.
+    clear_deployment_links()
     external_matches = []
     for processed_root in find_processed_folders(folder_path):
         owner = os.path.dirname(processed_root)
         for p in find_image_collections(processed_root):
-            rel_under_processed = os.path.relpath(p, processed_root)
-            if os.path.abspath(os.path.join(owner, rel_under_processed)) not in raw_paths:
+            rel_under_processed = os.path.relpath(p, processed_root).replace(os.sep, "/")
+            raw_rel = raw_rel_for(owner, rel_under_processed)
+            if os.path.abspath(os.path.join(owner, *raw_rel.split("/"))) not in raw_paths:
                 external_matches.append(p)
 
     if not raw_matches and not external_matches:
@@ -1824,7 +1918,11 @@ def _scan_deployment_folder(folder_path, picker_error_message=""):
     seen_values = set()
     lc_choices = []
     leaves = []  # the session tree's rows, one per collection
-    unresolved = []  # new folders whose project hasn't been chosen yet
+    unresolved = []  # new folders outside any project, in a folder that holds projects (Setup asks)
+    # New photos outside any project go into the picked folder's project, unless
+    # that folder already holds projects (core/projects.py).
+    default_project = None if holds_projects(folder_path) else os.path.abspath(folder_path)
+    _SCAN_DEFAULT_PROJECT[os.path.abspath(folder_path)] = default_project
 
     def _make_entry(p, folder_root, label_prefix, is_external):
         try:
@@ -1843,7 +1941,7 @@ def _scan_deployment_folder(folder_path, picker_error_message=""):
 
         # Where this folder's results live: its project's _processed (for external
         # collections the folder IS the processed mirror). No project yet: no results.
-        project_root = project_root_for(p)
+        project_root = project_root_for(p) or (None if is_external else default_project)
         if project_root is None:
             unresolved.append(p)
         processed_mirror = project_processed_mirror(p, project_root) if project_root else ""
@@ -1931,7 +2029,12 @@ def _scan_deployment_folder(folder_path, picker_error_message=""):
         _meta_tree_html(folder_path, leaves, collapsed, []),  # meta_tree
         leaves,  # tree_leaves_state
         *_project_prompt_outputs(folder_path, unresolved),
-        *_older_layout_outputs(folder_path, raw_matches),
+        # The older-layout move is no longer offered: the folder holding _processed is
+        # the project. (Splitting a project into smaller ones comes back as its own action.)
+        gr.update(visible=False), "", gr.update(), [],
+        *_move_outputs(raw_matches + external_matches),
+        _project_note(folder_path, default_project, raw_matches + external_matches),
+        *_reorganize_outputs(folder_path, raw_matches + external_matches),
     )
 
 
@@ -1945,17 +2048,42 @@ def find_processed_folders(directory, processed_dir_name="_processed"):
     return found
 
 
+# Scanned folder -> project its new photos go into (None: it holds projects, so Setup asks).
+_SCAN_DEFAULT_PROJECT = {}
+
+
+def _project_note(folder_path, default_project, collections):
+    """One line under the folder path: which project(s) this is."""
+    folder = os.path.abspath(folder_path)
+    name = os.path.basename(folder) or folder
+    own = project_root_for(folder)
+    if own and own != folder:
+        return (f"**{name}** is part of the project **{os.path.basename(own)}**. Results go to "
+                f"`{os.path.basename(own)}/_processed`; only this part of it is shown below.")
+    if own == folder:
+        return f"**{name}** is a project. Its results are in `{name}/_processed`."
+    projects = {project_root_for(c) for c in collections} - {None}
+    if projects:
+        n = len(projects)
+        return (f"**{name}** holds {n} project{'s' if n != 1 else ''}. Each keeps its own `_processed` folder.")
+    if default_project:
+        return (f"**{name}** will become a project: results go to `{name}/_processed`, "
+                "which is the part you share.")
+    return ""
+
+
 def _project_prompt_outputs(folder_path, unresolved):
-    """(prompt group, choices, preview, options state) for folders without a project."""
-    options = project_layout_options(folder_path, unresolved) if unresolved else []
+    """(prompt group, choices, preview, options state) for new photos in a folder that
+    already holds projects."""
+    options = new_project_options(folder_path, unresolved) if unresolved else []
     if not options:
         return gr.update(visible=False), gr.update(choices=[], value=None), "", []
     suggested = next(o for o in options if o["suggested"])
     n = len(unresolved)
     question = (
-        f"**{n} folder{'s' if n != 1 else ''} of photos here {'have' if n != 1 else 'has'} no project yet.** "
-        "Mothbot keeps each project's results in a `_processed` folder inside that project, "
-        "so the project can be shared on its own."
+        f"**{n} folder{'s' if n != 1 else ''} of new photos here {'are' if n != 1 else 'is'} not in any project yet,** "
+        "and this folder already holds projects. A project is the folder that holds its `_processed` folder, "
+        "which is the part you share."
     )
     return (
         gr.update(visible=True),
@@ -2019,6 +2147,191 @@ def _older_layout_outputs(folder_path, collections):
     )
     label = f"Move {n} project{'s' if n != 1 else ''} to the new layout" if n else "Nothing can be moved"
     return gr.update(visible=True), text, gr.update(value=label, interactive=bool(n)), moves
+
+
+_NEW_PROJECT = "➕ New project…"
+
+
+def _move_outputs(collections):
+    """(box, deployment choices, project choices, catalog) for the move section."""
+    deployments, projects = {}, {}
+    for c in collections:
+        project = project_root_for(c)  # the folder holding _processed
+        if not project:
+            continue
+        projects[os.path.basename(project)] = project
+        rel = os.path.relpath(c, project).replace(os.sep, "/")
+        if rel == ".":
+            continue
+        parts = rel.split("/")
+        if parts[0] == "_processed":  # results only: name the deployment by its photos' folder
+            parts = raw_rel_for(project, "/".join(parts[1:])).split("/")
+        if len(parts) < 2:
+            continue  # a night folder directly in the project: no deployment folder to move
+        # The deployment is the folder holding the night folders, wherever it sits.
+        deployment = "/".join(parts[:-1])
+        deployments[f"{os.path.basename(project)} › {deployment}"] = [project, deployment]
+    # Other projects beside these ones are places to move to as well.
+    for project in list(projects.values()):
+        parent = os.path.dirname(project)
+        try:
+            for entry in os.scandir(parent):
+                if entry.is_dir() and (os.path.isfile(os.path.join(entry.path, "mothbox-project.json"))
+                                       or os.path.isdir(os.path.join(entry.path, "_processed"))):
+                    projects.setdefault(entry.name, entry.path)
+        except OSError:
+            pass
+    if not deployments:
+        return gr.update(visible=False), gr.update(choices=[], value=None), gr.update(choices=[], value=None), {}
+    catalog = {"deployments": deployments, "projects": projects}
+    return (
+        gr.update(visible=True),
+        gr.update(choices=sorted(deployments), value=None),
+        gr.update(choices=sorted(projects) + [_NEW_PROJECT], value=None),
+        catalog,
+    )
+
+
+def _move_target(dest_label, new_name, catalog, source_project):
+    if dest_label == _NEW_PROJECT:
+        name = (new_name or "").strip()
+        if not name or os.sep in name or name in (".", "..") or name.startswith("_"):
+            return None
+        return os.path.join(os.path.dirname(source_project), name)
+    return (catalog or {}).get("projects", {}).get(dest_label)
+
+
+def preview_deployment_move(source_label, dest_label, new_name, catalog):
+    """Shows exactly what will move where, and what Classify still has to do."""
+    show_name = gr.update(visible=dest_label == _NEW_PROJECT)
+    source = (catalog or {}).get("deployments", {}).get(source_label)
+    if not source or not dest_label:
+        return show_name, "", gr.update(interactive=False)
+    project, deployment = source
+    target = _move_target(dest_label, new_name, catalog, project)
+    if not target:
+        return show_name, "Type a name for the new project.", gr.update(interactive=False)
+    plan = plan_deployment_move(project, deployment, target)
+    base = os.path.dirname(os.path.dirname(os.path.abspath(project)))
+    lines = [f"- `{os.path.relpath(src, base)}` → `{os.path.relpath(dst, base)}`" for src, dst in plan["moves"]]
+    text = "**Will move:**\n" + "\n".join(lines) if lines else ""
+    if plan["new_project"] and not plan["problem"]:
+        text += f"\n\nA new project folder **{os.path.basename(target)}** is made next to {os.path.basename(project)}."
+    ids = human_ids_for_deployment(project, deployment)
+    if ids:
+        text += (
+            f"\n\n⚠️ **{ids} human identification{'s' if ids != 1 else ''}** for {deployment} are in "
+            f"{os.path.basename(project)}'s Classify records. They stay there, safe, when the folders move; "
+            "Mothbot Classify brings them across to the new project."
+        )
+    if plan["problem"]:
+        text += f"\n\n**Can't move:** {plan['problem']}"
+    return show_name, text, gr.update(interactive=not plan["problem"])
+
+
+def apply_deployment_move(source_label, dest_label, new_name, catalog, folder_path):
+    """Moves the deployment, then rescans."""
+    source = (catalog or {}).get("deployments", {}).get(source_label)
+    message, failed = "", False
+    if source:
+        project, deployment = source
+        target = _move_target(dest_label, new_name, catalog, project)
+        try:
+            if not target:
+                raise ValueError("Choose the project to move it to.")
+            move_deployment(project, deployment, target)
+            message = (f"Moved {deployment} from {os.path.basename(project)} to {os.path.basename(target)}.\n"
+                       "Reload Mothbot Classify to see it in its new project.")
+        except (OSError, ValueError) as exc:
+            logger.exception("Moving deployment %r failed", source)
+            message, failed = f"{source_label} was not moved: {exc}", True
+    outputs = list(scan_deployment_folder(folder_path, ""))
+    if message:
+        outputs[0] = gr.update(label="Not moved" if failed else "Deployment moved", value=message, visible=True)
+    return tuple(outputs)
+
+
+def _reorganize_outputs(folder_path, collections):
+    """(box, split choices, merge preview, merge button) for the merge/split section."""
+    folder = os.path.abspath(folder_path)
+    projects = sorted({project_root_for(c) for c in collections} - {None})
+    if not projects:
+        return gr.update(visible=False), gr.update(choices=[], value=None), "", gr.update(visible=False)
+    base = os.path.dirname(folder)
+    choices = [(os.path.relpath(p, base), p) for p in projects]
+    merge_text, show_merge = "", False
+    if project_root_for(folder) != folder:
+        plan = merge_plan(folder)
+        if plan["moves"]:
+            names = ", ".join(f"**{m['project']}**" for m in plan["moves"])
+            merge_text = (
+                f"**Merge:** make **{os.path.basename(folder)}** one project of {names}. Their `_processed` folders "
+                f"move into `{os.path.basename(folder)}/_processed/`."
+                + (f"\n\n**Can't merge:** {plan['problem']}" if plan["problem"] else "")
+            )
+            show_merge = not plan["problem"]
+    return (
+        gr.update(visible=True),
+        gr.update(choices=choices, value=None),
+        merge_text,
+        gr.update(visible=show_merge),
+    )
+
+
+def split_folder_choices(project, catalog):
+    if not project or not os.path.isdir(project):
+        return gr.update(choices=[], value=[])
+    names = sorted(e.name for e in os.scandir(project) if e.is_dir() and not e.name.startswith((".", "_")))
+    return gr.update(choices=names, value=names)
+
+
+def preview_split(project, folders, catalog):
+    if not project or not folders:
+        return "", gr.update(interactive=False)
+    plan = split_plan(project, folders)
+    base = os.path.dirname(os.path.dirname(os.path.abspath(project)))
+    lines = [
+        f"- **{m['folder']}** becomes a project"
+        + (f": `{os.path.relpath(m['source'], base)}` → `{os.path.relpath(m['destination'], base)}`" if m["has_results"] else " (no results yet)")
+        for m in plan["moves"]
+    ]
+    text = "**Will split:**\n" + "\n".join(lines)
+    ids = sum(human_ids_for_deployment(project, m["folder"]) for m in plan["moves"])
+    if ids:
+        text += (f"\n\n{ids} human identification{'s' if ids != 1 else ''} in {os.path.basename(project)}'s Classify "
+                 "records go with them: Mothbot Classify moves them across the next time it opens this folder.")
+    if plan["problem"]:
+        text += f"\n\n**Can't split:** {plan['problem']}"
+    return text, gr.update(interactive=not plan["problem"])
+
+
+def apply_split(project, folders, catalog, folder_path):
+    message, failed = "", False
+    try:
+        plan = split_project(project, folders)
+        n = len(plan["moves"])
+        message = (f"Split {os.path.basename(project)} into {n} project{'s' if n != 1 else ''}.\n"
+                   "Open this folder in Mothbot Classify to bring their records across.")
+    except (OSError, ValueError) as exc:
+        logger.exception("Splitting %r failed", project)
+        message, failed = f"{os.path.basename(str(project))} was not split: {exc}", True
+    outputs = list(scan_deployment_folder(folder_path, ""))
+    outputs[0] = gr.update(label="Not split" if failed else "Project split", value=message, visible=True)
+    return tuple(outputs)
+
+
+def apply_merge(folder_path):
+    message, failed = "", False
+    try:
+        plan = merge_projects(folder_path)
+        message = (f"Merged {len(plan['moves'])} projects into {os.path.basename(os.path.abspath(folder_path))}.\n"
+                   "Mothbot Classify combines their records the next time it opens it.")
+    except (OSError, ValueError) as exc:
+        logger.exception("Merging %r failed", folder_path)
+        message, failed = f"Not merged: {exc}", True
+    outputs = list(scan_deployment_folder(folder_path, ""))
+    outputs[0] = gr.update(label="Not merged" if failed else "Projects merged", value=message, visible=True)
+    return tuple(outputs)
 
 
 def apply_older_layout_moves(moves, folder_path):
@@ -2225,7 +2538,7 @@ def confirm_selection(selected_labels, mapping, external_keys=None, dataset_root
         # Each folder's root is its own project (see core/projects.py), not the folder
         # that was scanned. A folder without a project yet is left out until one is
         # chosen on the Setup tab, so nothing is written to a place it would later move from.
-        root = project_root_for(mapping[label])
+        root = project_root_for(mapping[label]) or _SCAN_DEFAULT_PROJECT.get(os.path.abspath(dataset_root or ""))
         if root is None:
             continue
         resolved.append({"path": mapping[label], "external": label in external_keys, "dataset_root": root})

@@ -37,6 +37,15 @@ from pipeline import identify as Mothbot_ID
 from pipeline import insert_exif as Mothbot_InsertExif
 from pipeline import insert_metadata as Mothbot_InsertMetadata
 from ui.device_panel import build_device_panel, link_device_panels
+from ui.session_tree import (
+    SESSION_TREE_CSS,
+    SESSION_TREE_JS,
+    load_collapsed,
+    make_leaf,
+    parse_tree_state,
+    save_collapsed,
+    tree_html,
+)
 from pipeline import legacy_converter as Mothbot_LegacyConverter
 from pipeline import pixel_mass as Mothbot_PixelMass
 
@@ -168,6 +177,7 @@ def app():
         title="Mothbot",
         js="""
         function() {
+""" + SESSION_TREE_JS + """
             // Tag the Pixel Mass tab button with a data attribute so CSS can color
             // it without relying on nth-child counts (which shift when tabs are
             // shown/hidden).  Re-run on DOM mutations so it survives Gradio re-renders.
@@ -454,7 +464,7 @@ def app():
             document.addEventListener('visibilitychange', _checkForSleep);
         }
         """,
-        css="""
+        css=SESSION_TREE_CSS + """
             /* Collection labels (formatted by the js above) */
             #collection-choices .mb-source-label { display: none; }
             #collection-choices .mb-formatted-label { white-space: pre-wrap; }
@@ -507,6 +517,7 @@ def app():
         """,
     ) as demo:
         mapping_state = gr.State({})
+        tree_leaves_state = gr.State([])  # the scan's folders, to redraw the Insert Metadata tree
         dataset_root_state = gr.State("")  # top-level chosen folder
         toggle_label_state = gr.State("Select All")
         picker_error_state = gr.State("")
@@ -554,12 +565,6 @@ def app():
                             refresh_btn = gr.Button(
                                 "↻ Refresh", size="sm", variant="secondary", scale=1, min_width=100,
                             )
-                        continue_process_btn = gr.Button(
-                            "▶ Process all steps automatically",
-                            variant="primary",
-                            interactive=False,
-                            visible=False,
-                        )
                         with gr.Group():
                             status = gr.Textbox(
                                 label="Error", lines=3, interactive=False, visible=False
@@ -567,6 +572,8 @@ def app():
                             toggle_all_btn = gr.Button(
                                 "Select All", size="sm", visible=False
                             )
+                            # Holds the scan's choices for the Insert Metadata night picker;
+                            # the Setup selection itself is made in the session tree below.
                             folder_choices = gr.CheckboxGroup(
                                 label="Image Collections Found (select which to process)",
                                 elem_id="collection-choices",
@@ -575,39 +582,54 @@ def app():
                                 interactive=True,
                                 visible=False,
                             )
-                        classify_link = gr.HTML(value="", visible=False)
-                        with gr.Row():
-                            classify_open_btn = gr.Button(
-                                "🦋 Open in Mothbot Classify", size="sm", variant="secondary", visible=False,
-                            )
-                        classify_open_status = gr.Markdown(value="", visible=False)
-
+                    # Beside the folder: the big button that runs every step on the ticked folders.
                     with gr.Column():
-                        gr.Markdown("### Additional Processing Files:")
-                        with gr.Row():
-                            yolo_model_path = gr.Dropdown(
-                                choices=BUNDLED_MODEL_CHOICES,
-                                value=DEFAULT_YOLO_MODEL,
-                                label="Detection Model",
-                                allow_custom_value=True,
-                                info="Select a bundled model or browse / paste a custom .pt path.",
-                            )
-                            yolo_browse_btn = gr.Button("Browse", size="sm", scale=0, min_width=100)
-                        with gr.Row():
-                            with gr.Column():
-                                species_path = gr.Text(
-                                    label="Species List:",
-                                    value=DEFAULT_SPECIES_CSV,
-                                )
-                                species_browse_btn = gr.Button("Browse", size="sm")
-                            with gr.Column():
-                                metadata_csv_file = gr.Text(
-                                    label="metadata field sheet:",
-                                    value=DEFAULT_METADATA_CSV,
-                                )
-                                metadata_browse_btn = gr.Button("Browse", size="sm")
+                        continue_process_btn = gr.Button(
+                            "▶ Process all steps automatically",
+                            variant="primary",
+                            size="lg",
+                            interactive=False,
+                            visible=False,
+                        )
+
+                # Full width, under the folder: the tree needs room for folder names and counts.
+                session_tree = gr.HTML(value="", visible=False, padding=False)
+                # The tree writes {"selected": [...], "collapsed": [...]} here (hidden by CSS;
+                # it has to stay rendered for the browser script to reach it).
+                tree_state_box = gr.Textbox(value="", elem_id="mb-tree-state", show_label=False, container=False)
+
+                gr.Markdown("### Additional Processing Files:")
+                # Fields in one row and their Browse buttons in the next, so the buttons line up.
+                with gr.Row(equal_height=True):
+                    yolo_model_path = gr.Dropdown(
+                        choices=BUNDLED_MODEL_CHOICES,
+                        value=DEFAULT_YOLO_MODEL,
+                        label="Detection Model",
+                        allow_custom_value=True,
+                        info="Select a bundled model or browse / paste a custom .pt path.",
+                    )
+                    species_path = gr.Text(
+                        label="Species List:",
+                        value=DEFAULT_SPECIES_CSV,
+                    )
+                    metadata_csv_file = gr.Text(
+                        label="metadata field sheet:",
+                        value=DEFAULT_METADATA_CSV,
+                    )
+                with gr.Row():
+                    yolo_browse_btn = gr.Button("Browse", size="sm")
+                    species_browse_btn = gr.Button("Browse", size="sm")
+                    metadata_browse_btn = gr.Button("Browse", size="sm")
 
                 setup_device_panel = build_device_panel(device_state, photos_device_state, selected_paths)
+
+                # At the bottom: the hand-off to Classify (shown once a folder is chosen).
+                classify_link = gr.HTML(value="", visible=False)
+                with gr.Row():
+                    classify_open_btn = gr.Button(
+                        "🦋 Open in Mothbot Classify", size="sm", variant="secondary", visible=False,
+                    )
+                classify_open_status = gr.Markdown(value="", visible=False)
 
                 # NOTE: deployment_browse_btn.click and deployment_path.change are
                 # wired after all tabs are defined (see below) because they reference
@@ -838,49 +860,56 @@ def app():
                         )
                         meta_browse_mirror = gr.Button("Browse", size="sm", scale=0, min_width=100)
 
-                with gr.Group(visible=False) as meta_manual_group:
+                with gr.Column(visible=False) as meta_manual_group:
+                    gr.Markdown("**Apply to which nights** (select the folders this metadata applies to):")
+                    # Ticked in the tree below; this hidden list holds the selection the run reads.
                     meta_manual_folder_choices = gr.CheckboxGroup(
                         label="Apply to which nights (select the folders this metadata applies to):",
+                        elem_id="mb-meta-choices",
                         choices=[],
                         value=[],
                         interactive=True,
                     )
-                    gr.Markdown("### Enter deployment metadata manually")
-                    with gr.Row():
-                        meta_project = gr.Text(label="Project", interactive=True)
-                        meta_site = gr.Text(label="Site", interactive=True)
-                        meta_device = gr.Text(label="Device (Mothbox name)", interactive=True)
-                    with gr.Row():
-                        meta_deployment_date = gr.DateTime(
-                            label="Deployment Date",
-                            include_time=False,
-                            type="string",
+                    meta_tree = gr.HTML(value="", padding=False)
+                    meta_tree_state_box = gr.Textbox(value="", elem_id="mb-meta-tree-state", show_label=False, container=False)
+                    # The form fields stay boxed together; the tree above sits outside the box.
+                    with gr.Group():
+                        gr.Markdown("### Enter deployment metadata manually")
+                        with gr.Row():
+                            meta_project = gr.Text(label="Project", interactive=True)
+                            meta_site = gr.Text(label="Site", interactive=True)
+                            meta_device = gr.Text(label="Device (Mothbox name)", interactive=True)
+                        with gr.Row():
+                            meta_deployment_date = gr.DateTime(
+                                label="Deployment Date",
+                                include_time=False,
+                                type="string",
+                            )
+                            meta_collect_date = gr.DateTime(
+                                label="Collect Date",
+                                include_time=False,
+                                type="string",
+                            )
+                            meta_height = gr.Text(label="Height Above Ground", interactive=True)
+                        meta_deployment_name = gr.Text(
+                            label="Deployment Name (auto-generated from Project + Site + Device + Date)",
+                            interactive=False,
                         )
-                        meta_collect_date = gr.DateTime(
-                            label="Collect Date",
-                            include_time=False,
-                            type="string",
-                        )
-                        meta_height = gr.Text(label="Height Above Ground", interactive=True)
-                    meta_deployment_name = gr.Text(
-                        label="Deployment Name (auto-generated from Project + Site + Device + Date)",
-                        interactive=False,
-                    )
-                    with gr.Row():
-                        meta_latitude = gr.Text(label="Latitude", interactive=True)
-                        meta_longitude = gr.Text(label="Longitude", interactive=True)
-                        meta_crew = gr.Text(label="Crew", interactive=True)
-                    with gr.Row():
-                        meta_habitat = gr.Text(label="Habitat", interactive=True)
-                        meta_attractor = gr.Text(label="Attractor", interactive=True)
-                        meta_attractor_location = gr.Text(label="Attractor Location", interactive=True)
-                    with gr.Row():
-                        meta_firmware = gr.Text(label="Firmware", interactive=True)
-                        meta_utc = gr.Text(label="UTC Offset", interactive=True)
-                        meta_schedule = gr.Text(label="Schedule", interactive=True)
-                    with gr.Row():
-                        meta_storage_loc = gr.Text(label="Data Storage Location", interactive=True)
-                    meta_notes = gr.Textbox(label="Notes", interactive=True, lines=3)
+                        with gr.Row():
+                            meta_latitude = gr.Text(label="Latitude", interactive=True)
+                            meta_longitude = gr.Text(label="Longitude", interactive=True)
+                            meta_crew = gr.Text(label="Crew", interactive=True)
+                        with gr.Row():
+                            meta_habitat = gr.Text(label="Habitat", interactive=True)
+                            meta_attractor = gr.Text(label="Attractor", interactive=True)
+                            meta_attractor_location = gr.Text(label="Attractor Location", interactive=True)
+                        with gr.Row():
+                            meta_firmware = gr.Text(label="Firmware", interactive=True)
+                            meta_utc = gr.Text(label="UTC Offset", interactive=True)
+                            meta_schedule = gr.Text(label="Schedule", interactive=True)
+                        with gr.Row():
+                            meta_storage_loc = gr.Text(label="Data Storage Location", interactive=True)
+                        meta_notes = gr.Textbox(label="Notes", interactive=True, lines=3)
 
                 # Device type (ontology: Device, Device Type): what the photos say, or a correction.
                 meta_device_panel = build_device_panel(device_state, photos_device_state, selected_paths)
@@ -1210,6 +1239,9 @@ def app():
             lc_folder_choices,
             lc_run_btn,
             meta_manual_folder_choices,
+            session_tree,
+            meta_tree,
+            tree_leaves_state,
         ]
         # Each scan first shows "Scanning…": the collection list stays hidden until the
         # scan finishes, so otherwise nothing on screen says one is running.
@@ -1301,6 +1333,20 @@ def app():
             fn=lambda v: gr.update(value=v),
             inputs=[folder_choices],
             outputs=[meta_manual_folder_choices],
+        )
+        # Session tree → the selection every stage tab reads (and the metadata night picker).
+        tree_state_box.input(
+            fn=apply_tree_selection,
+            inputs=[tree_state_box, mapping_state, external_keys_state, dataset_root_state, tree_leaves_state],
+            outputs=[selected_paths, continue_process_btn, meta_manual_folder_choices, meta_tree],
+            show_progress="hidden",
+        )
+        # Insert Metadata's own tree → the nights the manual metadata applies to.
+        meta_tree_state_box.input(
+            fn=apply_meta_tree_selection,
+            inputs=[meta_tree_state_box, mapping_state, dataset_root_state],
+            outputs=[meta_manual_folder_choices],
+            show_progress="hidden",
         )
 
         # Setup ↔ Metadata: Metadata CSV
@@ -1636,6 +1682,9 @@ def _scan_failed_outputs(message):
         gr.update(choices=[], value=[], visible=False),  # lc_folder_choices
         gr.update(interactive=False),  # lc_run_btn
         gr.update(choices=[], value=[]),  # meta_manual_folder_choices
+        gr.update(value="", visible=False),  # session_tree
+        "",  # meta_tree
+        [],  # tree_leaves_state
     )
 
 
@@ -1715,6 +1764,7 @@ def _scan_deployment_folder(folder_path, picker_error_message=""):
     external_keys = set()
     seen_values = set()
     lc_choices = []
+    leaves = []  # the session tree's rows, one per collection
 
     def _make_entry(p, folder_root, label_prefix, is_external):
         try:
@@ -1761,6 +1811,7 @@ def _scan_deployment_folder(folder_path, picker_error_message=""):
             label += f"  |  {pipeline_tags}"
 
         choices.append((label, value))
+        leaves.append(make_leaf(value, rel, jpeg_count, runs, ps, is_external, is_legacy))
         mapping[value] = os.path.abspath(p)
         if is_external:
             external_keys.add(value)
@@ -1790,6 +1841,7 @@ def _scan_deployment_folder(folder_path, picker_error_message=""):
         _make_entry(p, processed_root, display, is_external=True)
 
     any_legacy = bool(lc_choices)
+    collapsed = load_collapsed(folder_path)
     status = (
         f"Selected folder: {folder_path}\n"
         f"Found {len(raw_matches)} raw collection(s)"
@@ -1798,18 +1850,22 @@ def _scan_deployment_folder(folder_path, picker_error_message=""):
     )
     return (
         gr.update(value="", visible=False),
-        gr.update(choices=choices, value=[], visible=True),
+        # The flat list stays hidden: the session tree is the Setup picker now.
+        gr.update(choices=choices, value=[], visible=False),
         mapping,
         "Select All",
         gr.update(interactive=False, visible=True),
         [],
-        gr.update(visible=True),
+        gr.update(visible=False),  # toggle_all_btn: the tree has its own Select all
         external_keys,
         folder_path,  # dataset_root_state
         gr.update(visible=any_legacy),  # legacy_converter_tab
         gr.update(choices=lc_choices, value=[c[1] for c in lc_choices], visible=any_legacy),  # lc_folder_choices
         gr.update(interactive=any_legacy),  # lc_run_btn
         gr.update(choices=choices, value=[]),  # meta_manual_folder_choices
+        gr.update(value=tree_html(folder_path, leaves, collapsed), visible=True),  # session_tree
+        _meta_tree_html(folder_path, leaves, collapsed, []),  # meta_tree
+        leaves,  # tree_leaves_state
     )
 
 
@@ -1931,6 +1987,31 @@ def toggle_select_all(current_values, mapping, button_label):
     if button_label == "Select All":
         return gr.update(value=list(mapping.keys())), "Deselect All"
     return gr.update(value=[]), "Select All"
+
+
+def _meta_tree_html(folder_path, leaves, collapsed, selected):
+    return tree_html(folder_path, leaves, collapsed, selected, tree_id="mb-meta-tree", state_box="mb-meta-tree-state")
+
+
+def apply_tree_selection(tree_state, mapping, external_keys=None, dataset_root="", leaves=None):
+    """The Setup tree changed: resolve its ticked folders like the old checkbox list
+    did, start the Insert Metadata tree from the same selection, and remember the
+    collapsed rows."""
+    selected, collapsed = parse_tree_state(tree_state)
+    selected = [key for key in selected if key in (mapping or {})]
+    if dataset_root:
+        save_collapsed(dataset_root, collapsed)
+    resolved, continue_update = confirm_selection(selected, mapping or {}, external_keys, dataset_root)
+    meta_tree = _meta_tree_html(dataset_root, leaves or [], collapsed, selected) if dataset_root else ""
+    return resolved, continue_update, gr.update(value=selected), meta_tree
+
+
+def apply_meta_tree_selection(tree_state, mapping, dataset_root=""):
+    """The Insert Metadata tree changed: the nights the manual metadata applies to."""
+    selected, collapsed = parse_tree_state(tree_state)
+    if dataset_root:
+        save_collapsed(dataset_root, collapsed)
+    return gr.update(value=[key for key in selected if key in (mapping or {})])
 
 
 def confirm_selection(selected_labels, mapping, external_keys=None, dataset_root=""):

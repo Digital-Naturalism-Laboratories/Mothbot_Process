@@ -60,13 +60,14 @@ def build_device_panel(device_state, photos_state, selected_paths):
         current = (state or {}).get("definition")
         return {"definition": DC.chosen_definition(label, (photos or {}).get("found"), current=current)}
 
+    # Heading outside the box, like "Additional Processing Files" on the Setup tab.
+    gr.Markdown(
+        "### Device (optional):\n"
+        "Leave this alone to use what each photo says (current Mothbox firmware records the device "
+        "in every photo; photos that don't say get no device type). Or choose the device that took "
+        "these photos, or customize one."
+    )
     with gr.Group():
-        gr.Markdown(
-            "### Device (optional)\n"
-            "Leave this alone to use what each photo says (current Mothbox firmware records the device "
-            "in every photo; photos that don't say get no device type). Or choose the device that took "
-            "these photos, or customize one."
-        )
         with gr.Row():
             with gr.Column(scale=4, min_width=280):
                 # Rebuilt whenever the choice or the photos change, so every tab shows the same
